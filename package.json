@@ -1,6 +1,5 @@
 {
   "name": "terrablox",
-  "version": "0.1.0",
   "private": true,
   "description": "An open-source SaaS platform",
   "engines": {

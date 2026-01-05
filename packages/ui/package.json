@@ -8,7 +8,8 @@
     "./input": "./src/input.tsx",
     "./label": "./src/label.tsx",
     "./styles.css": "./src/styles.css",
-    "./tailwind.config": "./tailwind.config.js"
+    "./tailwind.config": "./tailwind.config.js",
+    "./postcss": "./postcss.config.js"
   },
   "scripts": {
     "lint": "biome check .",
