@@ -1,0 +1,30 @@
+{
+  "name": "terrablox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An open-source SaaS platform",
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.15.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "start": "turbo run start",
+    "lint": "turbo run lint",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check": "biome check --apply .",
+    "check:ci": "biome ci .",
+    "test": "turbo run test",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "type-check": "turbo run type-check"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.5.3",
+    "@turbo/gen": "^1.11.2",
+    "turbo": "^1.11.2"
+  }
+}
+
