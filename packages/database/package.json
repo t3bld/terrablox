@@ -3,39 +3,33 @@
   "version": "0.1.0",
   "private": true,
   "exports": {
-    ".": "./src/index.ts",
-    "./adapters/*": "./src/adapters/*.ts",
-    "./schemas": "./src/schemas/index.ts"
+    ".": {
+      "types": "./src/index.ts",
+      "node": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
   },
   "scripts": {
     "lint": "biome check .",
     "format": "biome format --write .",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:pull": "prisma db pull",
+    "db:migrate:dev": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:reset": "prisma migrate reset",
+    "db:studio": "prisma studio",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.0",
-    "zod": "^3.22.4"
+    "@prisma/client": "^5.22.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.5.3",
-    "@types/node": "^20.10.5",
     "@terrablox/tsconfig": "workspace:*",
+    "@types/node": "^20.10.5",
+    "prisma": "^5.22.0",
     "typescript": "^5.3.3"
-  },
-  "peerDependencies": {
-    "pg": "^8.11.0",
-    "mysql2": "^3.6.0",
-    "mongodb": "^6.3.0"
-  },
-  "peerDependenciesMeta": {
-    "pg": {
-      "optional": true
-    },
-    "mysql2": {
-      "optional": true
-    },
-    "mongodb": {
-      "optional": true
-    }
   }
 }

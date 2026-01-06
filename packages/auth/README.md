@@ -22,7 +22,7 @@ pnpm add @terrablox/auth
 
 ## Quick Start
 
-### 1. Create Auth Instance
+### 1. Configure auth in the app
 
 ```typescript
 import { createAuth } from "@terrablox/auth";
@@ -36,7 +36,7 @@ export const auth = createAuth({
 });
 ```
 
-### 2. Add Auth Provider
+### 2. Add auth provider 
 
 ```tsx
 "use client";
@@ -49,7 +49,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 }
 ```
 
-### 3. Use in Components
+### 3. Use auth in components
 
 ```tsx
 "use client";

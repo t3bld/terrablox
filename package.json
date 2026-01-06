@@ -21,8 +21,8 @@
     "type-check": "turbo run type-check"
   },
   "devDependencies": {
-    "@biomejs/biome": "^1.5.3",
-    "@turbo/gen": "^1.11.2",
-    "turbo": "^1.11.2"
+    "@biomejs/biome": "^2.3.11",
+    "@turbo/gen": "^2.7.3",
+    "turbo": "^2.7.3"
   }
 }

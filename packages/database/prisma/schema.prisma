@@ -1,0 +1,144 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Profile {
+  id        String   @id @db.Uuid
+  email     String?  @db.Text
+  fullName  String?  @map("full_name") @db.Text
+  avatarUrl String?  @map("avatar_url") @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  projects         Project[]
+  terraformModules TerraformModule[]
+
+  @@map("profiles")
+}
+
+model Project {
+  id          String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  userId      String   @map("user_id") @db.Uuid
+  name        String   @db.Text
+  description String?  @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  profile     Profile      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  canvasNodes CanvasNode[]
+  connections Connection[]
+
+  @@map("projects")
+}
+
+model TerraformModule {
+  id                  String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  userId              String   @map("user_id") @db.Uuid
+  name                String   @db.Text
+  version             String?  @db.Text
+  description         String?  @db.Text
+  sourceUrl           String?  @map("source_url") @db.Text
+  terraformRootFolder String?  @map("terraform_root_folder") @db.Text
+  storageRootPath     String?  @map("storage_root_path") @db.Text
+  variables           Json     @default("[]") @db.JsonB
+  outputs             Json     @default("[]") @db.JsonB
+  tags                String[] @default([]) @db.Text
+  isSubmodule         Boolean  @default(false) @map("is_submodule")
+  parentModuleId      String?  @map("parent_module_id") @db.Uuid
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  profile            Profile              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  parentModule       TerraformModule?     @relation("ModuleHierarchy", fields: [parentModuleId], references: [id], onDelete: SetNull)
+  submodules         TerraformModule[]    @relation("ModuleHierarchy")
+  resources          TerraformResource[]
+  files              ModuleFile[]
+  usedModules        UsedModule[]
+  canvasNodes        CanvasNode[]
+
+  @@map("terraform_modules")
+}
+
+model CanvasNode {
+  id            String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  moduleId      String   @map("module_id") @db.Uuid
+  name          String   @db.Text
+  positionX     Float    @default(0) @map("position_x") @db.DoublePrecision
+  positionY     Float    @default(0) @map("position_y") @db.DoublePrecision
+  width         Float?   @default(200) @db.DoublePrecision
+  height        Float?   @default(150) @db.DoublePrecision
+  configuration Json     @default("{}") @db.JsonB
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project           Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  module            TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  sourceConnections Connection[] @relation("SourceNode")
+  targetConnections Connection[] @relation("TargetNode")
+
+  @@map("canvas_nodes")
+}
+
+model Connection {
+  id           String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  projectId    String   @map("project_id") @db.Uuid
+  sourceNodeId String   @map("source_node_id") @db.Uuid
+  sourceOutput String   @map("source_output") @db.Text
+  targetNodeId String   @map("target_node_id") @db.Uuid
+  targetInput  String   @map("target_input") @db.Text
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  project    Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceNode CanvasNode @relation("SourceNode", fields: [sourceNodeId], references: [id], onDelete: Cascade)
+  targetNode CanvasNode @relation("TargetNode", fields: [targetNodeId], references: [id], onDelete: Cascade)
+
+  @@map("connections")
+}
+
+model TerraformResource {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId     String   @map("module_id") @db.Uuid
+  resourceType String   @map("resource_type") @db.Text
+  resourceName String?  @map("resource_name") @db.Text
+  provider     String   @db.Text
+  version      String?  @db.Text
+  publisher    String?  @db.Text
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  module TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@map("terraform_resources")
+}
+
+model ModuleFile {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId    String   @map("module_id") @db.Uuid
+  filePath    String   @map("file_path") @db.Text
+  storagePath String   @map("storage_path") @db.Text
+  fileType    String?  @map("file_type") @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  module TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@map("module_files")
+}
+
+model UsedModule {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId  String?  @map("module_id") @db.Uuid
+  sourceUrl String   @map("source_url") @db.Text
+  baseUrl   String?  @map("base_url") @db.Text
+  version   String?  @db.Text
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  module TerraformModule? @relation(fields: [moduleId], references: [id], onDelete: SetNull)
+
+  @@map("used_modules")
+}
