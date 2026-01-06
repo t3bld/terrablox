@@ -17,4 +17,3 @@
     "typeRoots": ["./node_modules/@types", "../../types"]
   }
 }
-

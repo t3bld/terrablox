@@ -22,4 +22,3 @@ export type CreateUser = z.infer<typeof createUserSchema>;
 export const updateUserSchema = createUserSchema.partial();
 
 export type UpdateUser = z.infer<typeof updateUserSchema>;
-

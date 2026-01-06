@@ -1,141 +1,398 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import {
+  createClient,
+  SupabaseClient,
+  AuthError as SupabaseAuthError,
+} from "@supabase/supabase-js";
+
 import {
   AuthAdapter,
-  SignUpCredentials,
+  AuthError,
+  AuthResult,
+  AuthStateEvent,
+  OAuthSignInOptions,
+  Session,
   SignInCredentials,
-  AuthSession,
-  AuthUser,
-  OAuthProvider,
-} from "./base";
+  SignUpCredentials,
+  SupabaseAuthConfig,
+  User,
+} from "../types";
+
+// =============================================================================
+// Supabase Auth Adapter
+// =============================================================================
 
 export class SupabaseAuthAdapter extends AuthAdapter {
   private client: SupabaseClient;
+  private config: SupabaseAuthConfig;
 
-  constructor() {
+  constructor(config: SupabaseAuthConfig) {
     super();
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-    if (!supabaseUrl || !supabaseKey) {
-      throw new Error(
-        "Supabase credentials not found. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY"
-      );
-    }
-
-    this.client = createClient(supabaseUrl, supabaseKey);
+    this.config = config;
+    this.client = createClient(config.url, config.anonKey, {
+      auth: {
+        autoRefreshToken: true,
+        persistSession: true,
+        detectSessionInUrl: true,
+      },
+    });
   }
 
-  async signUp(credentials: SignUpCredentials): Promise<AuthSession> {
+  // ===========================================================================
+  // Authentication Methods
+  // ===========================================================================
+
+  async signUp(credentials: SignUpCredentials): Promise<AuthResult> {
     const { data, error } = await this.client.auth.signUp({
       email: credentials.email,
       password: credentials.password,
       options: {
         data: {
           name: credentials.name,
+          ...credentials.metadata,
         },
       },
     });
 
-    if (error) throw error;
-    if (!data.session) throw new Error("No session returned");
+    if (error) {
+      throw this.mapError(error);
+    }
+
+    if (!data.user) {
+      throw new AuthError("No user returned from sign up", "UNKNOWN_ERROR");
+    }
+
+    // Note: Session may be null if email confirmation is required
+    if (!data.session) {
+      // Return user without session (email confirmation pending)
+      return {
+        user: this.mapUser(data.user),
+        session: {
+          user: this.mapUser(data.user),
+          accessToken: "",
+          expiresAt: 0,
+        },
+      };
+    }
 
     return {
-      user: {
-        id: data.user.id,
-        email: data.user.email!,
-        name: data.user.user_metadata.name,
-        avatar_url: data.user.user_metadata.avatar_url,
-      },
-      access_token: data.session.access_token,
-      refresh_token: data.session.refresh_token,
-      expires_at: data.session.expires_at,
+      user: this.mapUser(data.user),
+      session: this.mapSession(data.session),
     };
   }
 
-  async signIn(credentials: SignInCredentials): Promise<AuthSession> {
+  async signIn(credentials: SignInCredentials): Promise<AuthResult> {
     const { data, error } = await this.client.auth.signInWithPassword({
       email: credentials.email,
       password: credentials.password,
     });
 
-    if (error) throw error;
-    if (!data.session) throw new Error("No session returned");
+    if (error) {
+      throw this.mapError(error);
+    }
+
+    if (!data.user) {
+      throw new AuthError("No user returned from sign in", "UNKNOWN_ERROR");
+    }
+
+    if (!data.session) {
+      throw new AuthError("No session returned from sign in", "UNKNOWN_ERROR");
+    }
 
     return {
-      user: {
-        id: data.user.id,
-        email: data.user.email!,
-        name: data.user.user_metadata.name,
-        avatar_url: data.user.user_metadata.avatar_url,
-      },
-      access_token: data.session.access_token,
-      refresh_token: data.session.refresh_token,
-      expires_at: data.session.expires_at,
+      user: this.mapUser(data.user),
+      session: this.mapSession(data.session),
     };
+  }
+
+  async signInWithOAuth(options: OAuthSignInOptions): Promise<void> {
+    const { error } = await this.client.auth.signInWithOAuth({
+      provider: options.provider,
+      options: {
+        redirectTo: options.redirectTo,
+        scopes: options.scopes?.join(" "),
+      },
+    });
+
+    if (error) {
+      throw this.mapError(error);
+    }
   }
 
   async signOut(): Promise<void> {
     const { error } = await this.client.auth.signOut();
-    if (error) throw error;
+
+    if (error) {
+      throw this.mapError(error);
+    }
   }
 
-  async getUser(): Promise<AuthUser | null> {
-    const {
-      data: { user },
-    } = await this.client.auth.getUser();
+  // ===========================================================================
+  // Session Methods
+  // ===========================================================================
 
-    if (!user) return null;
+  async getSession(): Promise<Session | null> {
+    const { data, error } = await this.client.auth.getSession();
 
-    return {
-      id: user.id,
-      email: user.email!,
-      name: user.user_metadata.name,
-      avatar_url: user.user_metadata.avatar_url,
-    };
+    if (error) {
+      throw this.mapError(error);
+    }
+
+    if (!data.session) {
+      return null;
+    }
+
+    return this.mapSession(data.session);
   }
 
-  async getSession(): Promise<AuthSession | null> {
-    const {
-      data: { session },
-    } = await this.client.auth.getSession();
+  async refreshSession(): Promise<Session | null> {
+    const { data, error } = await this.client.auth.refreshSession();
 
-    if (!session) return null;
+    if (error) {
+      // Don't throw on refresh failure, just return null
+      console.warn("Session refresh failed:", error.message);
+      return null;
+    }
 
-    return {
-      user: {
-        id: session.user.id,
-        email: session.user.email!,
-        name: session.user.user_metadata.name,
-        avatar_url: session.user.user_metadata.avatar_url,
-      },
-      access_token: session.access_token,
-      refresh_token: session.refresh_token,
-      expires_at: session.expires_at,
-    };
+    if (!data.session) {
+      return null;
+    }
+
+    return this.mapSession(data.session);
   }
 
-  async signInWithOAuth(params: OAuthProvider): Promise<void> {
-    const { error } = await this.client.auth.signInWithOAuth({
-      provider: params.provider,
-      options: {
-        redirectTo: params.redirectTo,
+  // ===========================================================================
+  // User Methods
+  // ===========================================================================
+
+  async getUser(): Promise<User | null> {
+    const { data, error } = await this.client.auth.getUser();
+
+    if (error) {
+      // Don't throw if user is simply not authenticated
+      if (error.message.includes("Not authenticated")) {
+        return null;
+      }
+      throw this.mapError(error);
+    }
+
+    if (!data.user) {
+      return null;
+    }
+
+    return this.mapUser(data.user);
+  }
+
+  async updateUser(
+    data: Partial<Pick<User, "name" | "avatarUrl" | "metadata">>,
+  ): Promise<User> {
+    const { data: result, error } = await this.client.auth.updateUser({
+      data: {
+        name: data.name,
+        avatar_url: data.avatarUrl,
+        ...data.metadata,
       },
     });
 
-    if (error) throw error;
+    if (error) {
+      throw this.mapError(error);
+    }
+
+    return this.mapUser(result.user);
   }
 
-  async resetPassword(email: string): Promise<void> {
-    const { error } = await this.client.auth.resetPasswordForEmail(email);
-    if (error) throw error;
+  // ===========================================================================
+  // Password Methods
+  // ===========================================================================
+
+  async resetPassword(email: string, redirectTo?: string): Promise<void> {
+    const { error } = await this.client.auth.resetPasswordForEmail(email, {
+      redirectTo:
+        redirectTo ??
+        (typeof window !== "undefined"
+          ? `${window.location.origin}/auth/reset-password`
+          : undefined),
+    });
+
+    if (error) {
+      throw this.mapError(error);
+    }
   }
 
   async updatePassword(newPassword: string): Promise<void> {
     const { error } = await this.client.auth.updateUser({
       password: newPassword,
     });
-    if (error) throw error;
+
+    if (error) {
+      throw this.mapError(error);
+    }
+  }
+
+  // ===========================================================================
+  // Token Methods
+  // ===========================================================================
+
+  async verifyToken(token: string, type: "email" | "recovery"): Promise<void> {
+    const { error } = await this.client.auth.verifyOtp({
+      token_hash: token,
+      type: type === "email" ? "email" : "recovery",
+    });
+
+    if (error) {
+      throw this.mapError(error);
+    }
+  }
+
+  // ===========================================================================
+  // Auth State Listener
+  // ===========================================================================
+
+  onAuthStateChange(
+    callback: (event: AuthStateEvent, session: Session | null) => void,
+  ): () => void {
+    const { data } = this.client.auth.onAuthStateChange((event, session) => {
+      const mappedEvent = this.mapAuthEvent(event);
+      const mappedSession = session ? this.mapSession(session) : null;
+      callback(mappedEvent, mappedSession);
+    });
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
+  }
+
+  // ===========================================================================
+  // Utility Methods
+  // ===========================================================================
+
+  getClient(): SupabaseClient {
+    return this.client;
+  }
+
+  // ===========================================================================
+  // Private Helper Methods
+  // ===========================================================================
+
+  private mapUser(supabaseUser: {
+    id: string;
+    email?: string;
+    user_metadata?: Record<string, unknown>;
+    created_at?: string;
+    updated_at?: string;
+    email_confirmed_at?: string;
+  }): User {
+    return {
+      id: supabaseUser.id,
+      email: supabaseUser.email ?? "",
+      name: supabaseUser.user_metadata?.name as string | undefined,
+      avatarUrl: supabaseUser.user_metadata?.avatar_url as string | undefined,
+      emailVerified: !!supabaseUser.email_confirmed_at,
+      createdAt: supabaseUser.created_at
+        ? new Date(supabaseUser.created_at)
+        : undefined,
+      updatedAt: supabaseUser.updated_at
+        ? new Date(supabaseUser.updated_at)
+        : undefined,
+      metadata: supabaseUser.user_metadata,
+    };
+  }
+
+  private mapSession(supabaseSession: {
+    user: {
+      id: string;
+      email?: string;
+      user_metadata?: Record<string, unknown>;
+      created_at?: string;
+      updated_at?: string;
+      email_confirmed_at?: string;
+    };
+    access_token: string;
+    refresh_token?: string;
+    expires_at?: number;
+  }): Session {
+    return {
+      user: this.mapUser(supabaseSession.user),
+      accessToken: supabaseSession.access_token,
+      refreshToken: supabaseSession.refresh_token,
+      expiresAt: supabaseSession.expires_at ?? 0,
+    };
+  }
+
+  private mapAuthEvent(event: string): AuthStateEvent {
+    switch (event) {
+      case "SIGNED_IN":
+      case "INITIAL_SESSION":
+        return "SIGNED_IN";
+      case "SIGNED_OUT":
+        return "SIGNED_OUT";
+      case "TOKEN_REFRESHED":
+        return "TOKEN_REFRESHED";
+      case "USER_UPDATED":
+        return "USER_UPDATED";
+      case "PASSWORD_RECOVERY":
+        return "PASSWORD_RECOVERY";
+      default:
+        return "SIGNED_IN";
+    }
+  }
+
+  private mapError(error: SupabaseAuthError): AuthError {
+    const message = error.message;
+
+    if (message.includes("Invalid login credentials")) {
+      return new AuthError(
+        "Invalid email or password",
+        "INVALID_CREDENTIALS",
+        error,
+      );
+    }
+
+    if (message.includes("User already registered")) {
+      return new AuthError(
+        "An account with this email already exists",
+        "USER_ALREADY_EXISTS",
+        error,
+      );
+    }
+
+    if (message.includes("Email not confirmed")) {
+      return new AuthError(
+        "Please verify your email address",
+        "EMAIL_NOT_VERIFIED",
+        error,
+      );
+    }
+
+    if (
+      message.includes("JWT expired") ||
+      message.includes("session_not_found")
+    ) {
+      return new AuthError(
+        "Your session has expired",
+        "SESSION_EXPIRED",
+        error,
+      );
+    }
+
+    if (
+      message.includes("invalid_token") ||
+      message.includes("Invalid token")
+    ) {
+      return new AuthError("Invalid or expired token", "INVALID_TOKEN", error);
+    }
+
+    if (
+      error.status === 0 ||
+      message.includes("network") ||
+      message.includes("fetch")
+    ) {
+      return new AuthError(
+        "Network error. Please check your connection.",
+        "NETWORK_ERROR",
+        error,
+      );
+    }
+
+    return new AuthError(message, "PROVIDER_ERROR", error);
   }
 }
-

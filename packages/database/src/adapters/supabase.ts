@@ -11,7 +11,7 @@ export class SupabaseAdapter extends DatabaseAdapter {
 
     if (!supabaseUrl || !supabaseKey) {
       throw new Error(
-        "Supabase credentials not found. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY"
+        "Supabase credentials not found. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY",
       );
     }
 
@@ -40,7 +40,10 @@ export class SupabaseAdapter extends DatabaseAdapter {
       }
 
       if (params?.offset) {
-        query = query.range(params.offset, params.offset + (params.limit || 10) - 1);
+        query = query.range(
+          params.offset,
+          params.offset + (params.limit || 10) - 1,
+        );
       }
 
       if (params?.orderBy) {
@@ -120,4 +123,3 @@ export class SupabaseAdapter extends DatabaseAdapter {
     },
   };
 }
-

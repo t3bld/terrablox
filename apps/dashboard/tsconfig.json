@@ -1,7 +1,11 @@
 {
   "extends": "@terrablox/tsconfig/nextjs.json",
   "compilerOptions": {
-    "plugins": [{ "name": "next" }]
+    "plugins": [{ "name": "next" }],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": [
     "**/*.ts",
@@ -13,4 +17,3 @@
   ],
   "exclude": ["node_modules"]
 }
-

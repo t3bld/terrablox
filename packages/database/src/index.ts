@@ -8,7 +8,7 @@ let databaseInstance: DatabaseAdapter | null = null;
  * Create a database client based on the configured adapter
  */
 export async function createDatabaseClient(
-  config?: DatabaseConfig
+  config?: DatabaseConfig,
 ): Promise<DatabaseAdapter> {
   if (databaseInstance) {
     return databaseInstance;
@@ -47,7 +47,7 @@ export async function createDatabaseClient(
 export function getDatabaseClient(): DatabaseAdapter {
   if (!databaseInstance) {
     throw new Error(
-      "Database not initialized. Call createDatabaseClient() first."
+      "Database not initialized. Call createDatabaseClient() first.",
     );
   }
   return databaseInstance;
@@ -67,4 +67,3 @@ export * from "./adapters/base";
 export * from "./adapters/supabase";
 export * from "./adapters/postgres";
 export * from "./schemas";
-

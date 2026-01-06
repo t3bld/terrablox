@@ -7,4 +7,3 @@ export async function GET(request: NextRequest) {
     version: "0.1.0",
   });
 }
-

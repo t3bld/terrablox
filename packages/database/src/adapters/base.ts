@@ -31,4 +31,3 @@ export interface DatabaseConfig {
   connectionString?: string;
   options?: Record<string, unknown>;
 }
-

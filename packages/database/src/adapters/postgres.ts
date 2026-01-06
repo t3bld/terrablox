@@ -53,7 +53,9 @@ export class PostgresAdapter extends DatabaseAdapter {
 
     findById: async (id: string): Promise<User | null> => {
       const pool = this.getPool();
-      const result = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+      const result = await pool.query("SELECT * FROM users WHERE id = $1", [
+        id,
+      ]);
       return result.rows[0] || null;
     },
 
@@ -69,7 +71,7 @@ export class PostgresAdapter extends DatabaseAdapter {
       const pool = this.getPool();
       const result = await pool.query(
         "INSERT INTO users (email, name, avatar_url) VALUES ($1, $2, $3) RETURNING *",
-        [data.email, data.name, data.avatar_url]
+        [data.email, data.name, data.avatar_url],
       );
       return result.rows[0];
     },
@@ -84,7 +86,7 @@ export class PostgresAdapter extends DatabaseAdapter {
 
       const result = await pool.query(
         `UPDATE users SET ${setClause}, updated_at = NOW() WHERE id = $1 RETURNING *`,
-        [id, ...values]
+        [id, ...values],
       );
       return result.rows[0];
     },
@@ -95,4 +97,3 @@ export class PostgresAdapter extends DatabaseAdapter {
     },
   };
 }
-
