@@ -1,14 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 import { useAuth } from "@terrablox/auth";
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { signIn, signInWithOAuth, isLoading } = useAuth();
+
+  const next = searchParams?.get("next") || "/projects";
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -22,7 +25,7 @@ export default function LoginPage() {
 
     try {
       await signIn({ email, password });
-      router.push("/");
+      router.push(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign in");
     } finally {
@@ -32,7 +35,7 @@ export default function LoginPage() {
 
   const handleOAuthSignIn = async (provider: "github" | "gitlab") => {
     try {
-      await signInWithOAuth(provider, `${window.location.origin}/`);
+      await signInWithOAuth(provider, `${window.location.origin}${next}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign in");
     }

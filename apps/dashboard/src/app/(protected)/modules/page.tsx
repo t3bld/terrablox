@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useMemo } from "react";
-import { useRouter } from "next/navigation";
 import { Upload, Search, Boxes, Package, MoreVertical, Trash2, Download } from "lucide-react";
 
 import { useAuth } from "@terrablox/auth";
@@ -73,17 +72,10 @@ const mockModules: Module[] = [
 ];
 
 export default function ModulesPage() {
-  const router = useRouter();
-  const { user, isLoading, isAuthenticated } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const [modules, setModules] = useState<Module[]>([]);
   const [modulesLoading, setModulesLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-
-  useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      router.push("/login");
-    }
-  }, [isLoading, isAuthenticated, router]);
 
   useEffect(() => {
     // Simulate fetching modules
@@ -116,7 +108,8 @@ export default function ModulesPage() {
     );
   }, [modules, searchQuery]);
 
-  if (isLoading) {
+  // Only show the local loader while we're fetching module data.
+  if (modulesLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
@@ -159,21 +152,7 @@ export default function ModulesPage() {
             />
           </div>
 
-          {modulesLoading ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {[1, 2, 3].map((i) => (
-                <Card key={i}>
-                  <CardHeader>
-                    <Skeleton className="h-5 w-3/4" />
-                    <Skeleton className="h-4 w-full" />
-                  </CardHeader>
-                  <CardContent>
-                    <Skeleton className="h-3 w-1/2" />
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : filteredModules.length === 0 ? (
+          {filteredModules.length === 0 ? (
             <Card className="border-dashed">
               <CardContent className="flex flex-col items-center justify-center py-12">
                 <div className="rounded-full bg-muted p-4 mb-4">

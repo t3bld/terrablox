@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 
 import { useAuth } from "@terrablox/auth";
@@ -15,23 +14,20 @@ import {
   CardTitle,
 } from "@terrablox/ui/card";
 import { Skeleton } from "@terrablox/ui/skeleton";
-import { SidebarInset, SidebarProvider, SidebarTrigger } from "@terrablox/ui/sidebar";
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@terrablox/ui/sidebar";
 import { Separator } from "@terrablox/ui/separator";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { getProjects } from "@/actions/project-actions";
 
 export default function ProjectsPage() {
-  const router = useRouter();
-  const { user, isLoading, isAuthenticated } = useAuth();
+  const { user, isAuthenticated } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
-
-  useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      router.push("/login");
-    }
-  }, [isLoading, isAuthenticated, router]);
 
   useEffect(() => {
     async function fetchProjects() {
@@ -51,17 +47,6 @@ export default function ProjectsPage() {
       fetchProjects();
     }
   }, [isAuthenticated, user?.id]);
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <Skeleton className="h-12 w-12 rounded-full" />
-          <Skeleton className="h-4 w-32" />
-        </div>
-      </div>
-    );
-  }
 
   if (!isAuthenticated) {
     return null;
@@ -106,7 +91,7 @@ export default function ProjectsPage() {
                 </div>
                 <h3 className="text-lg font-semibold mb-1">No projects yet</h3>
                 <p className="text-muted-foreground text-center mb-4">
-                  Create your first project to get started with TerraBLox.
+                  Create your first project to get started with TerraBlox.
                 </p>
                 <Button>
                   <Plus className="h-4 w-4 mr-2" />
@@ -141,3 +126,4 @@ export default function ProjectsPage() {
     </SidebarProvider>
   );
 }
+
