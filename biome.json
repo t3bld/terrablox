@@ -53,11 +53,6 @@
       "tailwindDirectives": true
     },
     "linter": {
-      "rules": {
-        "suspicious": {
-          "noUnknownAtRules": "off"
-        }
-      }
     }
   },
   "json": {

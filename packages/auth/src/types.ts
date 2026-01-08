@@ -2,6 +2,15 @@
 // User Types
 // =============================================================================
 
+export interface UserIdentity {
+  provider: string;
+  identity_id: string;
+  user_id: string;
+  identity_data?: Record<string, unknown>;
+  created_at?: string;
+  last_sign_in_at?: string;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -11,6 +20,7 @@ export interface User {
   createdAt?: Date;
   updatedAt?: Date;
   metadata?: Record<string, unknown>;
+  identities?: UserIdentity[];
 }
 
 // =============================================================================

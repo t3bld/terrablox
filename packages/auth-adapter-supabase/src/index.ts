@@ -273,6 +273,7 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     created_at?: string;
     updated_at?: string;
     email_confirmed_at?: string;
+    identities?: any[];
   }): User {
     return {
       id: supabaseUser.id,
@@ -287,6 +288,7 @@ export class SupabaseAuthAdapter extends AuthAdapter {
         ? new Date(supabaseUser.updated_at)
         : undefined,
       metadata: supabaseUser.user_metadata,
+      identities: supabaseUser.identities,
     };
   }
 
@@ -298,6 +300,7 @@ export class SupabaseAuthAdapter extends AuthAdapter {
       created_at?: string;
       updated_at?: string;
       email_confirmed_at?: string;
+      identities?: any[];
     };
     access_token: string;
     refresh_token?: string;

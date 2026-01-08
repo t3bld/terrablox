@@ -25,52 +25,26 @@ import { AppSidebar } from "@/components/app-sidebar";
 function getGithubLinkStatus(
   user: NonNullable<ReturnType<typeof useAuth>["user"]>,
 ) {
-  // Supabase stores provider identities internally. Our shared User type doesn’t expose them.
-  // In practice, Supabase will usually include provider-specific fields in `user.metadata`.
-  const metadata = (user.metadata ?? {}) as Record<string, unknown>;
-
-  const provider =
-    typeof metadata.provider === "string" ? metadata.provider : undefined;
-  const githubUserName =
-    typeof metadata.user_name === "string" ? metadata.user_name : undefined;
-  const githubPreferredUsername =
-    typeof metadata.preferred_username === "string"
-      ? metadata.preferred_username
-      : undefined;
-
-  // Heuristic: if metadata provider is github OR a github-style username exists.
-  const linked =
-    provider === "github" || !!githubUserName || !!githubPreferredUsername;
+  const githubIdentity = user.identities?.find(
+    (id) => id.provider === "github",
+  );
 
   return {
-    linked,
-    githubUsername: githubUserName ?? githubPreferredUsername,
+    linked: !!githubIdentity,
+    githubUsername: githubIdentity?.identity_data?.user_name,
   };
 }
 
 function getGitlabLinkStatus(
   user: NonNullable<ReturnType<typeof useAuth>["user"]>,
 ) {
-  // Supabase stores provider identities internally. Our shared User type doesn’t expose them.
-  // Like GitHub, we check user metadata for provider hints.
-  const metadata = (user.metadata ?? {}) as Record<string, unknown>;
-
-  const provider =
-    typeof metadata.provider === "string" ? metadata.provider : undefined;
-
-  // GitLab can show up as `preferred_username` (or similar) depending on configuration.
-  const gitlabUsername =
-    typeof metadata.nickname === "string"
-      ? metadata.nickname
-      : typeof metadata.preferred_username === "string"
-        ? metadata.preferred_username
-        : undefined;
-
-  const linked = provider === "gitlab" || !!gitlabUsername;
+  const gitlabIdentity = user.identities?.find(
+    (id) => id.provider === "gitlab",
+  );
 
   return {
-    linked,
-    gitlabUsername,
+    linked: !!gitlabIdentity,
+    gitlabUsername: gitlabIdentity?.identity_data?.user_name,
   };
 }
 
