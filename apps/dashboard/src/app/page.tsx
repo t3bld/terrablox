@@ -2,14 +2,26 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Plus } from "lucide-react";
 
 import { useAuth } from "@terrablox/auth";
 import type { Project } from "@terrablox/database";
+import { Button } from "@terrablox/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@terrablox/ui/card";
+import { Skeleton } from "@terrablox/ui/skeleton";
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@terrablox/ui/sidebar";
+import { Separator } from "@terrablox/ui/separator";
 
-import { UserMenu } from "@/components/user-menu";
+import { AppSidebar } from "@/components/app-sidebar";
 import { getProjects } from "@/actions/project-actions";
 
-export default function DashboardPage() {
+export default function ProjectsPage() {
   const router = useRouter();
   const { user, isLoading, isAuthenticated } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -43,7 +55,10 @@ export default function DashboardPage() {
   if (isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
+        <div className="flex flex-col items-center gap-4">
+          <Skeleton className="h-12 w-12 rounded-full" />
+          <Skeleton className="h-4 w-32" />
+        </div>
       </div>
     );
   }
@@ -53,68 +68,76 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-16">
-            <h1 className="text-xl font-bold text-gray-900">TerraBLox</h1>
-            <UserMenu />
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
-          <h2 className="text-2xl font-bold text-gray-900">
-            Welcome back{user?.name ? `, ${user.name}` : ""}!
-          </h2>
-          <p className="text-gray-600 mt-1">
-            Here&apos;s what&apos;s happening with your projects.
-          </p>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-          <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
-            <h3 className="text-lg font-semibold text-gray-900">Projects</h3>
-            <button className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors">
+    <SidebarProvider>
+      <AppSidebar />
+      <SidebarInset>
+        <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
+          <SidebarTrigger className="-ml-1" />
+          <Separator orientation="vertical" className="mr-2 h-4" />
+          <h1 className="text-lg font-semibold">Your Projects</h1>
+          <div className="ml-auto">
+            <Button size="sm">
+              <Plus className="h-4 w-4 mr-2" />
               New Project
-            </button>
+            </Button>
           </div>
-          <div className="p-6">
-            {projectsLoading ? (
-              <div className="flex justify-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600" />
-              </div>
-            ) : projects.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                <p>No projects yet.</p>
-                <p className="text-sm mt-1">
-                  Create your first project to get started.
+        </header>
+
+        <main className="flex-1 p-6">
+          {projectsLoading ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {[1, 2, 3].map((i) => (
+                <Card key={i}>
+                  <CardHeader>
+                    <Skeleton className="h-5 w-3/4" />
+                    <Skeleton className="h-4 w-full" />
+                  </CardHeader>
+                  <CardContent>
+                    <Skeleton className="h-3 w-1/2" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : projects.length === 0 ? (
+            <Card className="border-dashed">
+              <CardContent className="flex flex-col items-center justify-center py-12">
+                <div className="rounded-full bg-muted p-4 mb-4">
+                  <Plus className="h-8 w-8 text-muted-foreground" />
+                </div>
+                <h3 className="text-lg font-semibold mb-1">No projects yet</h3>
+                <p className="text-muted-foreground text-center mb-4">
+                  Create your first project to get started with TerraBLox.
                 </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {projects.map((project) => (
-                  <div
-                    key={project.id}
-                    className="border border-gray-200 rounded-lg p-4 hover:border-blue-300 hover:shadow-sm transition-all cursor-pointer"
-                  >
-                    <h4 className="text-sm font-medium text-gray-900">
-                      {project.name}
-                    </h4>
-                    <p className="text-xs text-gray-500 mt-1">
+                <Button>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Create Project
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {projects.map((project) => (
+                <Card
+                  key={project.id}
+                  className="cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
+                >
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base">{project.name}</CardTitle>
+                    <CardDescription className="text-sm line-clamp-2">
                       {project.description || "No description"}
-                    </p>
-                    <p className="text-xs text-gray-400 mt-2">
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-xs text-muted-foreground">
                       Updated {new Date(project.updatedAt).toLocaleDateString()}
                     </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </main>
-    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

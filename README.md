@@ -1,7 +1,7 @@
 <p align="center">
 	<h1 align="center"><b>TerraBlox</b></h1>
 <p align="center">
-    Open Source Terraform Assistant
+    Open Source Terraform Assistant and Infrastructure Designer
     <br />
     <br />
     <a href="https://terrablox.de">Website</a>

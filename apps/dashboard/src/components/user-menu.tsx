@@ -1,102 +1,86 @@
 "use client";
 
-import { useAuth } from "@terrablox/auth";
 import Link from "next/link";
-import { useState } from "react";
+import { LogOut, Settings, User } from "lucide-react";
+
+import { useAuth } from "@terrablox/auth";
+import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
+import { Button } from "@terrablox/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@terrablox/ui/dropdown-menu";
+import { Skeleton } from "@terrablox/ui/skeleton";
 
 export function UserMenu() {
   const { user, signOut, isLoading } = useAuth();
-  const [isOpen, setIsOpen] = useState(false);
 
   if (isLoading) {
-    return <div className="h-8 w-8 rounded-full bg-gray-200 animate-pulse" />;
+    return <Skeleton className="h-8 w-8 rounded-full" />;
   }
 
   if (!user) {
     return (
       <div className="flex items-center gap-4">
-        <Link
-          href="/login"
-          className="text-sm text-gray-600 hover:text-gray-900"
-        >
-          Sign in
-        </Link>
-        <Link
-          href="/signup"
-          className="text-sm bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
-        >
-          Sign up
-        </Link>
+        <Button variant="ghost" asChild>
+          <Link href="/login">Sign in</Link>
+        </Button>
+        <Button asChild>
+          <Link href="/signup">Sign up</Link>
+        </Button>
       </div>
     );
   }
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center gap-2 text-sm focus:outline-none"
-      >
-        <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center text-white font-medium">
-          {user.name?.[0]?.toUpperCase() || user.email[0]?.toUpperCase()}
-        </div>
-        <span className="hidden md:block text-gray-700">
-          {user.name || user.email}
-        </span>
-        <svg
-          className={`w-4 h-4 text-gray-500 transition-transform ${isOpen ? "rotate-180" : ""}`}
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
-      </button>
-
-      {isOpen && (
-        <>
-          {/* Backdrop */}
-          <div
-            className="fixed inset-0 z-10"
-            onClick={() => setIsOpen(false)}
-          />
-
-          {/* Dropdown */}
-          <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg py-1 z-20 border border-gray-200">
-            <div className="px-4 py-2 border-b border-gray-100">
-              <p className="text-sm font-medium text-gray-900 truncate">
-                {user.name || "User"}
-              </p>
-              <p className="text-xs text-gray-500 truncate">{user.email}</p>
-            </div>
-
-            <Link
-              href="/settings"
-              className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-              onClick={() => setIsOpen(false)}
-            >
-              Settings
-            </Link>
-
-            <button
-              type="button"
-              onClick={async () => {
-                await signOut();
-                setIsOpen(false);
-              }}
-              className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100"
-            >
-              Sign out
-            </button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+          <Avatar className="h-8 w-8">
+            <AvatarImage src={undefined} alt={user.name || "User"} />
+            <AvatarFallback className="bg-primary text-primary-foreground">
+              {user.name?.[0]?.toUpperCase() || user.email[0]?.toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-56" align="end" forceMount>
+        <DropdownMenuLabel className="font-normal">
+          <div className="flex flex-col space-y-1">
+            <p className="text-sm font-medium leading-none">
+              {user.name || "User"}
+            </p>
+            <p className="text-xs leading-none text-muted-foreground">
+              {user.email}
+            </p>
           </div>
-        </>
-      )}
-    </div>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem asChild>
+          <Link href="/settings" className="cursor-pointer">
+            <User className="mr-2 h-4 w-4" />
+            Profile
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href="/settings" className="cursor-pointer">
+            <Settings className="mr-2 h-4 w-4" />
+            Settings
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => signOut()}
+          className="cursor-pointer text-destructive focus:text-destructive"
+        >
+          <LogOut className="mr-2 h-4 w-4" />
+          Sign out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
