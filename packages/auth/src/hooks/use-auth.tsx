@@ -44,7 +44,7 @@ interface AuthActions {
     provider: OAuthProvider,
     redirectTo?: string,
   ) => Promise<void>;
-  signOut: () => Promise<void>;
+  signOut: (options?: { onSuccess?: () => void }) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   updatePassword: (newPassword: string) => Promise<void>;
   updateUser: (
@@ -157,11 +157,15 @@ export function AuthProvider({
     [adapter],
   );
 
-  const signOut = useCallback(async () => {
-    await adapter.signOut();
-    setUser(null);
-    setSession(null);
-  }, [adapter]);
+  const signOut = useCallback(
+    async (options?: { onSuccess?: () => void }) => {
+      await adapter.signOut();
+      setUser(null);
+      setSession(null);
+      options?.onSuccess?.();
+    },
+    [adapter],
+  );
 
   const resetPassword = useCallback(
     async (email: string) => {

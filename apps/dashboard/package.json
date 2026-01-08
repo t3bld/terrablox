@@ -13,6 +13,7 @@
   "dependencies": {
     "@supabase/ssr": "^0.6.0",
     "@terrablox/auth": "workspace:*",
+    "@terrablox/auth-adapter-supabase": "workspace:*",
     "@terrablox/database": "workspace:*",
     "@terrablox/ui": "workspace:*",
     "lucide-react": "^0.562.0",

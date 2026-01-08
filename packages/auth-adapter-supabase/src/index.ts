@@ -1,10 +1,8 @@
-import {
-  createClient,
-  type AuthError as SupabaseAuthError,
-  type SupabaseClient,
-} from "@supabase/supabase-js";
 import { createBrowserClient } from "@supabase/ssr";
-
+import type {
+  AuthError as SupabaseAuthError,
+  SupabaseClient,
+} from "@supabase/supabase-js";
 import {
   AuthAdapter,
   AuthError,
@@ -16,7 +14,7 @@ import {
   type SignUpCredentials,
   type SupabaseAuthConfig,
   type User,
-} from "../types";
+} from "@terrablox/auth";
 
 // =============================================================================
 // Supabase Auth Adapter
@@ -389,3 +387,4 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     return new AuthError(message, "PROVIDER_ERROR", error);
   }
 }
+

@@ -21,9 +21,15 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@terrablox/ui/sidebar";
-import { Boxes, ChevronUp, FolderKanban, LogOut, User2 } from "lucide-react";
+import {
+  Boxes,
+  ChevronUp,
+  FolderKanban,
+  LogOut,
+  User2,
+} from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 const navItems = [
   {
@@ -40,7 +46,16 @@ const navItems = [
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const { user, signOut } = useAuth();
+
+  const handleSignOut = async () => {
+    await signOut({
+      onSuccess: () => {
+        router.push("/login");
+      },
+    });
+  };
 
   return (
     <Sidebar>
@@ -133,7 +148,7 @@ export function AppSidebar() {
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  onClick={() => signOut()}
+                  onClick={handleSignOut}
                   className="cursor-pointer text-destructive focus:text-destructive"
                 >
                   <LogOut className="mr-2 h-4 w-4" />

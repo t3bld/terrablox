@@ -22,7 +22,8 @@ export { AuthAdapter, AuthError } from "./types";
 // Adapter Exports
 // =============================================================================
 
-export { SupabaseAuthAdapter } from "./adapters/supabase";
+// Concrete adapters are no longer exported from the core package.
+// Each implementation should be in its own package, e.g., `@terrablox/auth-adapter-supabase`.
 
 // =============================================================================
 // Hook Exports
@@ -48,13 +49,14 @@ export {
 // Factory Function
 // =============================================================================
 
-import { SupabaseAuthAdapter } from "./adapters/supabase";
 import type { AuthAdapter, AuthAdapterConfig } from "./types";
 
 export function createAuth(config: AuthAdapterConfig): AuthAdapter {
   switch (config.type) {
     case "supabase":
-      return new SupabaseAuthAdapter(config.config);
+      throw new Error(
+        "The Supabase adapter has been moved to its own package: `@terrablox/auth-adapter-supabase`. Please install it and import the adapter directly.",
+      );
 
     case "custom":
       return config.adapter;
