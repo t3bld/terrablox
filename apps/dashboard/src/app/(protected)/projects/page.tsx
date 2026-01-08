@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { useAuth } from "@terrablox/auth";
 import type { Project } from "@terrablox/database";
@@ -13,16 +13,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
-import { Skeleton } from "@terrablox/ui/skeleton";
+import { Separator } from "@terrablox/ui/separator";
 import {
   SidebarInset,
   SidebarProvider,
   SidebarTrigger,
 } from "@terrablox/ui/sidebar";
-import { Separator } from "@terrablox/ui/separator";
+import { Skeleton } from "@terrablox/ui/skeleton";
 
-import { AppSidebar } from "@/components/app-sidebar";
 import { getProjects } from "@/actions/project-actions";
+import { AppSidebar } from "@/components/app-sidebar";
 
 export default function ProjectsPage() {
   const { user, isAuthenticated } = useAuth();
@@ -126,4 +126,3 @@ export default function ProjectsPage() {
     </SidebarProvider>
   );
 }
-

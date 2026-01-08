@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "exports": {
+    "./alert": "./src/alert.tsx",
     "./avatar": "./src/avatar.tsx",
     "./button": "./src/button.tsx",
     "./card": "./src/card.tsx",

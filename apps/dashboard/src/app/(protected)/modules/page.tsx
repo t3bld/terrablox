@@ -1,7 +1,15 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
-import { Upload, Search, Boxes, Package, MoreVertical, Trash2, Download } from "lucide-react";
+import {
+  Boxes,
+  Download,
+  MoreVertical,
+  Package,
+  Search,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@terrablox/auth";
 import { Button } from "@terrablox/ui/button";
@@ -12,20 +20,20 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
-import { Input } from "@terrablox/ui/input";
-import { Skeleton } from "@terrablox/ui/skeleton";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@terrablox/ui/sidebar";
-import { Separator } from "@terrablox/ui/separator";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@terrablox/ui/dropdown-menu";
+import { Input } from "@terrablox/ui/input";
+import { Separator } from "@terrablox/ui/separator";
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@terrablox/ui/sidebar";
+import { Skeleton } from "@terrablox/ui/skeleton";
 
 import { AppSidebar } from "@/components/app-sidebar";
 
@@ -104,7 +112,7 @@ export default function ModulesPage() {
     return modules.filter(
       (module) =>
         module.name.toLowerCase().includes(query) ||
-        module.description.toLowerCase().includes(query)
+        module.description.toLowerCase().includes(query),
     );
   }, [modules, searchQuery]);
 
@@ -243,4 +251,3 @@ export default function ModulesPage() {
     </SidebarProvider>
   );
 }
-

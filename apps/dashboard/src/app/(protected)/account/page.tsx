@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
 import { Github, Gitlab, Link as LinkIcon, Unlink, User2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@terrablox/auth";
 import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
@@ -22,12 +22,15 @@ import {
 
 import { AppSidebar } from "@/components/app-sidebar";
 
-function getGithubLinkStatus(user: NonNullable<ReturnType<typeof useAuth>["user"]>) {
+function getGithubLinkStatus(
+  user: NonNullable<ReturnType<typeof useAuth>["user"]>,
+) {
   // Supabase stores provider identities internally. Our shared User type doesn’t expose them.
   // In practice, Supabase will usually include provider-specific fields in `user.metadata`.
   const metadata = (user.metadata ?? {}) as Record<string, unknown>;
 
-  const provider = typeof metadata.provider === "string" ? metadata.provider : undefined;
+  const provider =
+    typeof metadata.provider === "string" ? metadata.provider : undefined;
   const githubUserName =
     typeof metadata.user_name === "string" ? metadata.user_name : undefined;
   const githubPreferredUsername =
@@ -36,7 +39,8 @@ function getGithubLinkStatus(user: NonNullable<ReturnType<typeof useAuth>["user"
       : undefined;
 
   // Heuristic: if metadata provider is github OR a github-style username exists.
-  const linked = provider === "github" || !!githubUserName || !!githubPreferredUsername;
+  const linked =
+    provider === "github" || !!githubUserName || !!githubPreferredUsername;
 
   return {
     linked,
@@ -44,20 +48,23 @@ function getGithubLinkStatus(user: NonNullable<ReturnType<typeof useAuth>["user"
   };
 }
 
-function getGitlabLinkStatus(user: NonNullable<ReturnType<typeof useAuth>["user"]>) {
+function getGitlabLinkStatus(
+  user: NonNullable<ReturnType<typeof useAuth>["user"]>,
+) {
   // Supabase stores provider identities internally. Our shared User type doesn’t expose them.
   // Like GitHub, we check user metadata for provider hints.
   const metadata = (user.metadata ?? {}) as Record<string, unknown>;
 
-  const provider = typeof metadata.provider === "string" ? metadata.provider : undefined;
+  const provider =
+    typeof metadata.provider === "string" ? metadata.provider : undefined;
 
   // GitLab can show up as `preferred_username` (or similar) depending on configuration.
   const gitlabUsername =
     typeof metadata.nickname === "string"
       ? metadata.nickname
       : typeof metadata.preferred_username === "string"
-      ? metadata.preferred_username
-      : undefined;
+        ? metadata.preferred_username
+        : undefined;
 
   const linked = provider === "gitlab" || !!gitlabUsername;
 
@@ -89,17 +96,17 @@ export default function AccountPage() {
     refreshSession().catch(() => {
       // Non-fatal; the built-in auth listener might still update the session.
     });
-    // We only want to do this right after an OAuth return.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated]);
+  }, [isAuthenticated, refreshSession]);
 
   const github = useMemo(() => {
-    if (!user) return { linked: false, githubUsername: undefined as string | undefined };
+    if (!user)
+      return { linked: false, githubUsername: undefined as string | undefined };
     return getGithubLinkStatus(user);
   }, [user]);
 
   const gitlab = useMemo(() => {
-    if (!user) return { linked: false, gitlabUsername: undefined as string | undefined };
+    if (!user)
+      return { linked: false, gitlabUsername: undefined as string | undefined };
     return getGitlabLinkStatus(user);
   }, [user]);
 
@@ -111,7 +118,8 @@ export default function AccountPage() {
       const redirectTo = `${window.location.origin}/account`;
       await signInWithOAuth("github", redirectTo);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to link GitHub";
+      const message =
+        err instanceof Error ? err.message : "Failed to link GitHub";
       setLinkError(message);
       setIsLinkingGithub(false);
     }
@@ -125,7 +133,8 @@ export default function AccountPage() {
       const redirectTo = `${window.location.origin}/account`;
       await signInWithOAuth("gitlab", redirectTo);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to link GitLab";
+      const message =
+        err instanceof Error ? err.message : "Failed to link GitLab";
       setLinkError(message);
       setIsLinkingGitlab(false);
     }
@@ -170,7 +179,8 @@ export default function AccountPage() {
                       alt={user.name || "User"}
                     />
                     <AvatarFallback className="bg-primary text-primary-foreground">
-                      {user.name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase() ||
+                      {user.name?.[0]?.toUpperCase() ||
+                        user.email?.[0]?.toUpperCase() ||
                         "U"}
                     </AvatarFallback>
                   </Avatar>
@@ -179,7 +189,9 @@ export default function AccountPage() {
                     <div className="text-base font-semibold">
                       {user.name || "Unnamed user"}
                     </div>
-                    <div className="text-sm text-muted-foreground">{user.email}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {user.email}
+                    </div>
                     <div className="text-xs text-muted-foreground mt-2">
                       User ID: <span className="font-mono">{user.id}</span>
                     </div>
@@ -242,8 +254,8 @@ export default function AccountPage() {
                 ) : null}
 
                 <p className="text-xs text-muted-foreground">
-                  Note: link detection currently uses session metadata (Supabase identities
-                  aren’t exposed in the shared auth type yet).
+                  Note: link detection currently uses session metadata (Supabase
+                  identities aren’t exposed in the shared auth type yet).
                 </p>
               </CardContent>
             </Card>
@@ -302,8 +314,8 @@ export default function AccountPage() {
                 ) : null}
 
                 <p className="text-xs text-muted-foreground">
-                  Note: link detection currently uses session metadata (Supabase identities
-                  aren’t exposed in the shared auth type yet).
+                  Note: link detection currently uses session metadata (Supabase
+                  identities aren’t exposed in the shared auth type yet).
                 </p>
               </CardContent>
             </Card>

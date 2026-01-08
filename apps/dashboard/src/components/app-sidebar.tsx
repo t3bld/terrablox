@@ -1,15 +1,5 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-import {
-  FolderKanban,
-  Boxes,
-  ChevronUp,
-  LogOut,
-  User2,
-} from "lucide-react";
-
 import { useAuth } from "@terrablox/auth";
 import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
 import {
@@ -31,6 +21,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@terrablox/ui/sidebar";
+import { Boxes, ChevronUp, FolderKanban, LogOut, User2 } from "lucide-react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 
 const navItems = [
   {
@@ -80,7 +73,11 @@ export function AppSidebar() {
 
                 return (
                   <SidebarMenuItem key={item.title}>
-                    <SidebarMenuButton asChild isActive={isActive} tooltip={item.title}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={isActive}
+                      tooltip={item.title}
+                    >
                       <Link href={item.href}>
                         <item.icon />
                         <span>{item.title}</span>

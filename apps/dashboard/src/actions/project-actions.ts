@@ -1,7 +1,7 @@
 "use server";
 
-import { database } from "../lib/database";
 import type { Project } from "@terrablox/database";
+import { database } from "../lib/database";
 
 export async function getProjects(userId: string): Promise<Project[]> {
   try {

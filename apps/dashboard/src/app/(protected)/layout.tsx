@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect } from "react";
-import { usePathname, useRouter } from "next/navigation";
-
 import { useAuth } from "@terrablox/auth";
 import { Skeleton } from "@terrablox/ui/skeleton";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 export default function ProtectedAppLayout({
   children,
@@ -19,7 +18,10 @@ export default function ProtectedAppLayout({
     if (isLoading) return;
     if (isAuthenticated) return;
 
-    const next = pathname && pathname !== "/" ? `?next=${encodeURIComponent(pathname)}` : "";
+    const next =
+      pathname && pathname !== "/"
+        ? `?next=${encodeURIComponent(pathname)}`
+        : "";
     router.replace(`/login${next}`);
   }, [isLoading, isAuthenticated, router, pathname]);
 
@@ -40,4 +42,3 @@ export default function ProtectedAppLayout({
 
   return <>{children}</>;
 }
-

@@ -1,12 +1,37 @@
 "use client";
 
-import { useState } from "react";
+export const dynamic = "force-dynamic";
+
+import { Github } from "lucide-react";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
 import { useAuth } from "@terrablox/auth";
+import { Alert, AlertDescription } from "@terrablox/ui/alert";
+import { Button } from "@terrablox/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@terrablox/ui/card";
+import { Input } from "@terrablox/ui/input";
+import { Label } from "@terrablox/ui/label";
+import { Separator } from "@terrablox/ui/separator";
 
 export default function SignUpPage() {
   const { signUp, signInWithOAuth, isLoading } = useAuth();
+
+  const [nextPath, setNextPath] = useState("/projects");
+
+  useEffect(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const next = sp.get("next");
+    if (next) setNextPath(next);
+  }, []);
+
+  const next = nextPath;
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -14,6 +39,9 @@ export default function SignUpPage() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [oauthSubmitting, setOauthSubmitting] = useState<
+    "github" | "gitlab" | null
+  >(null);
   const [success, setSuccess] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -33,7 +61,7 @@ export default function SignUpPage() {
     setIsSubmitting(true);
 
     try {
-      await signUp({ email, password, name });
+      await signUp({ email, password, name: name.trim() || undefined });
       setSuccess(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign up");
@@ -43,175 +71,163 @@ export default function SignUpPage() {
   };
 
   const handleOAuthSignIn = async (provider: "github" | "gitlab") => {
+    setError(null);
+    setOauthSubmitting(provider);
     try {
-      await signInWithOAuth(provider, `${window.location.origin}/`);
+      const redirectTo = `${window.location.origin}${next}`;
+      await signInWithOAuth(provider, redirectTo);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign in");
+      setOauthSubmitting(null);
     }
   };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
-      </div>
-    );
-  }
-
   if (success) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4">
-        <div className="max-w-md w-full text-center">
-          <div className="bg-green-50 border border-green-200 text-green-700 px-6 py-8 rounded-lg">
-            <h2 className="text-2xl font-bold mb-4">Check your email</h2>
-            <p className="text-sm">
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle className="text-2xl">Check your email</CardTitle>
+            <CardDescription>
               We&apos;ve sent you a confirmation email. Please click the link to
               verify your account.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Button asChild className="w-full">
+              <Link href="/login">Back to sign in</Link>
+            </Button>
+            <p className="text-center text-xs text-muted-foreground">
+              After verifying, you can sign in and you&apos;ll be redirected to{" "}
+              <span className="font-mono">{next}</span>.
             </p>
-            <Link
-              href="/login"
-              className="mt-6 inline-block text-blue-600 hover:text-blue-500 font-medium"
-            >
-              Back to sign in
-            </Link>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
-      <div className="max-w-md w-full space-y-8">
-        <div>
-          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-            Create your account
-          </h2>
-          <p className="mt-2 text-center text-sm text-gray-600">
-            Already have an account?{" "}
-            <Link
-              href="/login"
-              className="font-medium text-blue-600 hover:text-blue-500"
-            >
-              Sign in
-            </Link>
-          </p>
-        </div>
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <Card className="w-full max-w-md">
+        <CardHeader className="space-y-1">
+          <CardTitle className="text-2xl">Create an account</CardTitle>
+          <CardDescription>
+            Enter your details below to create your account.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {error ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
 
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md text-sm">
-            {error}
-          </div>
-        )}
-
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          <div className="rounded-md shadow-sm space-y-3">
-            <div>
-              <label htmlFor="name" className="sr-only">
-                Full name
-              </label>
-              <input
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="name">Name</Label>
+              <Input
                 id="name"
-                name="name"
-                type="text"
                 autoComplete="name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                placeholder="Full name (optional)"
+                disabled={isLoading || isSubmitting || !!oauthSubmitting}
+                placeholder="Optional"
               />
             </div>
-            <div>
-              <label htmlFor="email" className="sr-only">
-                Email address
-              </label>
-              <input
+
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
                 id="email"
-                name="email"
                 type="email"
                 autoComplete="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                placeholder="Email address"
+                disabled={isLoading || isSubmitting || !!oauthSubmitting}
+                placeholder="you@example.com"
               />
             </div>
-            <div>
-              <label htmlFor="password" className="sr-only">
-                Password
-              </label>
-              <input
+
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
                 id="password"
-                name="password"
                 type="password"
                 autoComplete="new-password"
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                placeholder="Password (min 8 characters)"
+                disabled={isLoading || isSubmitting || !!oauthSubmitting}
+                placeholder="Minimum 8 characters"
               />
             </div>
-            <div>
-              <label htmlFor="confirm-password" className="sr-only">
-                Confirm password
-              </label>
-              <input
-                id="confirm-password"
-                name="confirm-password"
+
+            <div className="space-y-2">
+              <Label htmlFor="confirmPassword">Confirm password</Label>
+              <Input
+                id="confirmPassword"
                 type="password"
                 autoComplete="new-password"
                 required
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="appearance-none relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 rounded-md focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm"
-                placeholder="Confirm password"
+                disabled={isLoading || isSubmitting || !!oauthSubmitting}
               />
             </div>
-          </div>
 
-          <div>
-            <button
+            <Button
               type="submit"
-              disabled={isSubmitting}
-              className="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full"
+              disabled={isLoading || isSubmitting || !!oauthSubmitting}
             >
-              {isSubmitting ? "Creating account..." : "Create account"}
-            </button>
-          </div>
-        </form>
+              {isSubmitting ? "Creating account…" : "Create account"}
+            </Button>
+          </form>
 
-        <div className="mt-6">
           <div className="relative">
             <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-300" />
+              <Separator />
             </div>
-            <div className="relative flex justify-center text-sm">
-              <span className="px-2 bg-gray-50 text-gray-500">
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-background px-2 text-muted-foreground">
                 Or continue with
               </span>
             </div>
           </div>
 
-          <div className="mt-6 grid grid-cols-2 gap-3">
-            <button
+          <div className="grid grid-cols-2 gap-3">
+            <Button
               type="button"
+              variant="outline"
               onClick={() => handleOAuthSignIn("github")}
-              className="w-full inline-flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-500 hover:bg-gray-50"
+              disabled={isLoading || isSubmitting || !!oauthSubmitting}
             >
-              <span>GitHub</span>
-            </button>
-            <button
+              <Github className="mr-2 h-4 w-4" />
+              {oauthSubmitting === "github" ? "Starting…" : "GitHub"}
+            </Button>
+            <Button
               type="button"
+              variant="outline"
               onClick={() => handleOAuthSignIn("gitlab")}
-              className="w-full inline-flex justify-center py-2 px-4 border border-gray-300 rounded-md shadow-sm bg-white text-sm font-medium text-gray-500 hover:bg-gray-50"
+              disabled={isLoading || isSubmitting || !!oauthSubmitting}
             >
-              <span>GitLab</span>
-            </button>
+              {oauthSubmitting === "gitlab" ? "Starting…" : "GitLab"}
+            </Button>
           </div>
-        </div>
-      </div>
+
+          <p className="text-center text-sm text-muted-foreground">
+            Already have an account?{" "}
+            <Link
+              href="/login"
+              className="underline underline-offset-4 hover:text-foreground"
+            >
+              Sign in
+            </Link>
+          </p>
+        </CardContent>
+      </Card>
     </div>
   );
 }
