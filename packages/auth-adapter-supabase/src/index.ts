@@ -15,6 +15,8 @@ import {
   type SupabaseAuthConfig,
   type User,
 } from "@terrablox/auth";
+import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import type { ServerAuth } from "@terrablox/auth/server";
 
 // =============================================================================
 // Supabase Auth Adapter
@@ -388,3 +390,46 @@ export class SupabaseAuthAdapter extends AuthAdapter {
   }
 }
 
+// =============================================================================
+// Supabase Server Auth Implementation
+// =============================================================================
+
+export function createSupabaseServerAuth(): ServerAuth {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    throw new Error("Missing Supabase environment variables.");
+  }
+
+  return {
+    isAuthenticated: async (req: Request, res: { cookies: Response["cookies"] }) => {
+      const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+        cookies: {
+          getAll() {
+            // The request object needs to be cast to NextRequest to access cookies.
+            // This is a Next.js-specific implementation detail.
+            return (req as import("next/server").NextRequest).cookies.getAll();
+          },
+          setAll(
+            cookies: Array<{
+              name: string;
+              value: string;
+              options: CookieOptions;
+            }>,
+          ) {
+            for (const { name, value, options } of cookies) {
+              res.cookies.set(name, value, options);
+            }
+          },
+        },
+      });
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      return !!user;
+    },
+  };
+}

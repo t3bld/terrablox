@@ -1,12 +1,14 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { createSupabaseServerAuth } from "@terrablox/auth-adapter-supabase";
 
+// This file can be removed, but is kept for demonstration purposes.
+// It defines the routing configuration for the middleware.
 import {
   buildNextParam,
   defaultAuthRouting,
   type AuthRoutingConfig,
-} from "@/lib/auth/server-auth";
-import { getServerAuth } from "@/lib/auth/server-auth-factory";
+} from "@/lib/auth/auth-routing";
 
 function isPublicAuthPath(pathname: string, cfg: AuthRoutingConfig) {
   return cfg.publicPaths.includes(pathname);
@@ -20,7 +22,10 @@ export async function middleware(req: NextRequest) {
   // Always prepare a response so auth providers can attach refreshed cookies.
   const res = NextResponse.next();
 
-  const auth = getServerAuth();
+  // In a real application, you might use a factory pattern to switch between
+  // different auth providers. For this example, we'll directly use the
+  // Supabase implementation.
+  const auth = createSupabaseServerAuth();
   const isAuthed = await auth.isAuthenticated(req, res);
 
   if (!isAuthed && cfg.isProtectedPath(pathname)) {
