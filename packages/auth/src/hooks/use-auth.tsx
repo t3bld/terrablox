@@ -2,12 +2,12 @@
 
 import {
   createContext,
+  type ReactNode,
   useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
-  type ReactNode,
 } from "react";
 
 import type {
@@ -32,8 +32,14 @@ interface AuthState {
 }
 
 interface AuthActions {
-  signUp: (credentials: SignUpCredentials) => Promise<void>;
-  signIn: (credentials: SignInCredentials) => Promise<void>;
+  signUp: (
+    credentials: SignUpCredentials,
+    options?: { onSuccess?: () => void },
+  ) => Promise<void>;
+  signIn: (
+    credentials: SignInCredentials,
+    options?: { onSuccess?: () => void },
+  ) => Promise<void>;
   signInWithOAuth: (
     provider: OAuthProvider,
     redirectTo?: string,
@@ -119,19 +125,27 @@ export function AuthProvider({
   }, [adapter, onAuthStateChange]);
 
   const signUp = useCallback(
-    async (credentials: SignUpCredentials) => {
+    async (
+      credentials: SignUpCredentials,
+      options?: { onSuccess?: () => void },
+    ) => {
       const result = await adapter.signUp(credentials);
       setUser(result.user);
       setSession(result.session);
+      options?.onSuccess?.();
     },
     [adapter],
   );
 
   const signIn = useCallback(
-    async (credentials: SignInCredentials) => {
+    async (
+      credentials: SignInCredentials,
+      options?: { onSuccess?: () => void },
+    ) => {
       const result = await adapter.signIn(credentials);
       setUser(result.user);
       setSession(result.session);
+      options?.onSuccess?.();
     },
     [adapter],
   );

@@ -49,9 +49,18 @@ export default function LoginPage() {
     setIsSubmitting(true);
 
     try {
-      await signIn({ email, password });
-      router.push(next);
+      console.log("Attempting to sign in with:", { email });
+      await signIn(
+        { email, password },
+        {
+          onSuccess: () => {
+            console.log("Sign in successful, redirecting via onSuccess...");
+            router.push(next);
+          },
+        },
+      );
     } catch (err) {
+      console.error("Sign in failed:", err);
       setError(err instanceof Error ? err.message : "Failed to sign in");
     } finally {
       setIsSubmitting(false);

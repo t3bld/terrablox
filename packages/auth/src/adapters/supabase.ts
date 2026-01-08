@@ -1,20 +1,21 @@
 import {
   createClient,
-  SupabaseClient,
-  AuthError as SupabaseAuthError,
+  type AuthError as SupabaseAuthError,
+  type SupabaseClient,
 } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
 
 import {
   AuthAdapter,
   AuthError,
-  AuthResult,
-  AuthStateEvent,
-  OAuthSignInOptions,
-  Session,
-  SignInCredentials,
-  SignUpCredentials,
-  SupabaseAuthConfig,
-  User,
+  type AuthResult,
+  type AuthStateEvent,
+  type OAuthSignInOptions,
+  type Session,
+  type SignInCredentials,
+  type SignUpCredentials,
+  type SupabaseAuthConfig,
+  type User,
 } from "../types";
 
 // =============================================================================
@@ -23,18 +24,10 @@ import {
 
 export class SupabaseAuthAdapter extends AuthAdapter {
   private client: SupabaseClient;
-  private config: SupabaseAuthConfig;
 
   constructor(config: SupabaseAuthConfig) {
     super();
-    this.config = config;
-    this.client = createClient(config.url, config.anonKey, {
-      auth: {
-        autoRefreshToken: true,
-        persistSession: true,
-        detectSessionInUrl: true,
-      },
-    });
+    this.client = createBrowserClient(config.url, config.anonKey);
   }
 
   // ===========================================================================

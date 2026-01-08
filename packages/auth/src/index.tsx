@@ -3,17 +3,17 @@
 // =============================================================================
 
 export type {
-  User,
-  Session,
-  SignUpCredentials,
-  SignInCredentials,
+  AuthAdapterConfig,
+  AuthErrorCode,
+  AuthResult,
+  AuthStateEvent,
   OAuthProvider,
   OAuthSignInOptions,
-  AuthResult,
-  AuthErrorCode,
-  AuthStateEvent,
+  Session,
+  SignInCredentials,
+  SignUpCredentials,
   SupabaseAuthConfig,
-  AuthAdapterConfig,
+  User,
 } from "./types";
 
 export { AuthAdapter, AuthError } from "./types";
@@ -28,28 +28,28 @@ export { SupabaseAuthAdapter } from "./adapters/supabase";
 // Hook Exports
 // =============================================================================
 
-export { AuthProvider, useAuth, useUser, useSession } from "./hooks/use-auth";
+export { AuthProvider, useAuth, useSession, useUser } from "./hooks/use-auth";
 
 // =============================================================================
 // Server Exports
 // =============================================================================
 
 export {
-  createServerAuth,
-  protectedRoute,
-  extractBearerToken,
-  parseJwtPayload,
-  isTokenExpired,
   AuthRequiredError,
+  createServerAuth,
+  extractBearerToken,
   ForbiddenError,
+  isTokenExpired,
+  parseJwtPayload,
+  protectedRoute,
 } from "./server";
 
 // =============================================================================
 // Factory Function
 // =============================================================================
 
-import type { AuthAdapter, AuthAdapterConfig } from "./types";
 import { SupabaseAuthAdapter } from "./adapters/supabase";
+import type { AuthAdapter, AuthAdapterConfig } from "./types";
 
 export function createAuth(config: AuthAdapterConfig): AuthAdapter {
   switch (config.type) {

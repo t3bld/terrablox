@@ -1,31 +1,27 @@
 "use client";
 
-import { useAuth } from "@terrablox/auth";
 import { Skeleton } from "@terrablox/ui/skeleton";
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
+/**
+ * Protected layout.
+ *
+ * Auth gating and redirects are handled in `src/middleware.ts`.
+ * This layout only provides a small hydration/loading UX.
+ */
 export default function ProtectedAppLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const router = useRouter();
-  const pathname = usePathname();
-  const { isLoading, isAuthenticated } = useAuth();
+  // Avoid layout flicker during the first client render.
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    if (isLoading) return;
-    if (isAuthenticated) return;
+    setMounted(true);
+  }, []);
 
-    const next =
-      pathname && pathname !== "/"
-        ? `?next=${encodeURIComponent(pathname)}`
-        : "";
-    router.replace(`/login${next}`);
-  }, [isLoading, isAuthenticated, router, pathname]);
-
-  if (isLoading) {
+  if (!mounted) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
@@ -34,10 +30,6 @@ export default function ProtectedAppLayout({
         </div>
       </div>
     );
-  }
-
-  if (!isAuthenticated) {
-    return null;
   }
 
   return <>{children}</>;

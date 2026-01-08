@@ -144,10 +144,9 @@ export default function AccountPage() {
     return null;
   }
 
+  const metadata = (user.metadata ?? {}) as Record<string, unknown>;
   const avatarUrlFromMetadata =
-    typeof (user.metadata as any)?.avatar_url === "string"
-      ? ((user.metadata as any).avatar_url as string)
-      : undefined;
+    typeof metadata.avatar_url === "string" ? metadata.avatar_url : undefined;
 
   return (
     <SidebarProvider>
