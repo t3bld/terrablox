@@ -3,17 +3,14 @@
 import {
   Boxes,
   Download,
-  GitBranch,
   MoreVertical,
   Package,
   Search,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@terrablox/auth";
-import { Button } from "@terrablox/ui/button";
 import {
   Card,
   CardContent,
@@ -29,10 +26,16 @@ import {
   SidebarTrigger,
 } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@terrablox/ui/dropdown-menu";
+import { Button } from "@terrablox/ui/button";
 
 import { AppSidebar } from "@/components/app-sidebar";
-import { ImportModuleDialog } from "@/components/import-module-dialog";
-import {DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger} from "@terrablox/ui/dropdown-menu";
+import { ModuleImportActions } from "@/components/module-import-actions";
 
 // Mock module type - replace with actual type from database
 interface Module {
@@ -81,7 +84,6 @@ export default function ModulesPage() {
   const [modules, setModules] = useState<Module[]>([]);
   const [modulesLoading, setModulesLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [importProvider, setImportProvider] = useState<"github" | null>(null);
 
   useEffect(() => {
     // Simulate fetching modules
@@ -139,18 +141,7 @@ export default function ModulesPage() {
           <Separator orientation="vertical" className="mr-2 h-4" />
           <h1 className="text-lg font-semibold">Terraform Module Library</h1>
           <div className="ml-auto flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setImportProvider("github")}
-            >
-              <GitBranch className="h-4 w-4 mr-2" />
-              Import from GitHub
-            </Button>
-            <Button size="sm">
-              <Upload className="h-4 w-4 mr-2" />
-              Upload Module
-            </Button>
+            <ModuleImportActions />
           </div>
         </header>
 
@@ -184,12 +175,7 @@ export default function ModulesPage() {
                     ? `No modules match "${searchQuery}". Try a different search.`
                     : "Upload your first module to get started."}
                 </p>
-                {!searchQuery && (
-                  <Button>
-                    <Upload className="h-4 w-4 mr-2" />
-                    Upload Module
-                  </Button>
-                )}
+                {!searchQuery && <ModuleImportActions />}
               </CardContent>
             </Card>
           ) : (
@@ -243,9 +229,7 @@ export default function ModulesPage() {
                   <CardContent>
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
                       <span>{module.size}</span>
-                      <span>
-                        {new Date(module.uploadedAt).toLocaleDateString()}
-                      </span>
+                      <span>{module.downloads} downloads</span>
                     </div>
                   </CardContent>
                 </Card>
@@ -253,15 +237,6 @@ export default function ModulesPage() {
             </div>
           )}
         </main>
-        {importProvider ? (
-          <ImportModuleDialog
-            provider={importProvider}
-            open={!!importProvider}
-            onOpenChange={(open) => {
-              if (!open) setImportProvider(null);
-            }}
-          />
-        ) : null}
       </SidebarInset>
     </SidebarProvider>
   );

@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@terrablox/auth";
+import type { GitProviderId, GitRepo } from "@terrablox/git-import";
 import { Button } from "@terrablox/ui/button";
 import {
   Dialog,
@@ -15,40 +16,9 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 interface ImportModuleDialogProps {
-  provider: "github";
+  provider: GitProviderId;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}
-
-type GithubRepoApiResponse = {
-  id: number;
-  name: string;
-  description: string | null;
-  private: boolean;
-  html_url: string;
-  owner: {
-    login: string;
-  };
-};
-
-interface Repo {
-  id: string;
-  name: string;
-  description: string;
-  private: boolean;
-  owner: string;
-  url: string;
-}
-
-function toRepo(r: GithubRepoApiResponse): Repo {
-  return {
-    id: String(r.id),
-    name: r.name,
-    description: r.description ?? "",
-    private: r.private,
-    owner: r.owner.login,
-    url: r.html_url,
-  };
 }
 
 export function ImportModuleDialog({
@@ -57,7 +27,7 @@ export function ImportModuleDialog({
   onOpenChange,
 }: ImportModuleDialogProps) {
   const { user } = useAuth();
-  const [repos, setRepos] = useState<Repo[]>([]);
+  const [repos, setRepos] = useState<GitRepo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -69,57 +39,47 @@ export function ImportModuleDialog({
       setLoading(true);
       setError(null);
 
-      const githubIdentity = user?.identities?.find(
-        (id) => id.provider === "github",
-      );
-
-      if (!githubIdentity) {
+      const identity = user?.identities?.find((id) => id.provider === provider);
+      if (!identity) {
         setError(
-          "GitHub account not linked. Please link your account to import repositories.",
+          `Your ${provider} account is not linked. Please link it in your account settings.`,
         );
         setLoading(false);
         return;
       }
 
       try {
-        const response = await fetch("/api/github/repos", {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-
-        const body: unknown = await response.json();
+        const response = await fetch(`/api/git-provider/${provider}/repos`);
+        const body = await response.json();
 
         if (!response.ok) {
-          const maybeObj = body as { error?: string; scopes?: string };
-          const scopesInfo = maybeObj?.scopes
-            ? ` (token scopes: ${maybeObj.scopes})`
-            : "";
-          setError(`${maybeObj?.error ?? "Failed to fetch repositories"}${scopesInfo}`);
-          setRepos([]);
+          const scopes = body?.scopes ? ` (scopes: ${body.scopes})` : "";
+          setError(
+            body?.error
+              ? `${body.error}${scopes}`
+              : `Failed to fetch repositories.`,
+          );
           return;
         }
 
-        const data = Array.isArray(body) ? (body as GithubRepoApiResponse[]) : [];
-        setRepos(data.map(toRepo));
+        setRepos(body.repos ?? []);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "An unknown error occurred.");
+        setError(
+          err instanceof Error ? err.message : "An unknown error occurred.",
+        );
       } finally {
         setLoading(false);
       }
     }
 
     fetchRepos();
-  }, [open, user]);
+  }, [open, provider, user]);
 
   const filteredRepos = repos.filter((repo) =>
-    `${repo.owner}/${repo.name}`
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase()),
+    repo.full_name.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
-  const providerName = "GitHub";
+  const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -148,17 +108,11 @@ export function ImportModuleDialog({
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
           ) : error ? (
-            <div className="flex flex-col items-center justify-center h-full text-destructive">
-              <p className="text-center">{error}</p>
-              {error.includes("GitHub provider token not found") && (
-                <Button asChild variant="link" className="mt-2">
-                  <Link href="/account">Go to Account Settings</Link>
-                </Button>
-              )}
-              <p className="mt-2 text-center text-xs text-muted-foreground">
-                If organization repositories are missing, ensure the GitHub app
-                has org access granted in GitHub settings.
-              </p>
+            <div className="flex flex-col items-center justify-center h-full text-destructive text-center">
+              <p>{error}</p>
+              <Button asChild variant="link" className="mt-2">
+                <Link href="/account">Go to Account Settings</Link>
+              </Button>
             </div>
           ) : filteredRepos.length > 0 ? (
             filteredRepos.map((repo) => (
@@ -167,9 +121,7 @@ export function ImportModuleDialog({
                 className="flex items-center justify-between p-2 rounded-md hover:bg-muted"
               >
                 <div>
-                  <div className="font-medium">
-                    {repo.owner}/{repo.name}
-                  </div>
+                  <div className="font-medium">{repo.full_name}</div>
                   <div className="text-sm text-muted-foreground line-clamp-1">
                     {repo.description}
                   </div>

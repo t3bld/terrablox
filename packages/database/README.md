@@ -1,6 +1,7 @@
 # @terrablox/database
 
-Database client implemented using Prisma ORM to provide a flexible database integration. Just provide the connection string to your SQL database that is compatible with Prisma and you can use your own database service.
+Database client implemented using Prisma ORM to provide a flexible database integration. 
+Just provide the connection string of your SQL database that is compatible with Prisma to the environment file.
 
 - [Features](#features)
 - [Installation](#installation)
@@ -21,42 +22,31 @@ pnpm add @terrablox/database
 ### 1. Add database client to the app
 
 ```typescript
-import { db } from "@terrablox/database";
+import { database } from "@terrablox/database";
 
-const projects = await db.project.findMany({
+const projects = await database.project.findMany({
   where: { userId },
   orderBy: { createdAt: "desc" },
 });
 
-const project = await db.project.findUnique({
+const project = await database.project.findUnique({
   where: { id },
 });
 
-const newProject = await db.project.create({
+const newProject = await database.project.create({
   data: { userId, name: "My Project" },
 });
 
-await db.project.update({
+await database.project.update({
   where: { id },
   data: { name: "Updated Name" },
 });
 
-await db.project.delete({ where: { id } });
+await database.project.delete({ where: { id } });
 ```
 
 ### 2. Add environment variable
 
 ```env
 DATABASE_URL=
-```
-
-### 3. Prisma Commands
-
-```bash
-pnpm db:generate      # Generate Prisma client
-pnpm db:push          # Push schema to database
-pnpm db:pull          # Pull schema from database
-pnpm db:migrate:dev   # Create migration (dev)
-pnpm db:migrate:deploy # Deploy migrations (prod)
-pnpm db:studio        # Open Prisma Studio
 ```

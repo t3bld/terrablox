@@ -15,6 +15,7 @@
     "@terrablox/auth": "workspace:*",
     "@terrablox/auth-adapter-supabase": "workspace:*",
     "@terrablox/database": "workspace:*",
+    "@terrablox/git-import": "workspace:*",
     "@terrablox/ui": "workspace:*",
     "lucide-react": "^0.562.0",
     "next": "^14.1.0",

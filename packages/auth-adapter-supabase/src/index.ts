@@ -411,9 +411,12 @@ export function createSupabaseServerAuth(): ServerAuth {
       const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
         cookies: {
           getAll() {
-            // The request object needs to be cast to NextRequest to access cookies.
-            // This is a Next.js-specific implementation detail.
-            return (req as import("next/server").NextRequest).cookies.getAll();
+            // Avoid a hard dependency on Next.js types. In Next middleware, `req` is a NextRequest
+            // and exposes `cookies.getAll()`. In other runtimes, implement a compatible shape.
+            const maybeReq = req as unknown as {
+              cookies?: { getAll?: () => Array<{ name: string; value: string }> };
+            };
+            return maybeReq.cookies?.getAll?.() ?? [];
           },
           setAll(
             cookies: Array<{

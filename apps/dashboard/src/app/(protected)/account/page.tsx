@@ -1,11 +1,10 @@
 "use client";
 
-import { Github, Link as LinkIcon, Unlink, User2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { User2 } from "lucide-react";
+import { useEffect } from "react";
 
 import { useAuth } from "@terrablox/auth";
 import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
-import { Button } from "@terrablox/ui/button";
 import {
   Card,
   CardContent,
@@ -21,31 +20,10 @@ import {
 } from "@terrablox/ui/sidebar";
 
 import { AppSidebar } from "@/components/app-sidebar";
-import { GithubAccessDialog } from "@/components/github-access-dialog";
-
-function getGithubLinkStatus(
-  user: NonNullable<ReturnType<typeof useAuth>["user"]>,
-) {
-  const githubIdentity = user.identities?.find(
-    (id) => id.provider === "github",
-  );
-
-  const githubUsernameRaw = githubIdentity?.identity_data?.user_name;
-  const githubUsername =
-    typeof githubUsernameRaw === "string" ? githubUsernameRaw : undefined;
-
-  return {
-    linked: !!githubIdentity,
-    githubUsername,
-  };
-}
+import { GithubAccountCard } from "@/components/github-account-card";
 
 export default function AccountPage() {
-  const { user, isAuthenticated, signInWithOAuth, refreshSession } = useAuth();
-
-  const [isLinkingGithub, setIsLinkingGithub] = useState(false);
-  const [linkError, setLinkError] = useState<string | null>(null);
-  const [githubAccessOpen, setGithubAccessOpen] = useState(false);
+  const { user, isAuthenticated, refreshSession } = useAuth();
 
   // After returning from an OAuth redirect, force-refresh the session once so the UI updates.
   useEffect(() => {
@@ -63,35 +41,6 @@ export default function AccountPage() {
       // Non-fatal; the built-in auth listener might still update the session.
     });
   }, [isAuthenticated, refreshSession]);
-
-  const github = useMemo<{
-    linked: boolean;
-    githubUsername?: string;
-  }>(() => {
-    if (!user) return { linked: false, githubUsername: undefined };
-    return getGithubLinkStatus(user);
-  }, [user]);
-
-  async function handleLinkGithub() {
-    setLinkError(null);
-    setIsLinkingGithub(true);
-
-    try {
-      const redirectTo = `${window.location.origin}/account`;
-      await signInWithOAuth("github", {
-        redirectTo,
-        // Required:
-        // - read:org: list org memberships and avoid org-repo visibility issues
-        // - repo: access private repos (and some org repos)
-        scopes: ["read:org", "repo"],
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to link GitHub";
-      setLinkError(message);
-      setIsLinkingGithub(false);
-    }
-  }
 
   if (!isAuthenticated || !user) {
     return null;
@@ -157,77 +106,7 @@ export default function AccountPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Github className="h-5 w-5" />
-                  GitHub
-                </CardTitle>
-                <CardDescription>
-                  Connect GitHub to enable GitHub-based workflows.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm">
-                    Status:{" "}
-                    <span
-                      className={
-                        github.linked
-                          ? "text-emerald-600 dark:text-emerald-400 font-medium"
-                          : "text-muted-foreground"
-                      }
-                    >
-                      {github.linked ? "Linked" : "Not linked"}
-                    </span>
-                  </div>
-
-                  {github.linked ? (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <LinkIcon className="h-3.5 w-3.5" />
-                      {github.githubUsername
-                        ? String(github.githubUsername)
-                        : "GitHub"}
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Unlink className="h-3.5 w-3.5" />
-                      GitHub
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  {!github.linked ? (
-                    <Button
-                      className="w-full"
-                      onClick={handleLinkGithub}
-                      disabled={isLinkingGithub}
-                    >
-                      {isLinkingGithub ? "Linking…" : "Link GitHub account"}
-                    </Button>
-                  ) : null}
-
-                  <Button
-                    className="w-full"
-                    variant="secondary"
-                    onClick={() => setGithubAccessOpen(true)}
-                    disabled={!github.linked}
-                  >
-                    Manage access
-                  </Button>
-
-                  <GithubAccessDialog
-                    open={githubAccessOpen}
-                    onOpenChange={setGithubAccessOpen}
-                  />
-                </div>
-
-                {linkError ? (
-                  <p className="text-xs text-destructive">{linkError}</p>
-                ) : null}
-              </CardContent>
-            </Card>
+            <GithubAccountCard />
           </div>
         </main>
       </SidebarInset>

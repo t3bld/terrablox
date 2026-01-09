@@ -1,0 +1,10 @@
+{
+  "extends": "@terrablox/tsconfig/react.json",
+  "compilerOptions": {
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "jsx": "react-jsx",
+    "skipLibCheck": true
+  },
+  "include": ["src", "react"],
+  "exclude": ["node_modules", "dist"]
+}
