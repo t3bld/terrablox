@@ -1,6 +1,6 @@
 "use client";
 
-import { Github, Gitlab, Link as LinkIcon, Unlink, User2 } from "lucide-react";
+import { Github, Link as LinkIcon, Unlink, User2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { useAuth } from "@terrablox/auth";
@@ -35,24 +35,12 @@ function getGithubLinkStatus(
   };
 }
 
-function getGitlabLinkStatus(
-  user: NonNullable<ReturnType<typeof useAuth>["user"]>,
-) {
-  const gitlabIdentity = user.identities?.find(
-    (id) => id.provider === "gitlab",
-  );
 
-  return {
-    linked: !!gitlabIdentity,
-    gitlabUsername: gitlabIdentity?.identity_data?.user_name,
-  };
-}
 
 export default function AccountPage() {
   const { user, isAuthenticated, signInWithOAuth, refreshSession } = useAuth();
 
   const [isLinkingGithub, setIsLinkingGithub] = useState(false);
-  const [isLinkingGitlab, setIsLinkingGitlab] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
 
   // After returning from an OAuth redirect, force-refresh the session once so the UI updates.
@@ -78,12 +66,6 @@ export default function AccountPage() {
     return getGithubLinkStatus(user);
   }, [user]);
 
-  const gitlab = useMemo(() => {
-    if (!user)
-      return { linked: false, gitlabUsername: undefined as string | undefined };
-    return getGitlabLinkStatus(user);
-  }, [user]);
-
   async function handleLinkGithub() {
     setLinkError(null);
     setIsLinkingGithub(true);
@@ -99,20 +81,6 @@ export default function AccountPage() {
     }
   }
 
-  async function handleLinkGitlab() {
-    setLinkError(null);
-    setIsLinkingGitlab(true);
-
-    try {
-      const redirectTo = `${window.location.origin}/account`;
-      await signInWithOAuth("gitlab", redirectTo);
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to link GitLab";
-      setLinkError(message);
-      setIsLinkingGitlab(false);
-    }
-  }
 
   if (!isAuthenticated || !user) {
     return null;
@@ -233,65 +201,7 @@ export default function AccountPage() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Gitlab className="h-5 w-5" />
-                  GitLab
-                </CardTitle>
-                <CardDescription>
-                  Connect GitLab to enable GitLab-based workflows.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm">
-                    Status:{" "}
-                    <span
-                      className={
-                        gitlab.linked
-                          ? "text-emerald-600 dark:text-emerald-400 font-medium"
-                          : "text-muted-foreground"
-                      }
-                    >
-                      {gitlab.linked ? "Linked" : "Not linked"}
-                    </span>
-                  </div>
 
-                  {gitlab.linked ? (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <LinkIcon className="h-3.5 w-3.5" />
-                      {gitlab.gitlabUsername ?? "GitLab"}
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Unlink className="h-3.5 w-3.5" />
-                      GitLab
-                    </div>
-                  )}
-                </div>
-
-                {!gitlab.linked ? (
-                  <Button
-                    className="w-full"
-                    onClick={handleLinkGitlab}
-                    disabled={isLinkingGitlab}
-                    variant="secondary"
-                  >
-                    {isLinkingGitlab ? "Linking…" : "Link GitLab account"}
-                  </Button>
-                ) : null}
-
-                {linkError ? (
-                  <p className="text-xs text-destructive">{linkError}</p>
-                ) : null}
-
-                <p className="text-xs text-muted-foreground">
-                  Note: link detection currently uses session metadata (Supabase
-                  identities aren’t exposed in the shared auth type yet).
-                </p>
-              </CardContent>
-            </Card>
           </div>
         </main>
       </SidebarInset>

@@ -4,8 +4,6 @@ import {
   Boxes,
   Download,
   GitBranch,
-  Github,
-  Gitlab,
   MoreVertical,
   Package,
   Search,
@@ -23,13 +21,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@terrablox/ui/dropdown-menu";
 import { Input } from "@terrablox/ui/input";
 import { Separator } from "@terrablox/ui/separator";
 import {
@@ -41,6 +32,7 @@ import { Skeleton } from "@terrablox/ui/skeleton";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { ImportModuleDialog } from "@/components/import-module-dialog";
+import {DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger} from "@terrablox/ui/dropdown-menu";
 
 // Mock module type - replace with actual type from database
 interface Module {
@@ -89,7 +81,7 @@ export default function ModulesPage() {
   const [modules, setModules] = useState<Module[]>([]);
   const [modulesLoading, setModulesLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [importProvider, setImportProvider] = useState<"github" | "gitlab" | null>(null);
+  const [importProvider, setImportProvider] = useState<"github" | null>(null);
 
   useEffect(() => {
     // Simulate fetching modules
@@ -147,24 +139,14 @@ export default function ModulesPage() {
           <Separator orientation="vertical" className="mr-2 h-4" />
           <h1 className="text-lg font-semibold">Terraform Module Library</h1>
           <div className="ml-auto flex items-center gap-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="outline">
-                  <GitBranch className="h-4 w-4 mr-2" />
-                  Import from Git
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => setImportProvider("github")}>
-                  <Github className="h-4 w-4 mr-2" />
-                  GitHub
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setImportProvider("gitlab")}>
-                  <Gitlab className="h-4 w-4 mr-2" />
-                  GitLab
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setImportProvider("github")}
+            >
+              <GitBranch className="h-4 w-4 mr-2" />
+              Import from GitHub
+            </Button>
             <Button size="sm">
               <Upload className="h-4 w-4 mr-2" />
               Upload Module

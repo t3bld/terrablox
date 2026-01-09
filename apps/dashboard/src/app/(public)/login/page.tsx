@@ -40,7 +40,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [oauthSubmitting, setOauthSubmitting] = useState<
-    "github" | "gitlab" | null
+    "github" | null
   >(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -67,7 +67,7 @@ export default function LoginPage() {
     }
   };
 
-  const handleOAuthSignIn = async (provider: "github" | "gitlab") => {
+  const handleOAuthSignIn = async (provider: "github") => {
     setError(null);
     setOauthSubmitting(provider);
     try {
@@ -151,7 +151,7 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3">
             <Button
               type="button"
               variant="outline"
@@ -160,14 +160,6 @@ export default function LoginPage() {
             >
               <Github className="mr-2 h-4 w-4" />
               {oauthSubmitting === "github" ? "Starting…" : "GitHub"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => handleOAuthSignIn("gitlab")}
-              disabled={isLoading || isSubmitting || !!oauthSubmitting}
-            >
-              {oauthSubmitting === "gitlab" ? "Starting…" : "GitLab"}
             </Button>
           </div>
 

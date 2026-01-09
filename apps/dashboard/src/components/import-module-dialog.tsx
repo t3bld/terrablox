@@ -1,56 +1,33 @@
 "use client";
 
-import {
-  ArrowRight,
-  Check,
-  ChevronsUpDown,
-  GitBranch,
-  Github,
-  Gitlab,
-  Loader2,
-} from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Github, Loader2, Search } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
 import { useAuth } from "@terrablox/auth";
 import { Button } from "@terrablox/ui/button";
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@terrablox/ui/command";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@terrablox/ui/dialog";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@terrablox/ui/popover";
-import { cn } from "@terrablox/ui/lib/utils";
-import Link from "next/link";
+import { Input } from "@terrablox/ui/input";
 
-type RepoProvider = "github" | "gitlab";
+interface ImportModuleDialogProps {
+  provider: "github";
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
 
 interface Repo {
   id: string;
   name: string;
-  full_name: string;
-  private?: boolean;
-  html_url: string;
-}
-
-interface ImportModuleDialogProps {
-  provider: RepoProvider;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  description: string;
+  private: boolean;
+  owner: string;
+  url: string;
 }
 
 export function ImportModuleDialog({
@@ -58,192 +35,168 @@ export function ImportModuleDialog({
   open,
   onOpenChange,
 }: ImportModuleDialogProps) {
-  const { user } = useAuth();
+  const { user, getProviderToken } = useAuth();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedRepo, setSelectedRepo] = useState<Repo | null>(null);
-  const [isImporting, setIsImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const isGithubLinked = useMemo(
-    () => user?.identities?.some((id) => id.provider === "github"),
-    [user],
-  );
-  const isGitlabLinked = useMemo(
-    () => user?.identities?.some((id) => id.provider === "gitlab"),
-    [user],
-  );
-
-  const isProviderLinked =
-    provider === "github" ? isGithubLinked : isGitlabLinked;
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
-    if (open) {
-      const fetchRepos = async () => {
-        setLoading(true);
-        setError(null);
-        try {
-          const apiUrl = provider === "github" ? "/api/github/repos" : "/api/gitlab/repos";
-          const response = await fetch(apiUrl);
-          if (!response.ok) {
-            const errorData = await response.json();
-            setError(errorData.error || "Failed to fetch repositories");
-          } else {
-            let data = await response.json();
+    if (!open) return;
 
-            if (provider === "gitlab") {
-              data = data.map((repo: any) => ({
-                id: repo.id,
-                name: repo.name,
-                full_name: repo.path_with_namespace,
-                private: repo.visibility === 'private',
-                html_url: repo.web_url,
-              }));
-            }
+    async function fetchRepos() {
+      setLoading(true);
+      setError(null);
+      const githubIdentity = user?.identities?.find(
+        (id) => id.provider === "github",
+      );
 
-            setRepos(data);
-          }
-        } catch (err) {
-          setError(
-            err instanceof Error ? err.message : "An unknown error occurred",
+      if (!githubIdentity) {
+        setError(
+          "GitHub account not linked. Please link your account to import repositories.",
+        );
+        setLoading(false);
+        return;
+      }
+
+      let allRepos: Repo[] = [];
+      try {
+        const token = await getProviderToken("github");
+        if (!token) {
+          throw new Error(
+            "Could not retrieve authentication token. Please try linking your account again.",
           );
-        } finally {
-          setLoading(false);
         }
-      };
 
-      if ((provider === "github" && isGithubLinked) || (provider === "gitlab" && isGitlabLinked)) {
-        fetchRepos();
+        let nextUrl: string | null =
+          "https://api.github.com/user/repos?affiliation=owner,organization_member&per_page=100";
+
+        while (nextUrl) {
+          const response: Response = await fetch(nextUrl, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "X-GitHub-Api-Version": "2022-11-28",
+            },
+          });
+
+          if (!response.ok) {
+            throw new Error(
+              `Failed to fetch repositories: ${response.statusText}`,
+            );
+          }
+
+          const data: any[] = await response.json();
+          const transformedRepos: Repo[] = data.map((repo: any) => ({
+            id: repo.id.toString(),
+            name: repo.name,
+            description: repo.description,
+            private: repo.private,
+            owner: repo.owner.login,
+            url: repo.html_url,
+          }));
+          allRepos = [...allRepos, ...transformedRepos];
+
+          const linkHeader: string | null = response.headers.get("Link");
+          if (linkHeader) {
+            const match: RegExpMatchArray | null =
+              linkHeader.match(/<([^>]+)>;\s*rel="next"/);
+            nextUrl = match?.[1] ?? null;
+          } else {
+            nextUrl = null;
+          }
+        }
+
+        setRepos(allRepos);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "An unknown error occurred.",
+        );
+      } finally {
+        setLoading(false);
       }
     }
-  }, [open, provider, isGithubLinked, isGitlabLinked]);
 
-  const handleImport = async () => {
-    if (!selectedRepo) return;
-    setIsImporting(true);
-    // TODO: Implement actual import logic
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    setIsImporting(false);
-    onOpenChange(false);
-  };
+    fetchRepos();
+  }, [open, provider, user, getProviderToken]);
 
-  const ProviderIcon = provider === "github" ? Github : Gitlab;
-  const providerName = provider === "github" ? "GitHub" : "GitLab";
+  const filteredRepos = repos.filter((repo) =>
+    repo.name.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
+
+  const providerName = "GitHub";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[625px]">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <ProviderIcon className="h-5 w-5" />
+          <DialogTitle className="flex items-center">
+            <Github className="h-5 w-5 mr-2" />
             Import from {providerName}
           </DialogTitle>
           <DialogDescription>
             Select a repository to import as a Terraform module.
           </DialogDescription>
         </DialogHeader>
-
-        {!isProviderLinked ? (
-          <div className="py-8 text-center">
-            <p className="mb-4">
-              You need to link your {providerName} account first.
-            </p>
-            <Button asChild>
-              <Link href="/account">
-                <ArrowRight className="mr-2 h-4 w-4" />
-                Go to Account Settings
-              </Link>
-            </Button>
-          </div>
-        ) : (
-          <div className="py-4">
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  role="combobox"
-                  className="w-full justify-between"
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <span className="flex items-center">
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Fetching repositories...
-                    </span>
-                  ) : selectedRepo ? (
-                    selectedRepo.full_name
-                  ) : (
-                    "Select a repository..."
-                  )}
-                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search repositories..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+        <div className="space-y-2 h-[300px] overflow-y-auto pr-2">
+          {loading ? (
+            <div className="flex items-center justify-center h-full">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center h-full text-destructive">
+              <p>{error}</p>
+              {error.includes("GitHub account not linked") && (
+                <Button asChild variant="link" className="mt-2">
+                  <Link href="/account">Go to Account Settings</Link>
                 </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
-                <Command>
-                  <CommandInput placeholder="Search repository..." />
-                  <CommandList>
-                    <CommandEmpty>No repository found.</CommandEmpty>
-                    <CommandGroup>
-                      {repos.map((repo) => (
-                        <CommandItem
-                          key={repo.id}
-                          value={repo.full_name}
-                          onSelect={() => {
-                            setSelectedRepo(repo);
-                          }}
-                        >
-                          <Check
-                            className={cn(
-                              "mr-2 h-4 w-4",
-                              selectedRepo?.id === repo.id
-                                ? "opacity-100"
-                                : "opacity-0",
-                            )}
-                          />
-                          {repo.full_name}
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
-
-            {error && (
-              <div className="text-red-500 text-sm py-2 text-center">
-                {error}
+              )}
+            </div>
+          ) : filteredRepos.length > 0 ? (
+            filteredRepos.map((repo) => (
+              <div
+                key={repo.id}
+                className="flex items-center justify-between p-2 rounded-md hover:bg-muted"
+              >
+                <div>
+                  <div className="font-medium">
+                    {repo.owner}/{repo.name}
+                  </div>
+                  <div className="text-sm text-muted-foreground line-clamp-1">
+                    {repo.description}
+                  </div>
+                </div>
+                <Button variant="outline" size="sm">
+                  Import
+                </Button>
               </div>
-            )}
-          </div>
-        )}
-
-        <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={isImporting}
-          >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleImport}
-            disabled={
-              !selectedRepo || isImporting || !isProviderLinked || loading
-            }
-          >
-            {isImporting ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Importing...
-              </>
-            ) : (
-              <>
-                <GitBranch className="mr-2 h-4 w-4" />
-                Import
-              </>
-            )}
-          </Button>
-        </DialogFooter>
+            ))
+          ) : (
+            <div className="text-center text-sm text-muted-foreground pt-8">
+              <p>No repositories found.</p>
+              <p className="mt-2">
+                Missing an organization's repositories? You may need to{" "}
+                <Link
+                  href="https://github.com/settings/applications"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline text-primary"
+                >
+                  grant access on GitHub
+                </Link>
+                .
+              </p>
+            </div>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

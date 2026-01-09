@@ -391,6 +391,14 @@ export class SupabaseAuthAdapter extends AuthAdapter {
 
     return new AuthError(message, "PROVIDER_ERROR", error);
   }
+
+  async getProviderToken(provider: string): Promise<string | null> {
+    const { data } = await this.client.auth.getSession();
+    if (data.session?.provider_token) {
+      return data.session.provider_token;
+    }
+    return null;
+  }
 }
 
 // =============================================================================

@@ -51,6 +51,7 @@ interface AuthActions {
     data: Partial<Pick<User, "name" | "avatarUrl">>,
   ) => Promise<void>;
   refreshSession: () => Promise<void>;
+  getProviderToken: (provider: OAuthProvider) => Promise<string | null>;
 }
 
 type AuthContextValue = AuthState & AuthActions;
@@ -195,6 +196,17 @@ export function AuthProvider({
     setUser(newSession?.user ?? null);
   }, [adapter]);
 
+  const getProviderToken = useCallback(
+    async (provider: OAuthProvider) => {
+      if (adapter.getProviderToken) {
+        return adapter.getProviderToken(provider);
+      }
+      console.warn("getProviderToken is not implemented on the auth adapter.");
+      return null;
+    },
+    [adapter],
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -209,6 +221,7 @@ export function AuthProvider({
       updatePassword,
       updateUser,
       refreshSession,
+      getProviderToken,
     }),
     [
       user,
@@ -222,6 +235,7 @@ export function AuthProvider({
       updatePassword,
       updateUser,
       refreshSession,
+      getProviderToken,
     ],
   );
 
@@ -271,6 +285,10 @@ export function useAuth(): AuthContextValue {
         },
         refreshSession: async () => {
           throw new Error("Auth not initialized");
+        },
+        getProviderToken: async () => {
+          console.warn("Auth not initialized");
+          return null;
         },
       };
     }

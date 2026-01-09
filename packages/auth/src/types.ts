@@ -54,7 +54,7 @@ export interface SignInCredentials {
 // OAuth Types
 // =============================================================================
 
-export type OAuthProvider = "github" | "gitlab";
+export type OAuthProvider = "github";
 
 export interface OAuthSignInOptions {
   provider: OAuthProvider;
@@ -75,7 +75,6 @@ export class AuthError extends Error {
   constructor(
     message: string,
     public code: AuthErrorCode,
-    public cause?: unknown,
   ) {
     super(message);
     this.name = "AuthError";
@@ -145,13 +144,10 @@ export abstract class AuthAdapter {
   abstract updatePassword(newPassword: string): Promise<void>;
 
   // ===========================================================================
-  // Token Methods
+  // Provider Methods
   // ===========================================================================
 
-  abstract verifyToken(
-    token: string,
-    type: "email" | "recovery",
-  ): Promise<void>;
+  getProviderToken?(provider: string): Promise<string | null>;
 
   // ===========================================================================
   // Auth State Subscription
