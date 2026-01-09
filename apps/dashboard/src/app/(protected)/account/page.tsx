@@ -21,6 +21,7 @@ import {
 } from "@terrablox/ui/sidebar";
 
 import { AppSidebar } from "@/components/app-sidebar";
+import { GithubAccessDialog } from "@/components/github-access-dialog";
 
 function getGithubLinkStatus(
   user: NonNullable<ReturnType<typeof useAuth>["user"]>,
@@ -29,19 +30,22 @@ function getGithubLinkStatus(
     (id) => id.provider === "github",
   );
 
+  const githubUsernameRaw = githubIdentity?.identity_data?.user_name;
+  const githubUsername =
+    typeof githubUsernameRaw === "string" ? githubUsernameRaw : undefined;
+
   return {
     linked: !!githubIdentity,
-    githubUsername: githubIdentity?.identity_data?.user_name,
+    githubUsername,
   };
 }
-
-
 
 export default function AccountPage() {
   const { user, isAuthenticated, signInWithOAuth, refreshSession } = useAuth();
 
   const [isLinkingGithub, setIsLinkingGithub] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [githubAccessOpen, setGithubAccessOpen] = useState(false);
 
   // After returning from an OAuth redirect, force-refresh the session once so the UI updates.
   useEffect(() => {
@@ -60,9 +64,11 @@ export default function AccountPage() {
     });
   }, [isAuthenticated, refreshSession]);
 
-  const github = useMemo(() => {
-    if (!user)
-      return { linked: false, githubUsername: undefined as string | undefined };
+  const github = useMemo<{
+    linked: boolean;
+    githubUsername?: string;
+  }>(() => {
+    if (!user) return { linked: false, githubUsername: undefined };
     return getGithubLinkStatus(user);
   }, [user]);
 
@@ -72,7 +78,13 @@ export default function AccountPage() {
 
     try {
       const redirectTo = `${window.location.origin}/account`;
-      await signInWithOAuth("github", redirectTo);
+      await signInWithOAuth("github", {
+        redirectTo,
+        // Required:
+        // - read:org: list org memberships and avoid org-repo visibility issues
+        // - repo: access private repos (and some org repos)
+        scopes: ["read:org", "repo"],
+      });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to link GitHub";
@@ -80,7 +92,6 @@ export default function AccountPage() {
       setIsLinkingGithub(false);
     }
   }
-
 
   if (!isAuthenticated || !user) {
     return null;
@@ -174,7 +185,9 @@ export default function AccountPage() {
                   {github.linked ? (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       <LinkIcon className="h-3.5 w-3.5" />
-                      {github.githubUsername ?? "GitHub"}
+                      {github.githubUsername
+                        ? String(github.githubUsername)
+                        : "GitHub"}
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -184,24 +197,37 @@ export default function AccountPage() {
                   )}
                 </div>
 
-                {!github.linked ? (
+                <div className="flex flex-col gap-2">
+                  {!github.linked ? (
+                    <Button
+                      className="w-full"
+                      onClick={handleLinkGithub}
+                      disabled={isLinkingGithub}
+                    >
+                      {isLinkingGithub ? "Linking…" : "Link GitHub account"}
+                    </Button>
+                  ) : null}
+
                   <Button
                     className="w-full"
-                    onClick={handleLinkGithub}
-                    disabled={isLinkingGithub}
+                    variant="secondary"
+                    onClick={() => setGithubAccessOpen(true)}
+                    disabled={!github.linked}
                   >
-                    {isLinkingGithub ? "Linking…" : "Link GitHub account"}
+                    Manage access
                   </Button>
-                ) : null}
 
-                <p className="text-xs text-muted-foreground">
-                  Note: link detection currently uses session metadata (Supabase
-                  identities aren’t exposed in the shared auth type yet).
-                </p>
+                  <GithubAccessDialog
+                    open={githubAccessOpen}
+                    onOpenChange={setGithubAccessOpen}
+                  />
+                </div>
+
+                {linkError ? (
+                  <p className="text-xs text-destructive">{linkError}</p>
+                ) : null}
               </CardContent>
             </Card>
-
-
           </div>
         </main>
       </SidebarInset>

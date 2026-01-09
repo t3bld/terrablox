@@ -75,7 +75,10 @@ export default function SignUpPage() {
     setOauthSubmitting(provider);
     try {
       const redirectTo = `${window.location.origin}${next}`;
-      await signInWithOAuth(provider, redirectTo);
+      await signInWithOAuth(provider, {
+        redirectTo,
+        scopes: ["read:org", "repo"],
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign in");
       setOauthSubmitting(null);

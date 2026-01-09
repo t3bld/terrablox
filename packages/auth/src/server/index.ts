@@ -80,7 +80,14 @@ export interface ServerAuth {
    *
    * Implementations MUST NOT throw for anonymous visitors.
    */
-  isAuthenticated: (req: Request, res: { cookies: Response["cookies"] }) => Promise<boolean>;
+  isAuthenticated: (
+    req: Request,
+    res: {
+      cookies: {
+        set: (name: string, value: string, options?: Record<string, unknown>) => void;
+      };
+    },
+  ) => Promise<boolean>;
 }
 
 export interface WithAuthOptions {

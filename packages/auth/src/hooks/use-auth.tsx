@@ -42,7 +42,7 @@ interface AuthActions {
   ) => Promise<void>;
   signInWithOAuth: (
     provider: OAuthProvider,
-    redirectTo?: string,
+    options?: { redirectTo?: string; scopes?: string[] },
   ) => Promise<void>;
   signOut: (options?: { onSuccess?: () => void }) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
@@ -152,8 +152,15 @@ export function AuthProvider({
   );
 
   const signInWithOAuth = useCallback(
-    async (provider: OAuthProvider, redirectTo?: string) => {
-      await adapter.signInWithOAuth({ provider, redirectTo });
+    async (
+      provider: OAuthProvider,
+      options?: { redirectTo?: string; scopes?: string[] },
+    ) => {
+      await adapter.signInWithOAuth({
+        provider,
+        redirectTo: options?.redirectTo,
+        scopes: options?.scopes,
+      });
     },
     [adapter],
   );

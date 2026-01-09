@@ -1,9 +1,5 @@
 "use client";
 
-import { Github, Loader2, Search } from "lucide-react";
-import Link from "next/link";
-import { useEffect, useState } from "react";
-
 import { useAuth } from "@terrablox/auth";
 import { Button } from "@terrablox/ui/button";
 import {
@@ -14,12 +10,26 @@ import {
   DialogTitle,
 } from "@terrablox/ui/dialog";
 import { Input } from "@terrablox/ui/input";
+import { Github, Loader2, Search } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
 interface ImportModuleDialogProps {
   provider: "github";
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
+
+type GithubRepoApiResponse = {
+  id: number;
+  name: string;
+  description: string | null;
+  private: boolean;
+  html_url: string;
+  owner: {
+    login: string;
+  };
+};
 
 interface Repo {
   id: string;
@@ -30,12 +40,23 @@ interface Repo {
   url: string;
 }
 
+function toRepo(r: GithubRepoApiResponse): Repo {
+  return {
+    id: String(r.id),
+    name: r.name,
+    description: r.description ?? "",
+    private: r.private,
+    owner: r.owner.login,
+    url: r.html_url,
+  };
+}
+
 export function ImportModuleDialog({
   provider,
   open,
   onOpenChange,
 }: ImportModuleDialogProps) {
-  const { user, getProviderToken } = useAuth();
+  const { user } = useAuth();
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,6 +68,7 @@ export function ImportModuleDialog({
     async function fetchRepos() {
       setLoading(true);
       setError(null);
+
       const githubIdentity = user?.identities?.find(
         (id) => id.provider === "github",
       );
@@ -59,68 +81,42 @@ export function ImportModuleDialog({
         return;
       }
 
-      let allRepos: Repo[] = [];
       try {
-        const token = await getProviderToken("github");
-        if (!token) {
-          throw new Error(
-            "Could not retrieve authentication token. Please try linking your account again.",
-          );
+        const response = await fetch("/api/github/repos", {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
+
+        const body: unknown = await response.json();
+
+        if (!response.ok) {
+          const maybeObj = body as { error?: string; scopes?: string };
+          const scopesInfo = maybeObj?.scopes
+            ? ` (token scopes: ${maybeObj.scopes})`
+            : "";
+          setError(`${maybeObj?.error ?? "Failed to fetch repositories"}${scopesInfo}`);
+          setRepos([]);
+          return;
         }
 
-        let nextUrl: string | null =
-          "https://api.github.com/user/repos?affiliation=owner,organization_member&per_page=100";
-
-        while (nextUrl) {
-          const response: Response = await fetch(nextUrl, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "X-GitHub-Api-Version": "2022-11-28",
-            },
-          });
-
-          if (!response.ok) {
-            throw new Error(
-              `Failed to fetch repositories: ${response.statusText}`,
-            );
-          }
-
-          const data: any[] = await response.json();
-          const transformedRepos: Repo[] = data.map((repo: any) => ({
-            id: repo.id.toString(),
-            name: repo.name,
-            description: repo.description,
-            private: repo.private,
-            owner: repo.owner.login,
-            url: repo.html_url,
-          }));
-          allRepos = [...allRepos, ...transformedRepos];
-
-          const linkHeader: string | null = response.headers.get("Link");
-          if (linkHeader) {
-            const match: RegExpMatchArray | null =
-              linkHeader.match(/<([^>]+)>;\s*rel="next"/);
-            nextUrl = match?.[1] ?? null;
-          } else {
-            nextUrl = null;
-          }
-        }
-
-        setRepos(allRepos);
+        const data = Array.isArray(body) ? (body as GithubRepoApiResponse[]) : [];
+        setRepos(data.map(toRepo));
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "An unknown error occurred.",
-        );
+        setError(err instanceof Error ? err.message : "An unknown error occurred.");
       } finally {
         setLoading(false);
       }
     }
 
     fetchRepos();
-  }, [open, provider, user, getProviderToken]);
+  }, [open, user]);
 
   const filteredRepos = repos.filter((repo) =>
-    repo.name.toLowerCase().includes(searchQuery.toLowerCase()),
+    `${repo.owner}/${repo.name}`
+      .toLowerCase()
+      .includes(searchQuery.toLowerCase()),
   );
 
   const providerName = "GitHub";
@@ -153,12 +149,16 @@ export function ImportModuleDialog({
             </div>
           ) : error ? (
             <div className="flex flex-col items-center justify-center h-full text-destructive">
-              <p>{error}</p>
-              {error.includes("GitHub account not linked") && (
+              <p className="text-center">{error}</p>
+              {error.includes("GitHub provider token not found") && (
                 <Button asChild variant="link" className="mt-2">
                   <Link href="/account">Go to Account Settings</Link>
                 </Button>
               )}
+              <p className="mt-2 text-center text-xs text-muted-foreground">
+                If organization repositories are missing, ensure the GitHub app
+                has org access granted in GitHub settings.
+              </p>
             </div>
           ) : filteredRepos.length > 0 ? (
             filteredRepos.map((repo) => (
@@ -183,16 +183,8 @@ export function ImportModuleDialog({
             <div className="text-center text-sm text-muted-foreground pt-8">
               <p>No repositories found.</p>
               <p className="mt-2">
-                Missing an organization's repositories? You may need to{" "}
-                <Link
-                  href="https://github.com/settings/applications"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline text-primary"
-                >
-                  grant access on GitHub
-                </Link>
-                .
+                Missing org repos? Open Account → GitHub and grant organization
+                access.
               </p>
             </div>
           )}
@@ -201,4 +193,3 @@ export function ImportModuleDialog({
     </Dialog>
   );
 }
-

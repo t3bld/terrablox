@@ -336,45 +336,32 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     const message = error.message;
 
     if (message.includes("Invalid login credentials")) {
-      return new AuthError(
-        "Invalid email or password",
-        "INVALID_CREDENTIALS",
-        error,
-      );
+      return new AuthError("Invalid email or password", "INVALID_CREDENTIALS");
     }
 
     if (message.includes("User already registered")) {
       return new AuthError(
         "An account with this email already exists",
         "USER_ALREADY_EXISTS",
-        error,
       );
     }
 
     if (message.includes("Email not confirmed")) {
-      return new AuthError(
-        "Please verify your email address",
-        "EMAIL_NOT_VERIFIED",
-        error,
-      );
+      return new AuthError("Please verify your email address", "EMAIL_NOT_VERIFIED");
     }
 
     if (
       message.includes("JWT expired") ||
       message.includes("session_not_found")
     ) {
-      return new AuthError(
-        "Your session has expired",
-        "SESSION_EXPIRED",
-        error,
-      );
+      return new AuthError("Your session has expired", "SESSION_EXPIRED");
     }
 
     if (
       message.includes("invalid_token") ||
       message.includes("Invalid token")
     ) {
-      return new AuthError("Invalid or expired token", "INVALID_TOKEN", error);
+      return new AuthError("Invalid or expired token", "INVALID_TOKEN");
     }
 
     if (
@@ -385,11 +372,10 @@ export class SupabaseAuthAdapter extends AuthAdapter {
       return new AuthError(
         "Network error. Please check your connection.",
         "NETWORK_ERROR",
-        error,
       );
     }
 
-    return new AuthError(message, "PROVIDER_ERROR", error);
+    return new AuthError(message, "PROVIDER_ERROR");
   }
 
   async getProviderToken(provider: string): Promise<string | null> {
@@ -405,6 +391,10 @@ export class SupabaseAuthAdapter extends AuthAdapter {
 // Supabase Server Auth Implementation
 // =============================================================================
 
+type NextResponseCookies = {
+  set: (name: string, value: string, options?: CookieOptions) => void;
+};
+
 export function createSupabaseServerAuth(): ServerAuth {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -414,7 +404,10 @@ export function createSupabaseServerAuth(): ServerAuth {
   }
 
   return {
-    isAuthenticated: async (req: Request, res: { cookies: Response["cookies"] }) => {
+    isAuthenticated: async (
+      req: Request,
+      res: { cookies: NextResponseCookies },
+    ) => {
       const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
         cookies: {
           getAll() {
