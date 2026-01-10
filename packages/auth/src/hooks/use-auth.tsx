@@ -22,11 +22,11 @@ import {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({
-  adapter,
-  children,
-  loadingComponent,
-  onAuthStateChange,
-}: AuthProviderProps) {
+                               adapter,
+                               children,
+                               loadingComponent,
+                               onAuthStateChange,
+                             }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -57,13 +57,13 @@ export function AuthProvider({
 
     if (adapter.onAuthStateChange) {
       unsubscribe = adapter.onAuthStateChange(
-        (_event: AuthStateEvent, newSession: Session | null) => {
-          if (mounted) {
-            setSession(newSession);
-            setUser(newSession?.user ?? null);
-            onAuthStateChange?.(newSession?.user ?? null);
-          }
-        },
+          (_event: AuthStateEvent, newSession: Session | null) => {
+            if (mounted) {
+              setSession(newSession);
+              setUser(newSession?.user ?? null);
+              onAuthStateChange?.(newSession?.user ?? null);
+            }
+          },
       );
     }
 
@@ -74,75 +74,75 @@ export function AuthProvider({
   }, [adapter, onAuthStateChange]);
 
   const signUp = useCallback(
-    async (
-      credentials: SignUpCredentials,
-      options?: { onSuccess?: () => void },
-    ) => {
-      const result = await adapter.signUp(credentials);
-      setUser(result.user);
-      setSession(result.session);
-      options?.onSuccess?.();
-    },
-    [adapter],
+      async (
+          credentials: SignUpCredentials,
+          options?: { onSuccess?: () => void },
+      ) => {
+        const result = await adapter.signUp(credentials);
+        setUser(result.user);
+        setSession(result.session);
+        options?.onSuccess?.();
+      },
+      [adapter],
   );
 
   const signIn = useCallback(
-    async (
-      credentials: SignInCredentials,
-      options?: { onSuccess?: () => void },
-    ) => {
-      const result = await adapter.signIn(credentials);
-      setUser(result.user);
-      setSession(result.session);
-      options?.onSuccess?.();
-    },
-    [adapter],
+      async (
+          credentials: SignInCredentials,
+          options?: { onSuccess?: () => void },
+      ) => {
+        const result = await adapter.signIn(credentials);
+        setUser(result.user);
+        setSession(result.session);
+        options?.onSuccess?.();
+      },
+      [adapter],
   );
 
   const signInWithOAuth = useCallback(
-    async (
-      provider: OAuthProvider,
-      options?: { redirectTo?: string; scopes?: string[] },
-    ) => {
-      await adapter.signInWithOAuth({
-        provider,
-        redirectTo: options?.redirectTo,
-        scopes: options?.scopes,
-      });
-    },
-    [adapter],
+      async (
+          provider: OAuthProvider,
+          options?: { redirectTo?: string; scopes?: string[] },
+      ) => {
+        await adapter.signInWithOAuth({
+          provider,
+          redirectTo: options?.redirectTo,
+          scopes: options?.scopes,
+        });
+      },
+      [adapter],
   );
 
   const signOut = useCallback(
-    async (options?: { onSuccess?: () => void }) => {
-      await adapter.signOut();
-      setUser(null);
-      setSession(null);
-      options?.onSuccess?.();
-    },
-    [adapter],
+      async (options?: { onSuccess?: () => void }) => {
+        await adapter.signOut();
+        setUser(null);
+        setSession(null);
+        options?.onSuccess?.();
+      },
+      [adapter],
   );
 
   const resetPassword = useCallback(
-    async (email: string) => {
-      await adapter.resetPassword(email);
-    },
-    [adapter],
+      async (email: string) => {
+        await adapter.resetPassword(email);
+      },
+      [adapter],
   );
 
   const updatePassword = useCallback(
-    async (newPassword: string) => {
-      await adapter.updatePassword(newPassword);
-    },
-    [adapter],
+      async (newPassword: string) => {
+        await adapter.updatePassword(newPassword);
+      },
+      [adapter],
   );
 
   const updateUser = useCallback(
-    async (data: Partial<Pick<User, "name" | "avatarUrl">>) => {
-      const updatedUser = await adapter.updateUser(data);
-      setUser(updatedUser);
-    },
-    [adapter],
+      async (data: Partial<Pick<User, "name" | "avatarUrl">>) => {
+        const updatedUser = await adapter.updateUser(data);
+        setUser(updatedUser);
+      },
+      [adapter],
   );
 
   const refreshSession = useCallback(async () => {
@@ -152,46 +152,46 @@ export function AuthProvider({
   }, [adapter]);
 
   const getProviderToken = useCallback(
-    async (provider: OAuthProvider) => {
-      if (adapter.getProviderToken) {
-        return adapter.getProviderToken(provider);
-      }
-      console.warn("getProviderToken is not implemented on the auth adapter.");
-      return null;
-    },
-    [adapter],
+      async (provider: OAuthProvider) => {
+        if (adapter.getProviderToken) {
+          return adapter.getProviderToken(provider);
+        }
+        console.warn("getProviderToken is not implemented on the auth adapter.");
+        return null;
+      },
+      [adapter],
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({
-      user,
-      session,
-      isLoading,
-      isAuthenticated: !!user,
-      signUp,
-      signIn,
-      signInWithOAuth,
-      signOut,
-      resetPassword,
-      updatePassword,
-      updateUser,
-      refreshSession,
-      getProviderToken,
-    }),
-    [
-      user,
-      session,
-      isLoading,
-      signUp,
-      signIn,
-      signInWithOAuth,
-      signOut,
-      resetPassword,
-      updatePassword,
-      updateUser,
-      refreshSession,
-      getProviderToken,
-    ],
+      () => ({
+        user,
+        session,
+        isLoading,
+        isAuthenticated: !!user,
+        signUp,
+        signIn,
+        signInWithOAuth,
+        signOut,
+        resetPassword,
+        updatePassword,
+        updateUser,
+        refreshSession,
+        getProviderToken,
+      }),
+      [
+        user,
+        session,
+        isLoading,
+        signUp,
+        signIn,
+        signInWithOAuth,
+        signOut,
+        resetPassword,
+        updatePassword,
+        updateUser,
+        refreshSession,
+        getProviderToken,
+      ],
   );
 
   if (isLoading && loadingComponent) {
@@ -245,7 +245,7 @@ export function useAuth(): AuthContextValue {
     }
 
     throw new Error(
-      "useAuth must be used within an AuthProvider. Wrap your app in <AuthProvider adapter={...}>.",
+        "useAuth must be used within an AuthProvider. Wrap your app in <AuthProvider adapter={...}>.",
     );
   }
 

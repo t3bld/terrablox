@@ -1,9 +1,10 @@
 "use client";
 
-import { AuthProvider } from "@terrablox/auth";
+
 import { SupabaseAuthAdapter } from "@terrablox/auth/adapters/supabase";
 import type React from "react";
 import { useMemo } from "react";
+import {AuthProvider} from "@terrablox/auth/hooks";
 
 interface ProvidersProps {
   children: React.ReactNode;

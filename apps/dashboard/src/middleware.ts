@@ -1,9 +1,6 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { createSupabaseServerAuth } from "@terrablox/auth/adapters/supabase";
-
-// This file can be removed, but is kept for demonstration purposes.
-// It defines the routing configuration for the middleware.
 import {
   buildNextParam,
   defaultAuthRouting,

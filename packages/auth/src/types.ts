@@ -1,4 +1,5 @@
-import { createContext, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import type { CookieOptions } from "@supabase/ssr";
 
 export interface UserIdentity {
   provider: string;
@@ -84,25 +85,6 @@ export interface SupabaseAuthConfig {
   serviceRoleKey?: string;
 }
 
-export abstract class AuthAdapter {
-  abstract signUp(credentials: SignUpCredentials): Promise<AuthResult>;
-  abstract signIn(credentials: SignInCredentials): Promise<AuthResult>;
-  abstract signInWithOAuth(options: OAuthSignInOptions): Promise<void>;
-  abstract signOut(): Promise<void>;
-  abstract getSession(): Promise<Session | null>;
-  abstract refreshSession(): Promise<Session | null>;
-  abstract getUser(): Promise<User | null>;
-  abstract updateUser(
-    data: Partial<Pick<User, "name" | "avatarUrl" | "metadata">>,
-  ): Promise<User>;
-  abstract resetPassword(email: string, redirectTo?: string): Promise<void>;
-  abstract updatePassword(newPassword: string): Promise<void>;
-  getProviderToken?(provider: string): Promise<string | null>;
-  onAuthStateChange?(
-    callback: (event: AuthStateEvent, session: Session | null) => void,
-  ): () => void;
-}
-
 export type AuthStateEvent =
   | "SIGNED_IN"
   | "SIGNED_OUT"
@@ -162,4 +144,27 @@ export interface AuthProviderProps {
   children: ReactNode;
   loadingComponent?: ReactNode;
   onAuthStateChange?: (user: User | null) => void;
+}
+
+export type NextResponseCookies = {
+  set: (name: string, value: string, options?: CookieOptions) => void;
+};
+
+export abstract class AuthAdapter {
+  abstract signUp(credentials: SignUpCredentials): Promise<AuthResult>;
+  abstract signIn(credentials: SignInCredentials): Promise<AuthResult>;
+  abstract signInWithOAuth(options: OAuthSignInOptions): Promise<void>;
+  abstract signOut(): Promise<void>;
+  abstract getSession(): Promise<Session | null>;
+  abstract refreshSession(): Promise<Session | null>;
+  abstract getUser(): Promise<User | null>;
+  abstract updateUser(
+      data: Partial<Pick<User, "name" | "avatarUrl" | "metadata">>,
+  ): Promise<User>;
+  abstract resetPassword(email: string, redirectTo?: string): Promise<void>;
+  abstract updatePassword(newPassword: string): Promise<void>;
+  abstract getProviderToken(provider: string): Promise<string | null>;
+  abstract onAuthStateChange(
+      callback: (event: AuthStateEvent, session: Session | null) => void,
+  ): () => void;
 }

@@ -3,26 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "exports": {
-    ".": {
-      "types": "./src/index.tsx",
-      "default": "./src/index.tsx"
-    },
-    "./server": {
-      "types": "./src/server/server-auth.ts",
-      "default": "./src/server/server-auth.ts"
-    },
-    "./hooks": {
-      "types": "./src/hooks/use-auth.tsx",
-      "default": "./src/hooks/use-auth.tsx"
-    },
-    "./types": {
-      "types": "./src/types.ts",
-      "default": "./src/types.ts"
-    },
-    "./adapters/supabase": {
-      "types": "./src/adapters/supabase.ts",
-      "default": "./src/adapters/supabase.ts"
-    }
+    ".": "./src/index.tsx",
+    "./hooks": "./src/hooks/use-auth.tsx",
+    "./types": "./src/types.ts",
+    "./adapters/supabase": "./src/adapters/supabase.ts",
+    "./auth-provider": "./src/auth-provider.tsx"
   },
   "scripts": {
     "lint": "biome check .",

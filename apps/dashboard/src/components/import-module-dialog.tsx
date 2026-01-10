@@ -1,6 +1,5 @@
 "use client";
 
-import { useAuth } from "@terrablox/auth";
 import type { GitProviderId, GitRepo } from "@terrablox/git-import";
 import { Button } from "@terrablox/ui/button";
 import {
@@ -14,6 +13,7 @@ import { Input } from "@terrablox/ui/input";
 import { Github, Loader2, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import {useAuth} from "@terrablox/auth/hooks";
 
 interface ImportModuleDialogProps {
   provider: GitProviderId;

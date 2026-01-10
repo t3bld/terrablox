@@ -2,8 +2,6 @@
 
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
-
-import { useAuth } from "@terrablox/auth";
 import type { Project } from "@terrablox/database";
 import { Button } from "@terrablox/ui/button";
 import {
@@ -23,6 +21,7 @@ import { Skeleton } from "@terrablox/ui/skeleton";
 
 import { getProjects } from "@/actions/project-actions";
 import { AppSidebar } from "@/components/app-sidebar";
+import {useAuth} from "@terrablox/auth/hooks";
 
 export default function ProjectsPage() {
   const { user, isAuthenticated } = useAuth();

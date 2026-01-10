@@ -1,12 +1,14 @@
 "use client";
 
 // Prevent static prerendering for auth pages
+import {useAuth} from "@terrablox/auth/hooks";
+
 export const dynamic = "force-dynamic";
 
 import Link from "next/link";
 import { Suspense, useState } from "react";
 
-import { useAuth } from "@terrablox/auth";
+
 import { Alert, AlertDescription } from "@terrablox/ui/alert";
 import { Button } from "@terrablox/ui/button";
 import {

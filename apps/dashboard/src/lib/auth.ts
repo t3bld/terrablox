@@ -1,4 +1,5 @@
-import { type AuthAdapter, createAuth } from "@terrablox/auth";
+import { createAuth } from "@terrablox/auth";
+import {AuthAdapter} from "@terrablox/auth/types";
 
 let authAdapter: AuthAdapter | null = null;
 

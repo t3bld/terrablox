@@ -4,7 +4,6 @@ import type {
   SupabaseClient,
 } from "@supabase/supabase-js";
 import {
-  AuthAdapter,
   AuthError,
   ServerAuth,
   type AuthResult,
@@ -15,6 +14,7 @@ import {
   type SignUpCredentials,
   type SupabaseAuthConfig,
   type User,
+  NextResponseCookies, AuthAdapter,
 } from "../types";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 
@@ -199,9 +199,13 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     }
   }
 
-  // ===========================================================================
-  // Auth State Listener
-  // ===========================================================================
+  async getProviderToken(provider: string): Promise<string | null> {
+    const { data } = await this.client.auth.getSession();
+    if (data.session?.provider_token) {
+      return data.session.provider_token;
+    }
+    return null;
+  }
 
   onAuthStateChange(
     callback: (event: AuthStateEvent, session: Session | null) => void,
@@ -215,14 +219,6 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     return () => {
       data.subscription.unsubscribe();
     };
-  }
-
-  // ===========================================================================
-  // Utility Methods
-  // ===========================================================================
-
-  getClient(): SupabaseClient {
-    return this.client;
   }
 
   // ===========================================================================
@@ -343,23 +339,7 @@ export class SupabaseAuthAdapter extends AuthAdapter {
 
     return new AuthError(message, "PROVIDER_ERROR");
   }
-
-  async getProviderToken(provider: string): Promise<string | null> {
-    const { data } = await this.client.auth.getSession();
-    if (data.session?.provider_token) {
-      return data.session.provider_token;
-    }
-    return null;
-  }
 }
-
-// =============================================================================
-// Supabase Server Auth Implementation
-// =============================================================================
-
-type NextResponseCookies = {
-  set: (name: string, value: string, options?: CookieOptions) => void;
-};
 
 export function createSupabaseServerAuth(): ServerAuth {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -377,8 +357,6 @@ export function createSupabaseServerAuth(): ServerAuth {
       const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
         cookies: {
           getAll() {
-            // Avoid a hard dependency on Next.js types. In Next middleware, `req` is a NextRequest
-            // and exposes `cookies.getAll()`. In other runtimes, implement a compatible shape.
             const maybeReq = req as unknown as {
               cookies?: {
                 getAll?: () => Array<{ name: string; value: string }>;
