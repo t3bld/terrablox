@@ -1,5 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
-import { cookies }from "next/headers";
+import { cookies } from "next/headers";
 
 /**
  * Retrieves the Git provider token from the user's session (server-side).
@@ -35,4 +35,3 @@ export async function getProviderTokenForRequest(
 
   return null;
 }
-

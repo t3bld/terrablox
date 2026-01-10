@@ -39,9 +39,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [oauthSubmitting, setOauthSubmitting] = useState<
-    "github" | null
-  >(null);
+  const [oauthSubmitting, setOauthSubmitting] = useState<"github" | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

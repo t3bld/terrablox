@@ -13,4 +13,3 @@ export type GitProviderId = "github";
 export interface IGitProvider {
   getRepos(token: string): Promise<GitRepo[]>;
 }
-

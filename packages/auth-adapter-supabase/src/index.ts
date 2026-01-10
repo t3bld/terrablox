@@ -347,7 +347,10 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     }
 
     if (message.includes("Email not confirmed")) {
-      return new AuthError("Please verify your email address", "EMAIL_NOT_VERIFIED");
+      return new AuthError(
+        "Please verify your email address",
+        "EMAIL_NOT_VERIFIED",
+      );
     }
 
     if (
@@ -414,7 +417,9 @@ export function createSupabaseServerAuth(): ServerAuth {
             // Avoid a hard dependency on Next.js types. In Next middleware, `req` is a NextRequest
             // and exposes `cookies.getAll()`. In other runtimes, implement a compatible shape.
             const maybeReq = req as unknown as {
-              cookies?: { getAll?: () => Array<{ name: string; value: string }> };
+              cookies?: {
+                getAll?: () => Array<{ name: string; value: string }>;
+              };
             };
             return maybeReq.cookies?.getAll?.() ?? [];
           },

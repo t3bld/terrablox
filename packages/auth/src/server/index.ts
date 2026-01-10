@@ -84,7 +84,11 @@ export interface ServerAuth {
     req: Request,
     res: {
       cookies: {
-        set: (name: string, value: string, options?: Record<string, unknown>) => void;
+        set: (
+          name: string,
+          value: string,
+          options?: Record<string, unknown>,
+        ) => void;
       };
     },
   ) => Promise<boolean>;

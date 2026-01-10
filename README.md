@@ -16,9 +16,10 @@
   </p>
 </p>
 
-## ❤️ About TerraBlox
-
 ## ✨ Key Features
+
+- **Terraform Analysis**: Get a clear understanding of the infrastructure (WIP)
+- **Low-Code Builder**: Visually construct and configure cloud infrastructure (SOON)
 
 ## ⚙️ Tech Stack
 
@@ -30,13 +31,11 @@
 - [shadcn/ui](https://ui.shadcn.com/) - UI Components
 - [Prisma](https://prisma.io/) - ORM
 
-### Hosting
-
 - [Vercel](https://vercel.com/) – Hosting
 
-### Services
 
-For all service integrations you can implement your own adapters or use the provided ones.
+
+For all service integrations you can implement your own adapters or use the provided default ones.
 
 - [Supabase](https://supabase.com/) – Database & Auth
 

@@ -4,7 +4,10 @@ const REPOS_PER_PAGE = 100;
 const MAX_PAGINATION_PAGES = 10;
 
 export class GithubApiError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
     super(message);
     this.name = "GithubApiError";
   }

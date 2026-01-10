@@ -57,4 +57,3 @@ export const defaultAuthRouting: AuthRoutingConfig = {
     pathname.startsWith("/modules") ||
     pathname.startsWith("/account"),
 };
-

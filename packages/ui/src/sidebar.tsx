@@ -4,7 +4,6 @@ import { Slot } from "@radix-ui/react-slot";
 import { type VariantProps, cva } from "class-variance-authority";
 import { PanelLeft } from "lucide-react";
 import * as React from "react";
-
 import { Button } from "./button";
 import { useIsMobile } from "./hooks/use-mobile";
 import { Input } from "./input";

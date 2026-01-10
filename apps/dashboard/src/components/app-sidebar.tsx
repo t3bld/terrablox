@@ -21,13 +21,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@terrablox/ui/sidebar";
-import {
-  Boxes,
-  ChevronUp,
-  FolderKanban,
-  LogOut,
-  User2,
-} from "lucide-react";
+import { Boxes, ChevronUp, FolderKanban, LogOut, User2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
