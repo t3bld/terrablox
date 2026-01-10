@@ -26,9 +26,6 @@ importers:
       '@terrablox/auth':
         specifier: workspace:*
         version: link:../../packages/auth
-      '@terrablox/auth-adapter-supabase':
-        specifier: workspace:*
-        version: link:../../packages/auth-adapter-supabase
       '@terrablox/database':
         specifier: workspace:*
         version: link:../../packages/database
@@ -126,6 +123,13 @@ importers:
         version: 5.9.3
 
   packages/auth:
+    dependencies:
+      '@supabase/ssr':
+        specifier: ^0.6.0
+        version: 0.6.1(@supabase/supabase-js@2.90.1)
+      '@supabase/supabase-js':
+        specifier: ^2.39.0
+        version: 2.90.1
     devDependencies:
       '@biomejs/biome':
         specifier: ^2.3.11
@@ -142,28 +146,6 @@ importers:
       react:
         specifier: ^18.2.0
         version: 18.3.1
-      typescript:
-        specifier: ^5.3.3
-        version: 5.9.3
-
-  packages/auth-adapter-supabase:
-    dependencies:
-      '@supabase/ssr':
-        specifier: ^0.6.0
-        version: 0.6.1(@supabase/supabase-js@2.90.1)
-      '@supabase/supabase-js':
-        specifier: ^2.39.0
-        version: 2.90.1
-      '@terrablox/auth':
-        specifier: workspace:*
-        version: link:../auth
-    devDependencies:
-      '@biomejs/biome':
-        specifier: ^2.3.11
-        version: 2.3.11
-      '@terrablox/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
       typescript:
         specifier: ^5.3.3
         version: 5.9.3

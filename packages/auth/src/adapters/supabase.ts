@@ -14,9 +14,9 @@ import {
   type SignUpCredentials,
   type SupabaseAuthConfig,
   type User,
-} from "@terrablox/auth";
+} from "../types";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
-import type { ServerAuth } from "@terrablox/auth/server";
+import type { ServerAuth } from "@/server";
 
 // =============================================================================
 // Supabase Auth Adapter

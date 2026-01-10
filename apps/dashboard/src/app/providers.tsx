@@ -1,7 +1,7 @@
 "use client";
 
 import { AuthProvider } from "@terrablox/auth";
-import { SupabaseAuthAdapter } from "@terrablox/auth-adapter-supabase";
+import { SupabaseAuthAdapter } from "@terrablox/auth/adapters/supabase";
 import type React from "react";
 import { useMemo } from "react";
 

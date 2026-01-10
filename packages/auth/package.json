@@ -29,7 +29,10 @@
     "format": "biome format --write .",
     "type-check": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@supabase/ssr": "^0.6.0",
+    "@supabase/supabase-js": "^2.39.0"
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",
     "@terrablox/tsconfig": "workspace:*",

@@ -1,9 +1,5 @@
 import type { AuthAdapter, Session, User } from "../types";
 
-// =============================================================================
-// Server Auth Context
-// =============================================================================
-
 export function createServerAuth(adapter: AuthAdapter) {
   return {
     getSession: async (): Promise<Session | null> => {
@@ -37,10 +33,6 @@ export function createServerAuth(adapter: AuthAdapter) {
   };
 }
 
-// =============================================================================
-// Auth Errors
-// =============================================================================
-
 export class AuthRequiredError extends Error {
   public readonly status = 401;
 
@@ -63,23 +55,7 @@ export class ForbiddenError extends Error {
 // Middleware Helpers
 // =============================================================================
 
-/**
- * Server-side auth contract used by middleware.
- *
- * Why this exists:
- * - Middleware runs on the server/edge and can only see cookies/headers.
- * - We want the dashboard to be open-source friendly and not hard depend on a specific auth provider.
- *
- * Implementations should:
- * - Determine whether the incoming request is authenticated (usually via cookies).
- * - Optionally refresh/rotate cookies on the outgoing response.
- */
 export interface ServerAuth {
-  /**
-   * Returns true if the request represents an authenticated user.
-   *
-   * Implementations MUST NOT throw for anonymous visitors.
-   */
   isAuthenticated: (
     req: Request,
     res: {

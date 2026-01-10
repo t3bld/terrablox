@@ -9,7 +9,6 @@ import {
   useMemo,
   useState,
 } from "react";
-
 import type {
   AuthAdapter,
   AuthStateEvent,
@@ -19,10 +18,6 @@ import type {
   SignUpCredentials,
   User,
 } from "../types";
-
-// =============================================================================
-// Auth Context Types
-// =============================================================================
 
 interface AuthState {
   user: User | null;
@@ -56,15 +51,7 @@ interface AuthActions {
 
 type AuthContextValue = AuthState & AuthActions;
 
-// =============================================================================
-// Auth Context
-// =============================================================================
-
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-// =============================================================================
-// Auth Provider
-// =============================================================================
 
 interface AuthProviderProps {
   adapter: AuthAdapter;
@@ -253,10 +240,6 @@ export function AuthProvider({
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
-// =============================================================================
-// Hook useAuth
-// =============================================================================
-
 export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
 
@@ -308,18 +291,10 @@ export function useAuth(): AuthContextValue {
   return context;
 }
 
-// =============================================================================
-// Hook useUser
-// =============================================================================
-
 export function useUser(): User | null {
   const { user } = useAuth();
   return user;
 }
-
-// =============================================================================
-// Hook useSession
-// =============================================================================
 
 export function useSession(): Session | null {
   const { session } = useAuth();
