@@ -6,6 +6,7 @@ import type {
 import {
   AuthAdapter,
   AuthError,
+  ServerAuth,
   type AuthResult,
   type AuthStateEvent,
   type OAuthSignInOptions,
@@ -16,11 +17,6 @@ import {
   type User,
 } from "../types";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
-import type { ServerAuth } from "@/server";
-
-// =============================================================================
-// Supabase Auth Adapter
-// =============================================================================
 
 export class SupabaseAuthAdapter extends AuthAdapter {
   private client: SupabaseClient;
@@ -29,10 +25,6 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     super();
     this.client = createBrowserClient(config.url, config.anonKey);
   }
-
-  // ===========================================================================
-  // Authentication Methods
-  // ===========================================================================
 
   async signUp(credentials: SignUpCredentials): Promise<AuthResult> {
     const { data, error } = await this.client.auth.signUp({
@@ -119,10 +111,6 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     }
   }
 
-  // ===========================================================================
-  // Session Methods
-  // ===========================================================================
-
   async getSession(): Promise<Session | null> {
     const { data, error } = await this.client.auth.getSession();
 
@@ -141,7 +129,6 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     const { data, error } = await this.client.auth.refreshSession();
 
     if (error) {
-      // Don't throw on refresh failure, just return null
       console.warn("Session refresh failed:", error.message);
       return null;
     }
@@ -153,15 +140,10 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     return this.mapSession(data.session);
   }
 
-  // ===========================================================================
-  // User Methods
-  // ===========================================================================
-
   async getUser(): Promise<User | null> {
     const { data, error } = await this.client.auth.getUser();
 
     if (error) {
-      // Don't throw if user is simply not authenticated
       if (error.message.includes("Not authenticated")) {
         return null;
       }
@@ -193,10 +175,6 @@ export class SupabaseAuthAdapter extends AuthAdapter {
     return this.mapUser(result.user);
   }
 
-  // ===========================================================================
-  // Password Methods
-  // ===========================================================================
-
   async resetPassword(email: string, redirectTo?: string): Promise<void> {
     const { error } = await this.client.auth.resetPasswordForEmail(email, {
       redirectTo:
@@ -214,21 +192,6 @@ export class SupabaseAuthAdapter extends AuthAdapter {
   async updatePassword(newPassword: string): Promise<void> {
     const { error } = await this.client.auth.updateUser({
       password: newPassword,
-    });
-
-    if (error) {
-      throw this.mapError(error);
-    }
-  }
-
-  // ===========================================================================
-  // Token Methods
-  // ===========================================================================
-
-  async verifyToken(token: string, type: "email" | "recovery"): Promise<void> {
-    const { error } = await this.client.auth.verifyOtp({
-      token_hash: token,
-      type: type === "email" ? "email" : "recovery",
     });
 
     if (error) {

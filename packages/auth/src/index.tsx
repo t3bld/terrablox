@@ -1,7 +1,3 @@
-// =============================================================================
-// Type Exports
-// =============================================================================
-
 export type {
   AuthAdapterConfig,
   AuthErrorCode,
@@ -36,14 +32,12 @@ export { AuthProvider, useAuth, useSession, useUser } from "./hooks/use-auth";
 // =============================================================================
 
 export {
-  AuthRequiredError,
   createServerAuth,
   extractBearerToken,
-  ForbiddenError,
   isTokenExpired,
   parseJwtPayload,
   protectedRoute,
-} from "./server";
+} from "./server/server-auth";
 
 // =============================================================================
 // Factory Function

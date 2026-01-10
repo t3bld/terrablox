@@ -1,17 +1,7 @@
-import type { IGitProvider, GitRepo } from "./types";
+import { IGitProvider, GitRepo, GithubApiError } from "./types";
 
 const REPOS_PER_PAGE = 100;
 const MAX_PAGINATION_PAGES = 10;
-
-export class GithubApiError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-  ) {
-    super(message);
-    this.name = "GithubApiError";
-  }
-}
 
 class GithubProvider implements IGitProvider {
   public async getRepos(token: string): Promise<GitRepo[]> {

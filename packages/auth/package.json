@@ -8,8 +8,8 @@
       "default": "./src/index.tsx"
     },
     "./server": {
-      "types": "./src/server/index.ts",
-      "default": "./src/server/index.ts"
+      "types": "./src/server/server-auth.ts",
+      "default": "./src/server/server-auth.ts"
     },
     "./hooks": {
       "types": "./src/hooks/use-auth.tsx",

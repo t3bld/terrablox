@@ -1,6 +1,4 @@
-// =============================================================================
-// User Types
-// =============================================================================
+import { createContext, type ReactNode } from "react";
 
 export interface UserIdentity {
   provider: string;
@@ -23,20 +21,12 @@ export interface User {
   identities?: UserIdentity[];
 }
 
-// =============================================================================
-// Session Types
-// =============================================================================
-
 export interface Session {
   user: User;
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
 }
-
-// =============================================================================
-// Credential Types
-// =============================================================================
 
 export interface SignUpCredentials {
   email: string;
@@ -50,10 +40,6 @@ export interface SignInCredentials {
   password: string;
 }
 
-// =============================================================================
-// OAuth Types
-// =============================================================================
-
 export type OAuthProvider = "github";
 
 export interface OAuthSignInOptions {
@@ -61,10 +47,6 @@ export interface OAuthSignInOptions {
   redirectTo?: string;
   scopes?: string[];
 }
-
-// =============================================================================
-// Auth Result Types
-// =============================================================================
 
 export interface AuthResult {
   user: User;
@@ -92,10 +74,6 @@ export type AuthErrorCode =
   | "PROVIDER_ERROR"
   | "UNKNOWN_ERROR";
 
-// =============================================================================
-// Configuration Types
-// =============================================================================
-
 export type AuthAdapterConfig =
   | { type: "supabase"; config: SupabaseAuthConfig }
   | { type: "custom"; adapter: AuthAdapter };
@@ -106,61 +84,24 @@ export interface SupabaseAuthConfig {
   serviceRoleKey?: string;
 }
 
-// =============================================================================
-// Adapter Interface
-// =============================================================================
-
 export abstract class AuthAdapter {
-  // ===========================================================================
-  // Authentication Methods
-  // ===========================================================================
-
   abstract signUp(credentials: SignUpCredentials): Promise<AuthResult>;
   abstract signIn(credentials: SignInCredentials): Promise<AuthResult>;
   abstract signInWithOAuth(options: OAuthSignInOptions): Promise<void>;
   abstract signOut(): Promise<void>;
-
-  // ===========================================================================
-  // Session Methods
-  // ===========================================================================
-
   abstract getSession(): Promise<Session | null>;
   abstract refreshSession(): Promise<Session | null>;
-
-  // ===========================================================================
-  // User Methods
-  // ===========================================================================
-
   abstract getUser(): Promise<User | null>;
   abstract updateUser(
     data: Partial<Pick<User, "name" | "avatarUrl" | "metadata">>,
   ): Promise<User>;
-
-  // ===========================================================================
-  // Password Methods
-  // ===========================================================================
-
   abstract resetPassword(email: string, redirectTo?: string): Promise<void>;
   abstract updatePassword(newPassword: string): Promise<void>;
-
-  // ===========================================================================
-  // Provider Methods
-  // ===========================================================================
-
   getProviderToken?(provider: string): Promise<string | null>;
-
-  // ===========================================================================
-  // Auth State Subscription
-  // ===========================================================================
-
   onAuthStateChange?(
     callback: (event: AuthStateEvent, session: Session | null) => void,
   ): () => void;
 }
-
-// =============================================================================
-// Auth State Event Types
-// =============================================================================
 
 export type AuthStateEvent =
   | "SIGNED_IN"
@@ -168,3 +109,57 @@ export type AuthStateEvent =
   | "TOKEN_REFRESHED"
   | "USER_UPDATED"
   | "PASSWORD_RECOVERY";
+
+export interface ServerAuth {
+  isAuthenticated: (
+    req: Request,
+    res: {
+      cookies: {
+        set: (
+          name: string,
+          value: string,
+          options?: Record<string, unknown>,
+        ) => void;
+      };
+    },
+  ) => Promise<boolean>;
+}
+
+export interface AuthState {
+  user: User | null;
+  session: Session | null;
+  isLoading: boolean;
+  isAuthenticated: boolean;
+}
+
+export interface AuthActions {
+  signUp: (
+    credentials: SignUpCredentials,
+    options?: { onSuccess?: () => void },
+  ) => Promise<void>;
+  signIn: (
+    credentials: SignInCredentials,
+    options?: { onSuccess?: () => void },
+  ) => Promise<void>;
+  signInWithOAuth: (
+    provider: OAuthProvider,
+    options?: { redirectTo?: string; scopes?: string[] },
+  ) => Promise<void>;
+  signOut: (options?: { onSuccess?: () => void }) => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
+  updatePassword: (newPassword: string) => Promise<void>;
+  updateUser: (
+    data: Partial<Pick<User, "name" | "avatarUrl">>,
+  ) => Promise<void>;
+  refreshSession: () => Promise<void>;
+  getProviderToken: (provider: OAuthProvider) => Promise<string | null>;
+}
+
+export type AuthContextValue = AuthState & AuthActions;
+
+export interface AuthProviderProps {
+  adapter: AuthAdapter;
+  children: ReactNode;
+  loadingComponent?: ReactNode;
+  onAuthStateChange?: (user: User | null) => void;
+}

@@ -2,15 +2,15 @@
 
 import {
   createContext,
-  type ReactNode,
   useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
 } from "react";
-import type {
-  AuthAdapter,
+import {
+  AuthContextValue,
+  AuthProviderProps,
   AuthStateEvent,
   OAuthProvider,
   Session,
@@ -19,46 +19,7 @@ import type {
   User,
 } from "../types";
 
-interface AuthState {
-  user: User | null;
-  session: Session | null;
-  isLoading: boolean;
-  isAuthenticated: boolean;
-}
-
-interface AuthActions {
-  signUp: (
-    credentials: SignUpCredentials,
-    options?: { onSuccess?: () => void },
-  ) => Promise<void>;
-  signIn: (
-    credentials: SignInCredentials,
-    options?: { onSuccess?: () => void },
-  ) => Promise<void>;
-  signInWithOAuth: (
-    provider: OAuthProvider,
-    options?: { redirectTo?: string; scopes?: string[] },
-  ) => Promise<void>;
-  signOut: (options?: { onSuccess?: () => void }) => Promise<void>;
-  resetPassword: (email: string) => Promise<void>;
-  updatePassword: (newPassword: string) => Promise<void>;
-  updateUser: (
-    data: Partial<Pick<User, "name" | "avatarUrl">>,
-  ) => Promise<void>;
-  refreshSession: () => Promise<void>;
-  getProviderToken: (provider: OAuthProvider) => Promise<string | null>;
-}
-
-type AuthContextValue = AuthState & AuthActions;
-
 const AuthContext = createContext<AuthContextValue | null>(null);
-
-interface AuthProviderProps {
-  adapter: AuthAdapter;
-  children: ReactNode;
-  loadingComponent?: ReactNode;
-  onAuthStateChange?: (user: User | null) => void;
-}
 
 export function AuthProvider({
   adapter,

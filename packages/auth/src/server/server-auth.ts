@@ -8,72 +8,7 @@ export function createServerAuth(adapter: AuthAdapter) {
     getUser: async (): Promise<User | null> => {
       return adapter.getUser();
     },
-    requireAuth: async (): Promise<Session> => {
-      const session = await adapter.getSession();
-
-      if (!session) {
-        throw new AuthRequiredError();
-      }
-
-      return session;
-    },
-    requireUser: async (userId: string): Promise<User> => {
-      const user = await adapter.getUser();
-
-      if (!user) {
-        throw new AuthRequiredError();
-      }
-
-      if (user.id !== userId) {
-        throw new ForbiddenError();
-      }
-
-      return user;
-    },
   };
-}
-
-export class AuthRequiredError extends Error {
-  public readonly status = 401;
-
-  constructor(message = "Authentication required") {
-    super(message);
-    this.name = "AuthRequiredError";
-  }
-}
-
-export class ForbiddenError extends Error {
-  public readonly status = 403;
-
-  constructor(message = "Access forbidden") {
-    super(message);
-    this.name = "ForbiddenError";
-  }
-}
-
-// =============================================================================
-// Middleware Helpers
-// =============================================================================
-
-export interface ServerAuth {
-  isAuthenticated: (
-    req: Request,
-    res: {
-      cookies: {
-        set: (
-          name: string,
-          value: string,
-          options?: Record<string, unknown>,
-        ) => void;
-      };
-    },
-  ) => Promise<boolean>;
-}
-
-export interface WithAuthOptions {
-  publicPaths?: string[];
-  loginPath?: string;
-  isPublicPath?: (pathname: string) => boolean;
 }
 
 export function protectedRoute<T>(
@@ -96,10 +31,6 @@ export function protectedRoute<T>(
     return handler(request, { session, user: session.user });
   };
 }
-
-// =============================================================================
-// Token Utilities
-// =============================================================================
 
 export function extractBearerToken(request: Request): string | null {
   const authHeader = request.headers.get("Authorization");
