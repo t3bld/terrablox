@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 
-import { githubProvider } from "@terrablox/git-import/github";
 import type { GitProviderId } from "@terrablox/git-import";
+import { githubProvider } from "@terrablox/git-import/github";
 
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 
 export async function GET(
   req: Request,
-  { params }: { params: { provider: string } },
+  {
+    params,
+  }: { params: { provider: string; owner: string; repo: string } },
 ) {
   const providerId = params.provider as GitProviderId;
 
@@ -26,9 +28,20 @@ export async function GET(
     );
   }
 
+  const owner = params.owner?.trim();
+  const repo = params.repo?.trim();
+  if (!owner || !repo) {
+    return NextResponse.json(
+      { error: "Missing owner/repo" },
+      { status: 400 },
+    );
+  }
+
+  const repoFullName = `${owner}/${repo}`;
+
   try {
-    const repos = await githubProvider.getRepos(token);
-    return NextResponse.json({ repos });
+    const releases = await githubProvider.getReleases(token, repoFullName);
+    return NextResponse.json({ releases });
   } catch (error: unknown) {
     const err = error as {
       message?: string;
@@ -39,7 +52,7 @@ export async function GET(
     const scopes = err.providerHeaders?.["x-oauth-scopes"] ?? "";
 
     return NextResponse.json(
-      { error: err.message ?? "Failed to fetch repositories", scopes },
+      { error: err.message ?? "Failed to fetch releases", scopes },
       { status: err.status ?? 502 },
     );
   }

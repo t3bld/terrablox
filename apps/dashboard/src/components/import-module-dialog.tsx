@@ -1,6 +1,6 @@
 "use client";
 
-import type { GitProviderId, GitRepo } from "@terrablox/git-import";
+import type { GitBranch, GitProviderId, GitRelease, GitRepo } from "@terrablox/git-import";
 import { Button } from "@terrablox/ui/button";
 import {
   Dialog,
@@ -10,15 +10,88 @@ import {
   DialogTitle,
 } from "@terrablox/ui/dialog";
 import { Input } from "@terrablox/ui/input";
+import { Label } from "@terrablox/ui/label";
 import { Github, Loader2, Search } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
 import { useAuth } from "@terrablox/auth/hooks";
+import { createModuleFromGitImport } from "@/actions/module-actions";
 
 interface ImportModuleDialogProps {
   provider: GitProviderId;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+}
+
+type Step = 1 | 2 | 3;
+
+type RefChoice =
+  | { type: "release"; name: string }
+  | { type: "branch"; name: string };
+
+const STEP_META: Record<Step, { title: string; description: string }> = {
+  1: {
+    title: "Choose a repository",
+    description: "Pick the repo you want to import from your connected account.",
+  },
+  2: {
+    title: "Choose a version",
+    description: "Select a release tag or a branch to import.",
+  },
+  3: {
+    title: "Configure module",
+    description: "Name the module and choose where the Terraform root lives.",
+  },
+};
+
+function Stepper({ current }: { current: Step }) {
+  const items: Array<{ step: Step; label: string }> = [
+    { step: 1, label: "Repo" },
+    { step: 2, label: "Version" },
+    { step: 3, label: "Configure" },
+  ];
+
+  return (
+    <ol className="flex items-center gap-2" aria-label="Import steps">
+      {items.map((item, idx) => {
+        const completed = item.step < current;
+        const active = item.step === current;
+
+        return (
+          <li key={item.step} className="flex items-center gap-2">
+            <div
+              className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${
+                active
+                  ? "border-primary text-primary"
+                  : completed
+                    ? "border-muted-foreground/30 text-foreground"
+                    : "border-muted-foreground/20 text-muted-foreground"
+              }`}
+              aria-current={active ? "step" : undefined}
+            >
+              <span
+                className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${
+                  active
+                    ? "bg-primary text-primary-foreground"
+                    : completed
+                      ? "bg-muted text-foreground"
+                      : "bg-muted/50 text-muted-foreground"
+                }`}
+              >
+                {item.step}
+              </span>
+              {item.label}
+            </div>
+
+            {idx < items.length - 1 ? (
+              <span className="h-px w-6 bg-muted-foreground/20" aria-hidden="true" />
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 export function ImportModuleDialog({
@@ -27,24 +100,60 @@ export function ImportModuleDialog({
   onOpenChange,
 }: ImportModuleDialogProps) {
   const { user } = useAuth();
-  const [repos, setRepos] = useState<GitRepo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
 
+  const [step, setStep] = useState<Step>(1);
+
+  // Step 1
+  const [repos, setRepos] = useState<GitRepo[]>([]);
+  const [reposLoading, setReposLoading] = useState(true);
+  const [reposError, setReposError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedRepo, setSelectedRepo] = useState<GitRepo | null>(null);
+
+  // Step 2
+  const [releases, setReleases] = useState<GitRelease[]>([]);
+  const [branches, setBranches] = useState<GitBranch[]>([]);
+  const [refLoading, setRefLoading] = useState(false);
+  const [refError, setRefError] = useState<string | null>(null);
+  const [refChoice, setRefChoice] = useState<RefChoice | null>(null);
+  const [refTab, setRefTab] = useState<"release" | "branch">("release");
+
+  // Step 3
+  const [terraformRootFolder, setTerraformRootFolder] = useState(".");
+  const [moduleName, setModuleName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
+
+  // Reset the wizard on open/close.
+  useEffect(() => {
+    if (open) {
+      setStep(1);
+      setSearchQuery("");
+      setSelectedRepo(null);
+      setRefChoice(null);
+      setTerraformRootFolder(".");
+      setModuleName("");
+      setSaveError(null);
+      setRefError(null);
+    }
+  }, [open]);
+
+  // Step 1: fetch repos
   useEffect(() => {
     if (!open) return;
 
     async function fetchRepos() {
-      setLoading(true);
-      setError(null);
+      setReposLoading(true);
+      setReposError(null);
 
       const identity = user?.identities?.find((id) => id.provider === provider);
       if (!identity) {
-        setError(
-          `Your ${provider} account is not linked. Please link it in your account settings.`,
+        setReposError(
+          `Your ${provider} account isn’t linked yet. Link it in Account Settings to import repositories.`,
         );
-        setLoading(false);
+        setReposLoading(false);
         return;
       }
 
@@ -54,92 +163,466 @@ export function ImportModuleDialog({
 
         if (!response.ok) {
           const scopes = body?.scopes ? ` (scopes: ${body.scopes})` : "";
-          setError(
+          setReposError(
             body?.error
               ? `${body.error}${scopes}`
-              : `Failed to fetch repositories.`,
+              : "Failed to fetch repositories.",
           );
           return;
         }
 
         setRepos(body.repos ?? []);
       } catch (err) {
-        setError(
+        setReposError(
           err instanceof Error ? err.message : "An unknown error occurred.",
         );
       } finally {
-        setLoading(false);
+        setReposLoading(false);
       }
     }
 
     fetchRepos();
   }, [open, provider, user]);
 
-  const filteredRepos = repos.filter((repo) =>
-    repo.full_name.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+  const filteredRepos = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return repos;
+    return repos.filter((repo) => repo.full_name.toLowerCase().includes(q));
+  }, [repos, searchQuery]);
 
-  const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
+  // Step 2: fetch refs when repo selected
+  useEffect(() => {
+    if (!open) return;
+    if (step !== 2) return;
+    if (!selectedRepo) return;
+
+    async function fetchRefs() {
+      setRefLoading(true);
+      setRefError(null);
+      setReleases([]);
+      setBranches([]);
+      setRefChoice(null);
+
+      try {
+        const [owner, repo] = selectedRepo.full_name.split("/");
+        if (!owner || !repo) {
+          throw new Error("Invalid repository name.");
+        }
+
+        const [releasesRes, branchesRes] = await Promise.all([
+          fetch(`/api/git-provider/${provider}/repos/${owner}/${repo}/releases`),
+          fetch(`/api/git-provider/${provider}/repos/${owner}/${repo}/branches`),
+        ]);
+
+        const [releasesBody, branchesBody] = await Promise.all([
+          releasesRes.json(),
+          branchesRes.json(),
+        ]);
+
+        if (!releasesRes.ok) {
+          const scopes = releasesBody?.scopes
+            ? ` (scopes: ${releasesBody.scopes})`
+            : "";
+          throw new Error(
+            releasesBody?.error
+              ? `${releasesBody.error}${scopes}`
+              : "Failed to fetch releases.",
+          );
+        }
+
+        if (!branchesRes.ok) {
+          const scopes = branchesBody?.scopes
+            ? ` (scopes: ${branchesBody.scopes})`
+            : "";
+          throw new Error(
+            branchesBody?.error
+              ? `${branchesBody.error}${scopes}`
+              : "Failed to fetch branches.",
+          );
+        }
+
+        const rels = (releasesBody?.releases ?? []) as GitRelease[];
+        const brs = (branchesBody?.branches ?? []) as GitBranch[];
+
+        setReleases(rels);
+        setBranches(brs);
+
+        // Pick a sensible default so users can "Continue" quickly.
+        if (rels.length > 0) {
+          setRefTab("release");
+          setRefChoice({ type: "release", name: rels[0]!.tag_name });
+        } else if (brs.length > 0) {
+          setRefTab("branch");
+          setRefChoice({ type: "branch", name: brs[0]!.name });
+        }
+      } catch (err) {
+        setRefError(err instanceof Error ? err.message : "Failed to load versions.");
+      } finally {
+        setRefLoading(false);
+      }
+    }
+
+    fetchRefs();
+  }, [open, provider, selectedRepo, step]);
+
+  const canContinue =
+    (step === 1 && !!selectedRepo) ||
+    (step === 2 && !!refChoice) ||
+    step === 3;
+
+  const stepMeta = STEP_META[step];
+
+  async function onFinish() {
+    if (!user?.id) {
+      setSaveError("You must be signed in.");
+      return;
+    }
+    if (!selectedRepo) {
+      setSaveError("Choose a repository first.");
+      return;
+    }
+    if (!refChoice) {
+      setSaveError("Choose a release or branch first.");
+      return;
+    }
+
+    setSaving(true);
+    setSaveError(null);
+
+    try {
+      await createModuleFromGitImport({
+        userId: user.id,
+        repoFullName: selectedRepo.full_name,
+        refType: refChoice.type,
+        refName: refChoice.name,
+        terraformRootFolder,
+        nameOverride: moduleName,
+      });
+
+      onOpenChange(false);
+    } catch (err) {
+      setSaveError(
+        err instanceof Error ? err.message : "Failed to create module.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[625px]">
-        <DialogHeader>
-          <DialogTitle className="flex items-center">
-            <Github className="h-5 w-5 mr-2" />
+      <DialogContent className="sm:max-w-[760px]">
+        <DialogHeader className="space-y-3">
+          <DialogTitle className="flex items-center gap-2">
+            <Github className="h-5 w-5" />
             Import from {providerName}
           </DialogTitle>
           <DialogDescription>
-            Select a repository to import as a Terraform module.
+            <div className="space-y-2">
+              <Stepper current={step} />
+              <div>
+                <div className="text-sm font-medium text-foreground">
+                  {stepMeta.title}
+                </div>
+                <div className="text-sm text-muted-foreground">
+                  {stepMeta.description}
+                </div>
+              </div>
+            </div>
           </DialogDescription>
         </DialogHeader>
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search repositories..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-10"
-          />
-        </div>
-        <div className="space-y-2 h-[300px] overflow-y-auto pr-2">
-          {loading ? (
-            <div className="flex items-center justify-center h-full">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+
+        {step === 1 ? (
+          <>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Search repositories…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-10"
+                aria-label="Search repositories"
+              />
             </div>
-          ) : error ? (
-            <div className="flex flex-col items-center justify-center h-full text-destructive text-center">
-              <p>{error}</p>
-              <Button asChild variant="link" className="mt-2">
-                <Link href="/account">Go to Account Settings</Link>
+
+            <div className="space-y-2 h-[320px] overflow-y-auto pr-2">
+              {reposLoading ? (
+                <div className="flex items-center justify-center h-full">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : reposError ? (
+                <div className="flex flex-col items-center justify-center h-full text-center">
+                  <p className="text-sm text-destructive">{reposError}</p>
+                  <Button asChild variant="link" className="mt-2">
+                    <Link href="/account">Open Account Settings</Link>
+                  </Button>
+                </div>
+              ) : filteredRepos.length > 0 ? (
+                filteredRepos.map((repo) => {
+                  const selected = selectedRepo?.full_name === repo.full_name;
+                  return (
+                    <button
+                      type="button"
+                      key={repo.id}
+                      onClick={() => {
+                        setSelectedRepo(repo);
+                        setModuleName(repo.name);
+                      }}
+                      className={`group w-full text-left rounded-md border p-3 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        selected ? "border-primary" : "border-transparent"
+                      }`}
+                      aria-pressed={selected}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-medium truncate">{repo.full_name}</div>
+                          {repo.description ? (
+                            <div className="text-sm text-muted-foreground line-clamp-2">
+                              {repo.description}
+                            </div>
+                          ) : (
+                            <div className="text-sm text-muted-foreground">No description</div>
+                          )}
+                        </div>
+                        <div
+                          className={`text-xs font-medium ${
+                            selected
+                              ? "text-primary"
+                              : "text-muted-foreground group-hover:text-foreground"
+                          }`}
+                        >
+                          {selected ? "Selected" : "Select"}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })
+              ) : (
+                <div className="flex flex-col items-center justify-center h-full text-center">
+                  <p className="text-sm text-muted-foreground">No repositories found.</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Try a different search term, or check organization access in your GitHub
+                    connection.
+                  </p>
+                </div>
+              )}
+            </div>
+          </>
+        ) : null}
+
+        {step === 2 ? (
+          <div className="space-y-4">
+            <div className="rounded-md border bg-muted/20 p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-muted-foreground">Repository</span>
+                <span className="font-medium">{selectedRepo?.full_name}</span>
+                {refChoice ? (
+                  <>
+                    <span className="text-muted-foreground">•</span>
+                    <span className="text-muted-foreground">Selected</span>
+                    <span className="font-medium">
+                      {refChoice.type === "release" ? "Release" : "Branch"}: {refChoice.name}
+                    </span>
+                  </>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant={refTab === "release" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setRefTab("release")}
+              >
+                Releases ({releases.length})
+              </Button>
+              <Button
+                type="button"
+                variant={refTab === "branch" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setRefTab("branch")}
+              >
+                Branches ({branches.length})
               </Button>
             </div>
-          ) : filteredRepos.length > 0 ? (
-            filteredRepos.map((repo) => (
-              <div
-                key={repo.id}
-                className="flex items-center justify-between p-2 rounded-md hover:bg-muted"
-              >
-                <div>
-                  <div className="font-medium">{repo.full_name}</div>
-                  <div className="text-sm text-muted-foreground line-clamp-1">
-                    {repo.description}
-                  </div>
-                </div>
-                <Button variant="outline" size="sm">
-                  Import
-                </Button>
+
+            {refLoading ? (
+              <div className="flex items-center justify-center h-[260px]">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
-            ))
-          ) : (
-            <div className="text-center text-sm text-muted-foreground pt-8">
-              <p>No repositories found.</p>
-              <p className="mt-2">
-                Missing org repos? Open Account → GitHub and grant organization
-                access.
+            ) : refError ? (
+              <div className="text-sm text-destructive">{refError}</div>
+            ) : refTab === "release" ? (
+              <div className="space-y-2 h-[260px] overflow-y-auto pr-2">
+                {releases.length === 0 ? (
+                  <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                    No releases found for this repository. Switch to Branches to pick a
+                    branch instead.
+                  </div>
+                ) : (
+                  releases.map((r) => {
+                    const selected =
+                      refChoice?.type === "release" && refChoice.name === r.tag_name;
+                    return (
+                      <button
+                        type="button"
+                        key={r.id}
+                        className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                          selected ? "border-primary" : "border-transparent"
+                        }`}
+                        onClick={() => setRefChoice({ type: "release", name: r.tag_name })}
+                        aria-pressed={selected}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-medium">{r.tag_name}</div>
+                            <div className="text-xs text-muted-foreground truncate">
+                              {r.name || "Release"}
+                            </div>
+                          </div>
+                          <div className={`text-xs ${selected ? "text-primary" : "text-muted-foreground"}`}>
+                            {selected ? "Selected" : "Select"}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2 h-[260px] overflow-y-auto pr-2">
+                {branches.length === 0 ? (
+                  <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                    No branches found.
+                  </div>
+                ) : (
+                  branches.map((b) => {
+                    const selected =
+                      refChoice?.type === "branch" && refChoice.name === b.name;
+                    return (
+                      <button
+                        type="button"
+                        key={b.name}
+                        className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                          selected ? "border-primary" : "border-transparent"
+                        }`}
+                        onClick={() => setRefChoice({ type: "branch", name: b.name })}
+                        aria-pressed={selected}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-medium">{b.name}</div>
+                            {b.commitSha ? (
+                              <div className="text-xs text-muted-foreground">
+                                {b.commitSha.slice(0, 7)}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-muted-foreground"> </div>
+                            )}
+                          </div>
+                          <div className={`text-xs ${selected ? "text-primary" : "text-muted-foreground"}`}>
+                            {selected ? "Selected" : "Select"}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {step === 3 ? (
+          <div className="space-y-5">
+            <div className="rounded-md border bg-muted/20 p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-muted-foreground">Repository</span>
+                <span className="font-medium">{selectedRepo?.full_name}</span>
+                <span className="text-muted-foreground">•</span>
+                <span className="text-muted-foreground">Version</span>
+                <span className="font-medium">
+                  {refChoice?.type === "release" ? "Release" : "Branch"}: {refChoice?.name}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="moduleName">Module name</Label>
+              <Input
+                id="moduleName"
+                value={moduleName}
+                onChange={(e) => setModuleName(e.target.value)}
+                placeholder="e.g. vpc"
+              />
+              <p className="text-xs text-muted-foreground">
+                This is how the module will show up in your dashboard.
               </p>
             </div>
-          )}
+
+            <div className="space-y-2">
+              <Label htmlFor="terraformRoot">Terraform root path</Label>
+              <Input
+                id="terraformRoot"
+                value={terraformRootFolder}
+                onChange={(e) => setTerraformRootFolder(e.target.value)}
+                placeholder="e.g. . or modules/vpc"
+              />
+              <p className="text-xs text-muted-foreground">
+                Path inside the repo that contains the module’s Terraform root.
+              </p>
+            </div>
+
+            {saveError ? (
+              <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {saveError}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="flex items-center justify-between border-t pt-4">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => {
+              if (saving) return;
+              if (step === 1) {
+                onOpenChange(false);
+              } else {
+                setStep((s) => (s === 2 ? 1 : 2));
+              }
+            }}
+          >
+            {step === 1 ? "Cancel" : "Back"}
+          </Button>
+
+          <div className="flex items-center gap-2">
+            {step < 3 ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  if (step === 1 && selectedRepo) setStep(2);
+                  if (step === 2 && refChoice) setStep(3);
+                }}
+                disabled={!canContinue || saving}
+              >
+                Continue
+              </Button>
+            ) : (
+              <Button type="button" onClick={onFinish} disabled={saving}>
+                {saving ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Importing…
+                  </>
+                ) : (
+                  "Import module"
+                )}
+              </Button>
+            )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>
