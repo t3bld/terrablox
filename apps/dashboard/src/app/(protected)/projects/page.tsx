@@ -21,7 +21,7 @@ import { Skeleton } from "@terrablox/ui/skeleton";
 
 import { getProjects } from "@/actions/project-actions";
 import { AppSidebar } from "@/components/app-sidebar";
-import {useAuth} from "@terrablox/auth/hooks";
+import { useAuth } from "@terrablox/auth/hooks";
 
 export default function ProjectsPage() {
   const { user, isAuthenticated } = useAuth();

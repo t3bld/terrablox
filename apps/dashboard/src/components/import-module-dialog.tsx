@@ -13,7 +13,7 @@ import { Input } from "@terrablox/ui/input";
 import { Github, Loader2, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import {useAuth} from "@terrablox/auth/hooks";
+import { useAuth } from "@terrablox/auth/hooks";
 
 interface ImportModuleDialogProps {
   provider: GitProviderId;

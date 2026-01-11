@@ -14,7 +14,8 @@ import {
   type SignUpCredentials,
   type SupabaseAuthConfig,
   type User,
-  NextResponseCookies, AuthAdapter,
+  NextResponseCookies,
+  AuthAdapter,
 } from "../types";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 

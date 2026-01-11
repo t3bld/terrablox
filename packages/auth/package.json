@@ -7,7 +7,7 @@
     "./hooks": "./src/hooks/use-auth.tsx",
     "./types": "./src/types.ts",
     "./adapters/supabase": "./src/adapters/supabase.ts",
-    "./auth-provider": "./src/auth-provider.tsx"
+    "./auth-provider": "./src/components/auth-provider.tsx"
   },
   "scripts": {
     "lint": "biome check .",

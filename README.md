@@ -18,7 +18,7 @@
 
 ## ✨ Key Features
 
-- **Terraform Analysis**: Get a clear understanding of the infrastructure (WIP)
+- **Terraform Analyzer**: Get a clear understanding of the cloud infrastructure and its dependencies (WIP)
 - **Low-Code Builder**: Visually construct and configure cloud infrastructure (SOON)
 
 ## ⚙️ Tech Stack
@@ -50,7 +50,6 @@ We recommend using the default Supabase integration to start with. Later, you ca
 5. Run `cp apps/dashboard/.env.example apps/dashboard/.env`
 6. Run `pnpm dev` to start the development servers
 
-- Web: http://localhost:3000
 - Dashboard: http://localhost:3001
 
 ## 🔑 License

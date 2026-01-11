@@ -1,13 +1,12 @@
 "use client";
 
-import {useAuth} from "@terrablox/auth/hooks";
+import { useAuth } from "@terrablox/auth/hooks";
 
 export const dynamic = "force-dynamic";
 
 import { Github } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-
 
 import { Alert, AlertDescription } from "@terrablox/ui/alert";
 import { Button } from "@terrablox/ui/button";

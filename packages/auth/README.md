@@ -22,39 +22,37 @@ pnpm add @terrablox/auth
 
 ## Quick Start
 
-### 1. Configure auth in the app
-
-```typescript
-import { createAuth } from "@terrablox/auth";
-
-export const auth = createAuth({
-  type: "supabase",
-  config: {
-    url: process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-  },
-});
-```
-
-### 2. Add auth provider 
+### 1. Add auth provider to the app
 
 ```tsx
 "use client";
 
+import { SupabaseAuthAdapter } from "@terrablox/auth/adapters/supabase";
 import { AuthProvider } from "@terrablox/auth";
-import { auth } from "@/lib/auth";
+import { useMemo } from "react";
 
-export function Providers({ children }: { children: React.ReactNode }) {
-  return <AuthProvider adapter={auth}>{children}</AuthProvider>;
+export function Providers({ children }) {
+    const auth = useMemo(() => {
+        return new SupabaseAuthAdapter({
+            url: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        });
+    }, []);
+
+    if (!auth) {
+        return <>{children}</>;
+    }
+
+    return <AuthProvider adapter={auth}>{children}</AuthProvider>;
 }
 ```
 
-### 3. Use auth in components
+### 2. Use auth in components
 
 ```tsx
 "use client";
 
-import { useAuth } from "@terrablox/auth";
+import { useAuth } from "@terrablox/auth/hooks";
 
 export function AuthButton() {
   const { user, signIn, signOut, isLoading } = useAuth();
@@ -73,9 +71,7 @@ export function AuthButton() {
   }
 
   return (
-    <button
-      onClick={() => signIn({ email: "user@example.com", password: "password" })}
-    >
+    <button onClick={() => signIn({ email: "user@example.com", password: "password" })}>
       Sign In
     </button>
   );
@@ -129,14 +125,13 @@ export class MyCustomAdapter extends AuthAdapter {
   async updatePassword(newPassword: string): Promise<void> {
     // Your implementation
   }
+
+  async getProviderToken(provider: string): Promise<string | null> {
+    // Your implementation
+  }
+
+  onAuthStateChange(callback: (event: AuthStateEvent, session: Session | null) => void): () => void {
+    // Your implementation
+  }
 }
-```
-
-Then use it:
-
-```typescript
-const auth = createAuth({
-  type: "custom",
-  adapter: new MyCustomAdapter(),
-});
 ```

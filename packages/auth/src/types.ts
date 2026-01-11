@@ -159,12 +159,12 @@ export abstract class AuthAdapter {
   abstract refreshSession(): Promise<Session | null>;
   abstract getUser(): Promise<User | null>;
   abstract updateUser(
-      data: Partial<Pick<User, "name" | "avatarUrl" | "metadata">>,
+    data: Partial<Pick<User, "name" | "avatarUrl" | "metadata">>,
   ): Promise<User>;
   abstract resetPassword(email: string, redirectTo?: string): Promise<void>;
   abstract updatePassword(newPassword: string): Promise<void>;
   abstract getProviderToken(provider: string): Promise<string | null>;
   abstract onAuthStateChange(
-      callback: (event: AuthStateEvent, session: Session | null) => void,
+    callback: (event: AuthStateEvent, session: Session | null) => void,
   ): () => void;
 }

@@ -19,7 +19,7 @@ import {
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { GithubAccountCard } from "@/components/github-account-card";
-import {useAuth} from "@terrablox/auth/hooks";
+import { useAuth } from "@terrablox/auth/hooks";
 
 export default function AccountPage() {
   const { user, isAuthenticated, refreshSession } = useAuth();

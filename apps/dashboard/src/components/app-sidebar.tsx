@@ -23,7 +23,7 @@ import {
 import { Boxes, ChevronUp, FolderKanban, LogOut, User2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import {useAuth} from "@terrablox/auth/hooks";
+import { useAuth } from "@terrablox/auth/hooks";
 
 const navItems = [
   {
