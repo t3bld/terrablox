@@ -51,21 +51,6 @@ We recommend using the default Supabase integration to start with. Later, you ca
 6. Run `pnpm dev` to start the development servers
 
 - Dashboard: http://localhost:3001
-
-## 🔑 License
-
-This project is licensed under the **[AGPL-3.0](https://opensource.org/licenses/AGPL-3.0)** for non-commercial use. 
-By using this software, you agree to the terms of the license.
-
-### Commercial Use
-
-For commercial use or deployments requiring a setup fee, please contact us
-for a commercial license at [support@terrablox.de](mailto:support@terrablox.de).
-
-## 🤝 Community & Support
-
-TerraBlox is an open-source project, and we welcome contributions from the community.
-
 If you'd like to contribute, please fork the repository and make any changes you'd like. Pull requests are warmly welcome.
 
 
