@@ -1,6 +1,12 @@
 "use client";
 
-import type { GitBranch, GitProviderId, GitRelease, GitRepo } from "@terrablox/git-import";
+import { useAuth } from "@terrablox/auth/hooks";
+import type {
+  GitBranch,
+  GitProviderId,
+  GitRelease,
+  GitRepo,
+} from "@terrablox/git-import";
 import { Button } from "@terrablox/ui/button";
 import {
   Dialog,
@@ -14,9 +20,10 @@ import { Label } from "@terrablox/ui/label";
 import { Github, Loader2, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-
-import { useAuth } from "@terrablox/auth/hooks";
 import { createModuleFromGitImport } from "@/actions/module-actions";
+import { MultiRepoFolderPicker } from "@/components/multi-repo-folder-picker";
+import { RepoFolderPicker } from "@/components/repo-folder-picker";
+import { TagsInput } from "@/components/tags-input";
 
 interface ImportModuleDialogProps {
   provider: GitProviderId;
@@ -24,7 +31,7 @@ interface ImportModuleDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;
 
 type RefChoice =
   | { type: "release"; name: string }
@@ -33,15 +40,20 @@ type RefChoice =
 const STEP_META: Record<Step, { title: string; description: string }> = {
   1: {
     title: "Choose a repository",
-    description: "Pick the repo you want to import from your connected account.",
+    description:
+      "Pick the repo you want to import from your connected account.",
   },
   2: {
     title: "Choose a version",
     description: "Select a release tag or a branch to import.",
   },
   3: {
-    title: "Configure module",
-    description: "Name the module and choose where the Terraform root lives.",
+    title: "Module",
+    description: "Set the module name, description, and tags.",
+  },
+  4: {
+    title: "Terraform",
+    description: "Select the Terraform root and any submodule folders.",
   },
 };
 
@@ -49,7 +61,8 @@ function Stepper({ current }: { current: Step }) {
   const items: Array<{ step: Step; label: string }> = [
     { step: 1, label: "Repo" },
     { step: 2, label: "Version" },
-    { step: 3, label: "Configure" },
+    { step: 3, label: "Module" },
+    { step: 4, label: "Terraform" },
   ];
 
   return (
@@ -85,7 +98,10 @@ function Stepper({ current }: { current: Step }) {
             </div>
 
             {idx < items.length - 1 ? (
-              <span className="h-px w-6 bg-muted-foreground/20" aria-hidden="true" />
+              <span
+                className="h-px w-6 bg-muted-foreground/20"
+                aria-hidden="true"
+              />
             ) : null}
           </li>
         );
@@ -119,10 +135,18 @@ export function ImportModuleDialog({
   const [refTab, setRefTab] = useState<"release" | "branch">("release");
 
   // Step 3
-  const [terraformRootFolder, setTerraformRootFolder] = useState(".");
   const [moduleName, setModuleName] = useState("");
+  const [moduleDescription, setModuleDescription] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Step 4
+  const [terraformRootFolder, setTerraformRootFolder] = useState(".");
+  const [terraformSubmodulesFolders, setTerraformSubmodulesFolders] = useState<
+    string[]
+  >([]);
 
   const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
 
@@ -133,11 +157,39 @@ export function ImportModuleDialog({
       setSearchQuery("");
       setSelectedRepo(null);
       setRefChoice(null);
-      setTerraformRootFolder(".");
       setModuleName("");
+      setModuleDescription("");
+      setTags([]);
+      setTagSuggestions([]);
       setSaveError(null);
       setRefError(null);
+      setTerraformRootFolder(".");
+      setTerraformSubmodulesFolders([]);
     }
+  }, [open]);
+
+  // Prefill description from repo when chosen.
+  useEffect(() => {
+    if (!selectedRepo) return;
+    setModuleDescription(selectedRepo.description ?? "");
+  }, [selectedRepo]);
+
+  // Load tag suggestions for the signed-in user.
+  useEffect(() => {
+    if (!open) return;
+
+    async function fetchTags() {
+      try {
+        const res = await fetch("/api/tags");
+        const body = await res.json();
+        if (!res.ok) return;
+        setTagSuggestions((body?.tags ?? []) as string[]);
+      } catch {
+        // Non-blocking.
+      }
+    }
+
+    fetchTags();
   }, [open]);
 
   // Step 1: fetch repos
@@ -196,6 +248,8 @@ export function ImportModuleDialog({
     if (step !== 2) return;
     if (!selectedRepo) return;
 
+    const repoToLoad = selectedRepo;
+
     async function fetchRefs() {
       setRefLoading(true);
       setRefError(null);
@@ -204,14 +258,18 @@ export function ImportModuleDialog({
       setRefChoice(null);
 
       try {
-        const [owner, repo] = selectedRepo.full_name.split("/");
+        const [owner, repo] = repoToLoad.full_name.split("/");
         if (!owner || !repo) {
           throw new Error("Invalid repository name.");
         }
 
         const [releasesRes, branchesRes] = await Promise.all([
-          fetch(`/api/git-provider/${provider}/repos/${owner}/${repo}/releases`),
-          fetch(`/api/git-provider/${provider}/repos/${owner}/${repo}/branches`),
+          fetch(
+            `/api/git-provider/${provider}/repos/${owner}/${repo}/releases`,
+          ),
+          fetch(
+            `/api/git-provider/${provider}/repos/${owner}/${repo}/branches`,
+          ),
         ]);
 
         const [releasesBody, branchesBody] = await Promise.all([
@@ -248,15 +306,17 @@ export function ImportModuleDialog({
         setBranches(brs);
 
         // Pick a sensible default so users can "Continue" quickly.
-        if (rels.length > 0) {
+        if (rels.length > 0 && rels[0]) {
           setRefTab("release");
-          setRefChoice({ type: "release", name: rels[0]!.tag_name });
-        } else if (brs.length > 0) {
+          setRefChoice({ type: "release", name: rels[0].tag_name });
+        } else if (brs.length > 0 && brs[0]) {
           setRefTab("branch");
-          setRefChoice({ type: "branch", name: brs[0]!.name });
+          setRefChoice({ type: "branch", name: brs[0].name });
         }
       } catch (err) {
-        setRefError(err instanceof Error ? err.message : "Failed to load versions.");
+        setRefError(
+          err instanceof Error ? err.message : "Failed to load versions.",
+        );
       } finally {
         setRefLoading(false);
       }
@@ -268,7 +328,8 @@ export function ImportModuleDialog({
   const canContinue =
     (step === 1 && !!selectedRepo) ||
     (step === 2 && !!refChoice) ||
-    step === 3;
+    step === 3 ||
+    step === 4;
 
   const stepMeta = STEP_META[step];
 
@@ -296,7 +357,10 @@ export function ImportModuleDialog({
         refType: refChoice.type,
         refName: refChoice.name,
         terraformRootFolder,
+        terraformSubmodulesFolders,
         nameOverride: moduleName,
+        description: moduleDescription,
+        tags,
       });
 
       onOpenChange(false);
@@ -375,13 +439,17 @@ export function ImportModuleDialog({
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <div className="font-medium truncate">{repo.full_name}</div>
+                          <div className="font-medium truncate">
+                            {repo.full_name}
+                          </div>
                           {repo.description ? (
                             <div className="text-sm text-muted-foreground line-clamp-2">
                               {repo.description}
                             </div>
                           ) : (
-                            <div className="text-sm text-muted-foreground">No description</div>
+                            <div className="text-sm text-muted-foreground">
+                              No description
+                            </div>
                           )}
                         </div>
                         <div
@@ -399,10 +467,12 @@ export function ImportModuleDialog({
                 })
               ) : (
                 <div className="flex flex-col items-center justify-center h-full text-center">
-                  <p className="text-sm text-muted-foreground">No repositories found.</p>
+                  <p className="text-sm text-muted-foreground">
+                    No repositories found.
+                  </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Try a different search term, or check organization access in your GitHub
-                    connection.
+                    Try a different search term, or check organization access in
+                    your GitHub connection.
                   </p>
                 </div>
               )}
@@ -421,7 +491,8 @@ export function ImportModuleDialog({
                     <span className="text-muted-foreground">•</span>
                     <span className="text-muted-foreground">Selected</span>
                     <span className="font-medium">
-                      {refChoice.type === "release" ? "Release" : "Branch"}: {refChoice.name}
+                      {refChoice.type === "release" ? "Release" : "Branch"}:{" "}
+                      {refChoice.name}
                     </span>
                   </>
                 ) : null}
@@ -457,13 +528,14 @@ export function ImportModuleDialog({
               <div className="space-y-2 h-[260px] overflow-y-auto pr-2">
                 {releases.length === 0 ? (
                   <div className="rounded-md border p-3 text-sm text-muted-foreground">
-                    No releases found for this repository. Switch to Branches to pick a
-                    branch instead.
+                    No releases found for this repository. Switch to Branches to
+                    pick a branch instead.
                   </div>
                 ) : (
                   releases.map((r) => {
                     const selected =
-                      refChoice?.type === "release" && refChoice.name === r.tag_name;
+                      refChoice?.type === "release" &&
+                      refChoice.name === r.tag_name;
                     return (
                       <button
                         type="button"
@@ -471,7 +543,9 @@ export function ImportModuleDialog({
                         className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                           selected ? "border-primary" : "border-transparent"
                         }`}
-                        onClick={() => setRefChoice({ type: "release", name: r.tag_name })}
+                        onClick={() =>
+                          setRefChoice({ type: "release", name: r.tag_name })
+                        }
                         aria-pressed={selected}
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -481,7 +555,9 @@ export function ImportModuleDialog({
                               {r.name || "Release"}
                             </div>
                           </div>
-                          <div className={`text-xs ${selected ? "text-primary" : "text-muted-foreground"}`}>
+                          <div
+                            className={`text-xs ${selected ? "text-primary" : "text-muted-foreground"}`}
+                          >
                             {selected ? "Selected" : "Select"}
                           </div>
                         </div>
@@ -507,7 +583,9 @@ export function ImportModuleDialog({
                         className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                           selected ? "border-primary" : "border-transparent"
                         }`}
-                        onClick={() => setRefChoice({ type: "branch", name: b.name })}
+                        onClick={() =>
+                          setRefChoice({ type: "branch", name: b.name })
+                        }
                         aria-pressed={selected}
                       >
                         <div className="flex items-start justify-between gap-3">
@@ -518,10 +596,14 @@ export function ImportModuleDialog({
                                 {b.commitSha.slice(0, 7)}
                               </div>
                             ) : (
-                              <div className="text-xs text-muted-foreground"> </div>
+                              <div className="text-xs text-muted-foreground">
+                                {" "}
+                              </div>
                             )}
                           </div>
-                          <div className={`text-xs ${selected ? "text-primary" : "text-muted-foreground"}`}>
+                          <div
+                            className={`text-xs ${selected ? "text-primary" : "text-muted-foreground"}`}
+                          >
                             {selected ? "Selected" : "Select"}
                           </div>
                         </div>
@@ -543,7 +625,8 @@ export function ImportModuleDialog({
                 <span className="text-muted-foreground">•</span>
                 <span className="text-muted-foreground">Version</span>
                 <span className="font-medium">
-                  {refChoice?.type === "release" ? "Release" : "Branch"}: {refChoice?.name}
+                  {refChoice?.type === "release" ? "Release" : "Branch"}:{" "}
+                  {refChoice?.name}
                 </span>
               </div>
             </div>
@@ -562,17 +645,82 @@ export function ImportModuleDialog({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="terraformRoot">Terraform root path</Label>
+              <Label htmlFor="moduleDescription">Description</Label>
               <Input
-                id="terraformRoot"
-                value={terraformRootFolder}
-                onChange={(e) => setTerraformRootFolder(e.target.value)}
-                placeholder="e.g. . or modules/vpc"
+                id="moduleDescription"
+                value={moduleDescription}
+                onChange={(e) => setModuleDescription(e.target.value)}
+                placeholder="What does this module do?"
               />
               <p className="text-xs text-muted-foreground">
-                Path inside the repo that contains the module’s Terraform root.
+                Prefilled from the repository description. You can edit it.
               </p>
             </div>
+
+            <TagsInput
+              label="Tags"
+              description="Use a few short, consistent tags (e.g. aws, networking, vpc)."
+              value={tags}
+              onChange={setTags}
+              suggestions={tagSuggestions}
+            />
+
+            {saveError ? (
+              <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+                {saveError}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {step === 4 ? (
+          <div className="space-y-5">
+            <div className="rounded-md border bg-muted/20 p-3 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-muted-foreground">Repository</span>
+                <span className="font-medium">{selectedRepo?.full_name}</span>
+                <span className="text-muted-foreground">•</span>
+                <span className="text-muted-foreground">Version</span>
+                <span className="font-medium">
+                  {refChoice?.type === "release" ? "Release" : "Branch"}:{" "}
+                  {refChoice?.name}
+                </span>
+              </div>
+            </div>
+
+            {selectedRepo && refChoice ? (
+              <RepoFolderPicker
+                label="Terraform root path"
+                description="Pick the folder inside the repo that contains the Terraform module root."
+                value={terraformRootFolder}
+                onChange={setTerraformRootFolder}
+                provider="github"
+                repoFullName={selectedRepo.full_name}
+                refName={refChoice.name}
+              />
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="terraformRoot">Terraform root path</Label>
+                <Input
+                  id="terraformRoot"
+                  value={terraformRootFolder}
+                  onChange={(e) => setTerraformRootFolder(e.target.value)}
+                  placeholder="e.g. . or modules/vpc"
+                />
+              </div>
+            )}
+
+            {selectedRepo && refChoice ? (
+              <MultiRepoFolderPicker
+                label="Terraform submodule folders"
+                description="Optional: if this repo contains multiple Terraform modules, add their folder paths."
+                value={terraformSubmodulesFolders}
+                onChange={setTerraformSubmodulesFolders}
+                provider="github"
+                repoFullName={selectedRepo.full_name}
+                refName={refChoice.name}
+              />
+            ) : null}
 
             {saveError ? (
               <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
@@ -591,7 +739,11 @@ export function ImportModuleDialog({
               if (step === 1) {
                 onOpenChange(false);
               } else {
-                setStep((s) => (s === 2 ? 1 : 2));
+                setStep((s) => {
+                  if (s === 2) return 1;
+                  if (s === 3) return 2;
+                  return 3;
+                });
               }
             }}
           >
@@ -599,12 +751,13 @@ export function ImportModuleDialog({
           </Button>
 
           <div className="flex items-center gap-2">
-            {step < 3 ? (
+            {step < 4 ? (
               <Button
                 type="button"
                 onClick={() => {
                   if (step === 1 && selectedRepo) setStep(2);
                   if (step === 2 && refChoice) setStep(3);
+                  if (step === 3) setStep(4);
                 }}
                 disabled={!canContinue || saving}
               >

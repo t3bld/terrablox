@@ -1,5 +1,7 @@
+export type GitProviderId = "github";
+
 export interface GitRepo {
-  id: string | number;
+  id: number;
   name: string;
   full_name: string;
   private: boolean;
@@ -11,11 +13,10 @@ export interface GitRepo {
 export interface GitBranch {
   name: string;
   commitSha?: string;
-  isDefault?: boolean;
 }
 
 export interface GitRelease {
-  id: string | number;
+  id: number;
   name: string | null;
   tag_name: string;
   isDraft?: boolean;
@@ -23,21 +24,36 @@ export interface GitRelease {
   published_at?: string | null;
 }
 
-export type GitProviderId = "github";
+export type GitTreeEntryType = "tree" | "blob";
+
+export interface GitTreeEntry {
+  path: string;
+  type: GitTreeEntryType;
+}
 
 export interface IGitProvider {
   getRepos(token: string): Promise<GitRepo[]>;
   getBranches(token: string, repoFullName: string): Promise<GitBranch[]>;
   getReleases(token: string, repoFullName: string): Promise<GitRelease[]>;
+  getTree(
+    token: string,
+    repoFullName: string,
+    ref: string,
+  ): Promise<GitTreeEntry[]>;
 }
 
 export class GithubApiError extends Error {
+  public status: number;
+  public providerHeaders: Record<string, string>;
+
   constructor(
     message: string,
-    public readonly status: number,
-    public readonly providerHeaders?: Record<string, string>,
+    status: number,
+    providerHeaders: Record<string, string> = {},
   ) {
     super(message);
     this.name = "GithubApiError";
+    this.status = status;
+    this.providerHeaders = providerHeaders;
   }
 }

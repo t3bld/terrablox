@@ -1,21 +1,27 @@
 import {
-  IGitProvider,
-  GitRepo,
-  GitBranch,
-  GitRelease,
+  type GitBranch,
   GithubApiError,
+  type GitRelease,
+  type GitRepo,
+  type GitTreeEntry,
+  type IGitProvider,
 } from "./types";
 
 const REPOS_PER_PAGE = 100;
 const MAX_PAGINATION_PAGES = 10;
 
 class GithubProvider implements IGitProvider {
-  private async githubFetch(token: string, url: string) {
+  private async githubFetch(
+    token: string,
+    url: string,
+    extraHeaders?: Record<string, string>,
+  ) {
     const res = await fetch(url, {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
+        ...(extraHeaders ?? {}),
       },
       cache: "no-store",
     });
@@ -39,7 +45,7 @@ class GithubProvider implements IGitProvider {
     let page = 1;
 
     while (page <= MAX_PAGINATION_PAGES) {
-      const url = new URL(`https://api.github.com/user/repos`);
+      const url = new URL("https://api.github.com/user/repos");
       url.searchParams.set("per_page", String(REPOS_PER_PAGE));
       url.searchParams.set("page", String(page));
       url.searchParams.set("visibility", "all");
@@ -118,6 +124,50 @@ class GithubProvider implements IGitProvider {
         isPrerelease: r.prerelease,
         published_at: r.published_at,
       }));
+  }
+
+  public async getTree(
+    token: string,
+    repoFullName: string,
+    ref: string,
+  ): Promise<GitTreeEntry[]> {
+    // 1) Resolve ref -> sha
+    const refUrl = new URL(
+      `https://api.github.com/repos/${repoFullName}/git/ref/${encodeURIComponent(ref)}`,
+    );
+
+    let sha: string | undefined;
+    try {
+      const refRes = await this.githubFetch(token, refUrl.toString());
+      const refData = (await refRes.json()) as { object?: { sha?: string } };
+      sha = refData?.object?.sha;
+    } catch {
+      // If the direct ref lookup fails (e.g. tags vs heads), fall back to commits.
+      const commitRes = await this.githubFetch(
+        token,
+        `https://api.github.com/repos/${repoFullName}/commits/${encodeURIComponent(ref)}`,
+      );
+      const commitData = (await commitRes.json()) as { sha?: string };
+      sha = commitData?.sha;
+    }
+
+    if (!sha) {
+      throw new Error(`Unable to resolve ref ${ref}`);
+    }
+
+    // 2) Fetch the recursive tree
+    const treeRes = await this.githubFetch(
+      token,
+      `https://api.github.com/repos/${repoFullName}/git/trees/${sha}?recursive=1`,
+    );
+
+    const treeData = (await treeRes.json()) as {
+      tree?: Array<{ path: string; type: "tree" | "blob" | "commit" }>;
+    };
+
+    return (treeData.tree ?? [])
+      .filter((e) => e.type === "tree" || e.type === "blob")
+      .map((e) => ({ path: e.path, type: e.type as "tree" | "blob" }));
   }
 }
 
