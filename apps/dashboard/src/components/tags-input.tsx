@@ -117,7 +117,7 @@ export function TagsInput({
           ))}
         </div>
       ) : (
-        <div className="text-xs text-muted-foreground">No tags added yet.</div>
+       <></>
       )}
 
       {normalizedSuggestions.length > 0 ? (

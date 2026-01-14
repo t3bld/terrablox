@@ -37,72 +37,46 @@ type RefChoice =
   | { type: "release"; name: string }
   | { type: "branch"; name: string };
 
-const STEP_META: Record<Step, { title: string; description: string }> = {
-  1: {
-    title: "Choose a repository",
-    description:
-      "Pick the repo you want to import from your connected account.",
-  },
-  2: {
-    title: "Choose a version",
-    description: "Select a release tag or a branch to import.",
-  },
-  3: {
-    title: "Module",
-    description: "Set the module name, description, and tags.",
-  },
-  4: {
-    title: "Terraform",
-    description: "Select the Terraform root and any submodule folders.",
-  },
-};
-
 function Stepper({ current }: { current: Step }) {
   const items: Array<{ step: Step; label: string }> = [
-    { step: 1, label: "Repo" },
+    { step: 1, label: "Repository" },
     { step: 2, label: "Version" },
-    { step: 3, label: "Module" },
+    { step: 3, label: "Description" },
     { step: 4, label: "Terraform" },
   ];
 
   return (
-    <ol className="flex items-center gap-2" aria-label="Import steps">
-      {items.map((item, idx) => {
+    <ol
+      className="mx-auto flex w-full max-w-[520px] items-center justify-center gap-3"
+      aria-label="Import steps"
+    >
+      {items.map((item) => {
         const completed = item.step < current;
         const active = item.step === current;
 
         return (
           <li key={item.step} className="flex items-center gap-2">
-            <div
-              className={`flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${
+            <span
+              className={`h-2.5 w-2.5 rounded-full ${
                 active
-                  ? "border-primary text-primary"
+                  ? "bg-primary"
                   : completed
-                    ? "border-muted-foreground/30 text-foreground"
-                    : "border-muted-foreground/20 text-muted-foreground"
+                    ? "bg-foreground/70"
+                    : "bg-muted-foreground/30"
               }`}
-              aria-current={active ? "step" : undefined}
+              aria-hidden="true"
+            />
+            <span
+              className={`text-xs font-medium ${
+                active
+                  ? "text-foreground"
+                  : completed
+                    ? "text-muted-foreground"
+                    : "text-muted-foreground"
+              }`}
             >
-              <span
-                className={`inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${
-                  active
-                    ? "bg-primary text-primary-foreground"
-                    : completed
-                      ? "bg-muted text-foreground"
-                      : "bg-muted/50 text-muted-foreground"
-                }`}
-              >
-                {item.step}
-              </span>
               {item.label}
-            </div>
-
-            {idx < items.length - 1 ? (
-              <span
-                className="h-px w-6 bg-muted-foreground/20"
-                aria-hidden="true"
-              />
-            ) : null}
+            </span>
           </li>
         );
       })}
@@ -331,7 +305,8 @@ export function ImportModuleDialog({
     step === 3 ||
     step === 4;
 
-  const stepMeta = STEP_META[step];
+  // We no longer render step meta title/description in the header.
+  // const stepMeta = STEP_META[step];
 
   async function onFinish() {
     if (!user?.id) {
@@ -377,21 +352,13 @@ export function ImportModuleDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[760px]">
         <DialogHeader className="space-y-3">
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex items-center justify-center gap-2 text-center">
             <Github className="h-5 w-5" />
             Import from {providerName}
           </DialogTitle>
           <DialogDescription>
             <div className="space-y-2">
               <Stepper current={step} />
-              <div>
-                <div className="text-sm font-medium text-foreground">
-                  {stepMeta.title}
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  {stepMeta.description}
-                </div>
-              </div>
             </div>
           </DialogDescription>
         </DialogHeader>
@@ -482,23 +449,6 @@ export function ImportModuleDialog({
 
         {step === 2 ? (
           <div className="space-y-4">
-            <div className="rounded-md border bg-muted/20 p-3 text-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-muted-foreground">Repository</span>
-                <span className="font-medium">{selectedRepo?.full_name}</span>
-                {refChoice ? (
-                  <>
-                    <span className="text-muted-foreground">•</span>
-                    <span className="text-muted-foreground">Selected</span>
-                    <span className="font-medium">
-                      {refChoice.type === "release" ? "Release" : "Branch"}:{" "}
-                      {refChoice.name}
-                    </span>
-                  </>
-                ) : null}
-              </div>
-            </div>
-
             <div className="flex items-center gap-2">
               <Button
                 type="button"
@@ -618,30 +568,14 @@ export function ImportModuleDialog({
 
         {step === 3 ? (
           <div className="space-y-5">
-            <div className="rounded-md border bg-muted/20 p-3 text-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-muted-foreground">Repository</span>
-                <span className="font-medium">{selectedRepo?.full_name}</span>
-                <span className="text-muted-foreground">•</span>
-                <span className="text-muted-foreground">Version</span>
-                <span className="font-medium">
-                  {refChoice?.type === "release" ? "Release" : "Branch"}:{" "}
-                  {refChoice?.name}
-                </span>
-              </div>
-            </div>
-
             <div className="space-y-2">
               <Label htmlFor="moduleName">Module name</Label>
               <Input
                 id="moduleName"
                 value={moduleName}
                 onChange={(e) => setModuleName(e.target.value)}
-                placeholder="e.g. vpc"
+                placeholder="What is the name of your module?"
               />
-              <p className="text-xs text-muted-foreground">
-                This is how the module will show up in your dashboard.
-              </p>
             </div>
 
             <div className="space-y-2">
@@ -652,14 +586,10 @@ export function ImportModuleDialog({
                 onChange={(e) => setModuleDescription(e.target.value)}
                 placeholder="What does this module do?"
               />
-              <p className="text-xs text-muted-foreground">
-                Prefilled from the repository description. You can edit it.
-              </p>
             </div>
 
             <TagsInput
               label="Tags"
-              description="Use a few short, consistent tags (e.g. aws, networking, vpc)."
               value={tags}
               onChange={setTags}
               suggestions={tagSuggestions}
@@ -675,23 +605,9 @@ export function ImportModuleDialog({
 
         {step === 4 ? (
           <div className="space-y-5">
-            <div className="rounded-md border bg-muted/20 p-3 text-sm">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-muted-foreground">Repository</span>
-                <span className="font-medium">{selectedRepo?.full_name}</span>
-                <span className="text-muted-foreground">•</span>
-                <span className="text-muted-foreground">Version</span>
-                <span className="font-medium">
-                  {refChoice?.type === "release" ? "Release" : "Branch"}:{" "}
-                  {refChoice?.name}
-                </span>
-              </div>
-            </div>
-
             {selectedRepo && refChoice ? (
               <RepoFolderPicker
                 label="Terraform root path"
-                description="Pick the folder inside the repo that contains the Terraform module root."
                 value={terraformRootFolder}
                 onChange={setTerraformRootFolder}
                 provider="github"
@@ -713,7 +629,6 @@ export function ImportModuleDialog({
             {selectedRepo && refChoice ? (
               <MultiRepoFolderPicker
                 label="Terraform submodule folders"
-                description="Optional: if this repo contains multiple Terraform modules, add their folder paths."
                 value={terraformSubmodulesFolders}
                 onChange={setTerraformSubmodulesFolders}
                 provider="github"

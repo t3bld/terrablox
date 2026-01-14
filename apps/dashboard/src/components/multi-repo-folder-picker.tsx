@@ -81,7 +81,7 @@ export function MultiRepoFolderPicker({
 
       <RepoFolderPicker
         label="Add submodule folder"
-        description="Pick a folder that contains a Terraform child module. You can add multiple."
+        description="Browse the repo and select a folder to add."
         value={"."}
         onChange={(picked: string) => {
           const p = normalizeFolderPath(picked);

@@ -2,7 +2,7 @@
 
 import { Button } from "@terrablox/ui/button";
 import { Input } from "@terrablox/ui/input";
-import { ChevronRight, FolderOpen, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, FolderOpen, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 export interface RepoFolderPickerProps {
@@ -16,7 +16,6 @@ export interface RepoFolderPickerProps {
   refName: string;
 
   disabled?: boolean;
-  allowDot?: boolean;
 }
 
 type TreeEntry = {
@@ -31,6 +30,13 @@ function normalizeFolderPath(input: string) {
   return normalized === "" ? "." : normalized;
 }
 
+function parentPath(path: string) {
+  const p = normalizeFolderPath(path);
+  if (p === ".") return ".";
+  const parent = p.split("/").slice(0, -1).join("/");
+  return parent || ".";
+}
+
 export function RepoFolderPicker({
   label,
   description,
@@ -40,13 +46,15 @@ export function RepoFolderPicker({
   repoFullName,
   refName,
   disabled,
-  allowDot = true,
 }: RepoFolderPickerProps) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [entries, setEntries] = useState<TreeEntry[]>([]);
-  const [prefix, setPrefix] = useState(".");
+
+  // Folder being browsed
+  const [cwd, setCwd] = useState(".");
+  const [query, setQuery] = useState("");
 
   const ownerRepo = useMemo(() => {
     const [owner, repo] = repoFullName.split("/");
@@ -57,7 +65,8 @@ export function RepoFolderPicker({
 
   useEffect(() => {
     if (!open) return;
-    setPrefix(currentValue);
+    setCwd(currentValue);
+    setQuery("");
   }, [open, currentValue]);
 
   useEffect(() => {
@@ -93,14 +102,14 @@ export function RepoFolderPicker({
     fetchTree();
   }, [open, ownerRepo.owner, ownerRepo.repo, provider, refName]);
 
-  const crumbs = useMemo(() => {
-    const p = normalizeFolderPath(prefix);
-    if (p === ".") return ["."]; // root
+  const breadcrumbs = useMemo(() => {
+    const p = normalizeFolderPath(cwd);
+    if (p === ".") return ["."];
     return [".", ...p.split("/")];
-  }, [prefix]);
+  }, [cwd]);
 
-  const foldersInPrefix = useMemo(() => {
-    const p = normalizeFolderPath(prefix);
+  const foldersInCwd = useMemo(() => {
+    const p = normalizeFolderPath(cwd);
     const base = p === "." ? "" : `${p}/`;
 
     const names = new Set<string>();
@@ -116,64 +125,105 @@ export function RepoFolderPicker({
       if (first) names.add(first);
     }
 
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [entries, prefix]);
+    const list = Array.from(names).sort((a, b) => a.localeCompare(b));
+
+    const q = query.trim().toLowerCase();
+    if (!q) return list;
+
+    return list.filter((n) => n.toLowerCase().includes(q));
+  }, [cwd, entries, query]);
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-medium">{label}</div>
           {description ? (
             <div className="text-xs text-muted-foreground">{description}</div>
           ) : null}
         </div>
+      </div>
 
+      <div className="flex items-center gap-2">
+        <Input
+          value={currentValue}
+          onChange={(e) => onChange(normalizeFolderPath(e.target.value))}
+          placeholder="e.g. . or modules/vpc"
+          disabled={disabled}
+        />
         <Button
           type="button"
           variant="outline"
           size="sm"
           onClick={() => setOpen((v) => !v)}
           disabled={disabled}
+          className="shrink-0"
         >
-          <FolderOpen className="h-4 w-4 mr-2" />
-          {open ? "Close" : "Browse"}
+          <FolderOpen className="mr-2 h-4 w-4" />
+          Browse
         </Button>
       </div>
 
-      <Input
-        value={currentValue}
-        onChange={(e) => onChange(normalizeFolderPath(e.target.value))}
-        placeholder="e.g. . or modules/vpc"
-        disabled={disabled}
-      />
-
       {open ? (
         <div className="rounded-md border p-3 space-y-3">
-          <div className="flex flex-wrap items-center gap-1 text-xs">
-            {crumbs.map((c, idx) => {
-              const isDot = idx === 0;
-              const path = isDot
-                ? "."
-                : crumbs
-                    .slice(1, idx + 1)
-                    .filter(Boolean)
-                    .join("/");
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setCwd(parentPath(cwd))}
+                disabled={cwd === "."}
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
 
-              const key = isDot ? "crumb:." : `crumb:${path}`;
+              <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                {breadcrumbs.map((c, idx) => {
+                  const isDot = idx === 0;
+                  const path = isDot
+                    ? "."
+                    : breadcrumbs
+                        .slice(1, idx + 1)
+                        .filter(Boolean)
+                        .join("/");
 
-              return (
-                <button
-                  type="button"
-                  key={key}
-                  className="inline-flex items-center rounded px-2 py-1 hover:bg-muted text-muted-foreground hover:text-foreground"
-                  onClick={() => setPrefix(path || ".")}
-                >
-                  {idx !== 0 ? <ChevronRight className="h-3 w-3 mr-1" /> : null}
-                  {c}
-                </button>
-              );
-            })}
+                  const key = isDot ? "crumb:." : `crumb:${path}`;
+
+                  return (
+                    <button
+                      type="button"
+                      key={key}
+                      className="inline-flex items-center rounded px-2 py-1 hover:bg-muted hover:text-foreground"
+                      onClick={() => setCwd(path || ".")}
+                    >
+                      {idx !== 0 ? (
+                        <ChevronRight className="mr-1 h-3 w-3" />
+                      ) : null}
+                      {c}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Filter folders…"
+                className="h-8"
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant={currentValue === "." ? "default" : "outline"}
+                onClick={() => onChange(".")}
+                title="Select repository root"
+              >
+                Root
+              </Button>
+            </div>
           </div>
 
           {loading ? (
@@ -182,61 +232,49 @@ export function RepoFolderPicker({
             </div>
           ) : error ? (
             <div className="text-sm text-destructive">{error}</div>
+          ) : foldersInCwd.length === 0 ? (
+            <div className="text-sm text-muted-foreground">
+              No folders found.
+            </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {allowDot && prefix !== "." ? (
-                <button
-                  type="button"
-                  className="rounded-md border p-2 text-left hover:bg-muted"
-                  onClick={() => {
-                    const parent =
-                      prefix.split("/").slice(0, -1).join("/") || ".";
-                    setPrefix(parent);
-                  }}
-                >
-                  <div className="text-sm font-medium">..</div>
-                  <div className="text-xs text-muted-foreground">Go up</div>
-                </button>
-              ) : null}
+            <div className="space-y-1">
+              {foldersInCwd.map((name) => {
+                const path = cwd === "." ? name : `${cwd}/${name}`;
+                const selected = currentValue === path;
 
-              {foldersInPrefix.length === 0 ? (
-                <div className="text-sm text-muted-foreground">
-                  No folders found here.
-                </div>
-              ) : (
-                foldersInPrefix.map((name) => {
-                  const next = prefix === "." ? name : `${prefix}/${name}`;
-
-                  return (
-                    <div
-                      key={next}
-                      className="flex items-center justify-between gap-2 rounded-md border p-2"
+                return (
+                  <div
+                    key={path}
+                    className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5"
+                  >
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      onClick={() => setCwd(path)}
+                      title="Open folder"
                     >
-                      <button
-                        type="button"
-                        className="min-w-0 text-left hover:underline"
-                        onClick={() => setPrefix(next)}
-                        title={next}
-                      >
-                        <div className="text-sm font-medium truncate">
+                      <FolderOpen className="h-4 w-4 text-muted-foreground" />
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">
                           {name}
                         </div>
-                        <div className="text-xs text-muted-foreground truncate">
-                          {next}
+                        <div className="truncate text-xs text-muted-foreground">
+                          {path}
                         </div>
-                      </button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={currentValue === next ? "default" : "outline"}
-                        onClick={() => onChange(next)}
-                      >
-                        {currentValue === next ? "Selected" : "Select"}
-                      </Button>
-                    </div>
-                  );
-                })
-              )}
+                      </div>
+                    </button>
+
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={selected ? "default" : "outline"}
+                      onClick={() => onChange(path)}
+                    >
+                      {selected ? "Selected" : "Select"}
+                    </Button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
