@@ -398,36 +398,26 @@ export function ImportModuleDialog({
                       onClick={() => {
                         setSelectedRepo(repo);
                         setModuleName(repo.name);
+                        setStep(2);
                       }}
                       className={`group w-full text-left rounded-md border p-3 transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                         selected ? "border-primary" : "border-transparent"
                       }`}
                       aria-pressed={selected}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="font-medium truncate">
-                            {repo.full_name}
+                      <div className="min-w-0">
+                        <div className="font-medium truncate">
+                          {repo.full_name}
+                        </div>
+                        {repo.description ? (
+                          <div className="text-sm text-muted-foreground line-clamp-2">
+                            {repo.description}
                           </div>
-                          {repo.description ? (
-                            <div className="text-sm text-muted-foreground line-clamp-2">
-                              {repo.description}
-                            </div>
-                          ) : (
-                            <div className="text-sm text-muted-foreground">
-                              No description
-                            </div>
-                          )}
-                        </div>
-                        <div
-                          className={`text-xs font-medium ${
-                            selected
-                              ? "text-primary"
-                              : "text-muted-foreground group-hover:text-foreground"
-                          }`}
-                        >
-                          {selected ? "Selected" : "Select"}
-                        </div>
+                        ) : (
+                          <div className="text-sm text-muted-foreground">
+                            No description
+                          </div>
+                        )}
                       </div>
                     </button>
                   );
@@ -493,22 +483,16 @@ export function ImportModuleDialog({
                         className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                           selected ? "border-primary" : "border-transparent"
                         }`}
-                        onClick={() =>
-                          setRefChoice({ type: "release", name: r.tag_name })
-                        }
+                        onClick={() => {
+                          setRefChoice({ type: "release", name: r.tag_name });
+                          setStep(3);
+                        }}
                         aria-pressed={selected}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="font-medium">{r.tag_name}</div>
-                            <div className="text-xs text-muted-foreground truncate">
-                              {r.name || "Release"}
-                            </div>
-                          </div>
-                          <div
-                            className={`text-xs ${selected ? "text-primary" : "text-muted-foreground"}`}
-                          >
-                            {selected ? "Selected" : "Select"}
+                        <div className="min-w-0">
+                          <div className="font-medium">{r.tag_name}</div>
+                          <div className="text-xs text-muted-foreground truncate">
+                            {r.name || "Release"}
                           </div>
                         </div>
                       </button>
@@ -533,29 +517,23 @@ export function ImportModuleDialog({
                         className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                           selected ? "border-primary" : "border-transparent"
                         }`}
-                        onClick={() =>
-                          setRefChoice({ type: "branch", name: b.name })
-                        }
+                        onClick={() => {
+                          setRefChoice({ type: "branch", name: b.name });
+                          setStep(3);
+                        }}
                         aria-pressed={selected}
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="font-medium">{b.name}</div>
-                            {b.commitSha ? (
-                              <div className="text-xs text-muted-foreground">
-                                {b.commitSha.slice(0, 7)}
-                              </div>
-                            ) : (
-                              <div className="text-xs text-muted-foreground">
-                                {" "}
-                              </div>
-                            )}
-                          </div>
-                          <div
-                            className={`text-xs ${selected ? "text-primary" : "text-muted-foreground"}`}
-                          >
-                            {selected ? "Selected" : "Select"}
-                          </div>
+                        <div className="min-w-0">
+                          <div className="font-medium">{b.name}</div>
+                          {b.commitSha ? (
+                            <div className="text-xs text-muted-foreground">
+                              {b.commitSha.slice(0, 7)}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground">
+                              {" "}
+                            </div>
+                          )}
                         </div>
                       </button>
                     );

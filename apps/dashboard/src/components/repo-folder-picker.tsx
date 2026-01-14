@@ -2,7 +2,7 @@
 
 import { Button } from "@terrablox/ui/button";
 import { Input } from "@terrablox/ui/input";
-import { ChevronLeft, ChevronRight, FolderOpen, Loader2 } from "lucide-react";
+import { ChevronRight, Folder, FolderOpen, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 export interface RepoFolderPickerProps {
@@ -30,11 +30,30 @@ function normalizeFolderPath(input: string) {
   return normalized === "" ? "." : normalized;
 }
 
-function parentPath(path: string) {
-  const p = normalizeFolderPath(path);
-  if (p === ".") return ".";
-  const parent = p.split("/").slice(0, -1).join("/");
-  return parent || ".";
+function joinPath(prefix: string, name: string) {
+  const p = normalizeFolderPath(prefix);
+  if (p === ".") return name;
+  return `${p}/${name}`;
+}
+
+function getChildFolders(entries: TreeEntry[], parent: string) {
+  const p = normalizeFolderPath(parent);
+  const base = p === "." ? "" : `${p}/`;
+
+  const names = new Set<string>();
+
+  for (const e of entries) {
+    if (e.type !== "tree") continue;
+    if (!e.path.startsWith(base)) continue;
+
+    const remainder = e.path.slice(base.length);
+    if (!remainder) continue;
+
+    const first = remainder.split("/")[0];
+    if (first) names.add(first);
+  }
+
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
 }
 
 export function RepoFolderPicker({
@@ -52,9 +71,8 @@ export function RepoFolderPicker({
   const [error, setError] = useState<string | null>(null);
   const [entries, setEntries] = useState<TreeEntry[]>([]);
 
-  // Folder being browsed
-  const [cwd, setCwd] = useState(".");
-  const [query, setQuery] = useState("");
+  // Finder-like column navigation state
+  const [pathStack, setPathStack] = useState<string[]>(["."]); // stack of selected folder paths
 
   const ownerRepo = useMemo(() => {
     const [owner, repo] = repoFullName.split("/");
@@ -63,11 +81,11 @@ export function RepoFolderPicker({
 
   const currentValue = normalizeFolderPath(value ?? ".");
 
+  // When opening, always start browsing from root for a predictable UX.
   useEffect(() => {
     if (!open) return;
-    setCwd(currentValue);
-    setQuery("");
-  }, [open, currentValue]);
+    setPathStack(["."]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -102,46 +120,30 @@ export function RepoFolderPicker({
     fetchTree();
   }, [open, ownerRepo.owner, ownerRepo.repo, provider, refName]);
 
-  const breadcrumbs = useMemo(() => {
-    const p = normalizeFolderPath(cwd);
-    if (p === ".") return ["."];
-    return [".", ...p.split("/")];
-  }, [cwd]);
+  const selectedCwd = pathStack[pathStack.length - 1] ?? ".";
 
-  const foldersInCwd = useMemo(() => {
-    const p = normalizeFolderPath(cwd);
-    const base = p === "." ? "" : `${p}/`;
+  const columns = useMemo(() => {
+    // Each column shows the children of the corresponding pathStack[i].
+    // And highlights the next selected entry (pathStack[i+1]) if present.
+    return pathStack.map((parent, idx) => {
+      const folders = getChildFolders(entries, parent);
+      const selectedChild = pathStack[idx + 1];
 
-    const names = new Set<string>();
-
-    for (const e of entries) {
-      if (e.type !== "tree") continue;
-      if (!e.path.startsWith(base)) continue;
-
-      const remainder = e.path.slice(base.length);
-      if (!remainder) continue;
-
-      const first = remainder.split("/")[0];
-      if (first) names.add(first);
-    }
-
-    const list = Array.from(names).sort((a, b) => a.localeCompare(b));
-
-    const q = query.trim().toLowerCase();
-    if (!q) return list;
-
-    return list.filter((n) => n.toLowerCase().includes(q));
-  }, [cwd, entries, query]);
+      return {
+        parent,
+        folders,
+        selectedChild,
+      };
+    });
+  }, [entries, pathStack]);
 
   return (
     <div className="space-y-2">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-medium">{label}</div>
-          {description ? (
-            <div className="text-xs text-muted-foreground">{description}</div>
-          ) : null}
-        </div>
+      <div className="min-w-0">
+        <div className="text-sm font-medium">{label}</div>
+        {description ? (
+          <div className="text-xs text-muted-foreground">{description}</div>
+        ) : null}
       </div>
 
       <div className="flex items-center gap-2">
@@ -151,133 +153,107 @@ export function RepoFolderPicker({
           placeholder="e.g. . or modules/vpc"
           disabled={disabled}
         />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => setOpen((v) => !v)}
-          disabled={disabled}
-          className="shrink-0"
-        >
-          <FolderOpen className="mr-2 h-4 w-4" />
-          Browse
-        </Button>
+
+        {open ? (
+          <>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={() => {
+                onChange(selectedCwd);
+                setOpen(false);
+              }}
+              disabled={disabled}
+              className="shrink-0"
+            >
+              Use this folder
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setOpen(false)}
+              disabled={disabled}
+              className="shrink-0"
+            >
+              Close
+            </Button>
+          </>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setOpen(true)}
+            disabled={disabled}
+            className="shrink-0"
+          >
+            <FolderOpen className="mr-2 h-4 w-4" />
+            Browse
+          </Button>
+        )}
       </div>
 
       {open ? (
-        <div className="rounded-md border p-3 space-y-3">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={() => setCwd(parentPath(cwd))}
-                disabled={cwd === "."}
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-
-              <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-                {breadcrumbs.map((c, idx) => {
-                  const isDot = idx === 0;
-                  const path = isDot
-                    ? "."
-                    : breadcrumbs
-                        .slice(1, idx + 1)
-                        .filter(Boolean)
-                        .join("/");
-
-                  const key = isDot ? "crumb:." : `crumb:${path}`;
-
-                  return (
-                    <button
-                      type="button"
-                      key={key}
-                      className="inline-flex items-center rounded px-2 py-1 hover:bg-muted hover:text-foreground"
-                      onClick={() => setCwd(path || ".")}
-                    >
-                      {idx !== 0 ? (
-                        <ChevronRight className="mr-1 h-3 w-3" />
-                      ) : null}
-                      {c}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter folders…"
-                className="h-8"
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant={currentValue === "." ? "default" : "outline"}
-                onClick={() => onChange(".")}
-                title="Select repository root"
-              >
-                Root
-              </Button>
-            </div>
+        loading ? (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading folders...
           </div>
-
-          {loading ? (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" /> Loading folders...
-            </div>
-          ) : error ? (
-            <div className="text-sm text-destructive">{error}</div>
-          ) : foldersInCwd.length === 0 ? (
-            <div className="text-sm text-muted-foreground">
-              No folders found.
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {foldersInCwd.map((name) => {
-                const path = cwd === "." ? name : `${cwd}/${name}`;
-                const selected = currentValue === path;
-
-                return (
-                  <div
-                    key={path}
-                    className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5"
-                  >
-                    <button
-                      type="button"
-                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                      onClick={() => setCwd(path)}
-                      title="Open folder"
-                    >
-                      <FolderOpen className="h-4 w-4 text-muted-foreground" />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">
-                          {name}
-                        </div>
-                        <div className="truncate text-xs text-muted-foreground">
-                          {path}
-                        </div>
-                      </div>
-                    </button>
-
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={selected ? "default" : "outline"}
-                      onClick={() => onChange(path)}
-                    >
-                      {selected ? "Selected" : "Select"}
-                    </Button>
+        ) : error ? (
+          <div className="text-sm text-destructive">{error}</div>
+        ) : (
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            {columns.map((col, colIdx) => {
+              return (
+                <div
+                  key={`col:${col.parent}`}
+                  className="rounded-md border bg-background"
+                >
+                  <div className="border-b px-2 py-1.5 text-xs text-muted-foreground">
+                    {col.parent === "." ? "Root" : col.parent}
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+
+                  <div className="max-h-[240px] overflow-y-auto p-1">
+                    {col.folders.length === 0 ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">
+                        No folders
+                      </div>
+                    ) : (
+                      col.folders.map((name) => {
+                        const path = joinPath(col.parent, name);
+                        const selected = col.selectedChild === path;
+
+                        return (
+                          <button
+                            type="button"
+                            key={path}
+                            className={`flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-muted ${
+                              selected ? "bg-muted font-medium" : "font-normal"
+                            }`}
+                            onClick={() => {
+                              setPathStack((prev) => {
+                                const next = prev.slice(0, colIdx + 1);
+                                next.push(path);
+                                return next;
+                              });
+                            }}
+                          >
+                            <span className="flex min-w-0 items-center gap-2">
+                              <Folder className="h-4 w-4 text-muted-foreground" />
+                              <span className="truncate">{name}</span>
+                            </span>
+                            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )
       ) : null}
     </div>
   );

@@ -48,18 +48,30 @@ export function MultiRepoFolderPicker({
         ) : null}
       </div>
 
+      <RepoFolderPicker
+        label={""}
+        value={"."}
+        onChange={(picked: string) => {
+          const p = normalizeFolderPath(picked);
+          if (!p || p === ".") return;
+          if (folders.includes(p)) return;
+          onChange([...folders, p]);
+        }}
+        provider={provider}
+        repoFullName={repoFullName}
+        refName={refName}
+        disabled={disabled}
+      />
+
       {folders.length > 0 ? (
-        <div className="space-y-2">
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {folders.map((f) => (
             <div
               key={f}
               className="flex items-center justify-between gap-2 rounded-md border p-2"
             >
               <div className="min-w-0">
-                <div className="text-sm font-medium truncate">{f}</div>
-                <div className="text-xs text-muted-foreground">
-                  Terraform submodule folder
-                </div>
+                <div className="truncate text-sm font-medium">{f}</div>
               </div>
               <Button
                 type="button"
@@ -73,27 +85,7 @@ export function MultiRepoFolderPicker({
             </div>
           ))}
         </div>
-      ) : (
-        <div className="text-xs text-muted-foreground">
-          No submodule folders selected.
-        </div>
-      )}
-
-      <RepoFolderPicker
-        label="Add submodule folder"
-        description="Browse the repo and select a folder to add."
-        value={"."}
-        onChange={(picked: string) => {
-          const p = normalizeFolderPath(picked);
-          if (!p || p === ".") return;
-          if (folders.includes(p)) return;
-          onChange([...folders, p]);
-        }}
-        provider={provider}
-        repoFullName={repoFullName}
-        refName={refName}
-        disabled={disabled}
-      />
+      ) : null}
     </div>
   );
 }
