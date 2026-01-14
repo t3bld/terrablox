@@ -354,7 +354,7 @@ export function ImportModuleDialog({
         <DialogHeader className="space-y-3">
           <DialogTitle className="flex items-center justify-center gap-2 text-center">
             <Github className="h-5 w-5" />
-            Import from {providerName}
+            Import from GitHub
           </DialogTitle>
           <DialogDescription>
             <div className="space-y-2">
