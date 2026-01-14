@@ -23,14 +23,14 @@ export async function createModuleFromGitImport(
 
   // Terraform-friendly GitHub source URL pattern.
   // Note: This doesn't clone anything yet; it just records metadata for later.
-  const sourceUrl = `https://github.com/${repoFullName}.git?ref=${encodeURIComponent(refName)}`;
+  const url = `https://github.com/${repoFullName}.git?ref=${encodeURIComponent(refName)}`;
 
   return await database.terraformModule.create({
     data: {
       userId,
       name: input.nameOverride?.trim() || defaultName,
-      version: refType === "release" ? refName : null,
-      sourceUrl,
+      versionTag: refType === "release" ? refName : null,
+      url,
       terraformRootFolder: terraformRootFolder?.trim() || null,
     },
   });

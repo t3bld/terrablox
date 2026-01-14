@@ -37,12 +37,13 @@ model Project {
 }
 
 model TerraformModuleSource {
-  id          String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId      String   @map("user_id") @db.Uuid
   name        String   @db.Text
   description String?  @db.Text
   tags        String[] @default([]) @db.Text
-  gitRepo     String   @map("git_repo") @db.Text
+  url         String   @db.Text
+  provider    String   @default("github") @db.Text
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -54,9 +55,14 @@ model TerraformModuleSource {
 
 model TerraformModule {
   id                  String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  userId              String   @map("user_id") @db.Uuid
+  name                String   @db.Text
+  versionTag          String?  @map("version_tag") @db.Text
+  description         String?  @db.Text
+  url                 String?  @db.Text
   sourceId            String?  @map("source_id") @db.Uuid
-  gitRef              String?  @map("version") @db.Text
   terraformRootFolder String?  @map("terraform_root_folder") @db.Text
+  terraformSubmodulesFolders String[] @map("terraform_submodules_folders") @default([]) @db.Text
   variables           Json     @default("[]") @db.JsonB
   outputs             Json     @default("[]") @db.JsonB
   isSubmodule         Boolean  @default(false) @map("is_submodule")
@@ -67,10 +73,10 @@ model TerraformModule {
   source       TerraformModuleSource? @relation(fields: [sourceId], references: [id], onDelete: Cascade)
   parentModule TerraformModule?      @relation("ModuleHierarchy", fields: [parentModuleId], references: [id], onDelete: SetNull)
   submodules   TerraformModule[]     @relation("ModuleHierarchy")
-  resources    TerraformResource[]
+  resources    ProviderResource[]
   canvasNodes  CanvasNode[]
 
-  @@unique([sourceId, gitRef, terraformRootFolder])
+  @@unique([sourceId, versionTag, terraformRootFolder])
   @@map("terraform_modules")
   @@schema("public")
 }
@@ -114,19 +120,20 @@ model Connection {
   @@schema("public")
 }
 
-model TerraformResource {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  moduleId     String   @map("module_id") @db.Uuid
-  resourceType String   @map("resource_type") @db.Text
-  resourceName String?  @map("resource_name") @db.Text
-  provider     String   @db.Text
-  version      String?  @db.Text
-  publisher    String?  @db.Text
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+model ProviderResource {
+  id                  String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId            String  @map("module_id") @db.Uuid
+  resourceType        String  @map("resource_type") @db.Text
+  resourceName        String? @map("resource_name") @db.Text
+  providerName        String  @map("provider_name") @db.Text
+  version             String? @db.Text
+  resourceUrl         String? @map("resource_url") @db.Text
+  providerUrl         String? @map("provider_url") @db.Text
+  resourceDescription String? @map("resource_description") @db.Text
 
   module TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
 
-  @@map("terraform_resources")
+  @@map("provider_resources")
   @@schema("public")
 }
 
