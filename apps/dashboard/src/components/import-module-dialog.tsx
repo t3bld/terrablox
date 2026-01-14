@@ -20,7 +20,6 @@ import { Label } from "@terrablox/ui/label";
 import { Github, Loader2, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { createModuleFromGitImport } from "@/actions/module-actions";
 import { MultiRepoFolderPicker } from "@/components/multi-repo-folder-picker";
 import { FolderPicker } from "@/components/repo-folder-picker";
 import { TagsInput } from "@/components/tags-input";
@@ -326,17 +325,31 @@ export function ImportModuleDialog({
     setSaveError(null);
 
     try {
-      await createModuleFromGitImport({
-        userId: user.id,
-        repoFullName: selectedRepo.full_name,
-        refType: refChoice.type,
-        refName: refChoice.name,
-        terraformRootFolder,
-        terraformSubmodulesFolders,
-        nameOverride: moduleName,
-        description: moduleDescription,
-        tags,
+      const res = await fetch("/api/modules/import-from-git", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user.id,
+          repoFullName: selectedRepo.full_name,
+          refType: refChoice.type,
+          refName: refChoice.name,
+          terraformRootFolder,
+          terraformSubmodulesFolders,
+          nameOverride: moduleName,
+          description: moduleDescription,
+          tags,
+        }),
       });
+
+      const body = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(
+          typeof body?.error === "string" && body.error
+            ? body.error
+            : "Failed to create module.",
+        );
+      }
 
       onOpenChange(false);
     } catch (err) {

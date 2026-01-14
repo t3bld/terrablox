@@ -19,7 +19,6 @@ import {
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
-import { getProjects } from "@/actions/project-actions";
 import { AppSidebar } from "@/components/app-sidebar";
 
 export default function ProjectsPage() {
@@ -31,8 +30,12 @@ export default function ProjectsPage() {
     async function fetchProjects() {
       if (user?.id) {
         try {
-          const data = await getProjects(user.id);
-          setProjects(data);
+          const res = await fetch(
+            `/api/projects?userId=${encodeURIComponent(user.id)}`
+          );
+          const body = await res.json();
+          if (!res.ok) throw new Error(body?.error || "Failed to load projects");
+          setProjects((body?.projects ?? []) as Project[]);
         } catch {
           setProjects([]);
         } finally {
