@@ -5,9 +5,6 @@ import { useAuth } from "@terrablox/auth/hooks";
 
 export const dynamic = "force-dynamic";
 
-import Link from "next/link";
-import { Suspense, useState } from "react";
-
 import { Alert, AlertDescription } from "@terrablox/ui/alert";
 import { Button } from "@terrablox/ui/button";
 import {
@@ -19,6 +16,8 @@ import {
 } from "@terrablox/ui/card";
 import { Input } from "@terrablox/ui/input";
 import { Label } from "@terrablox/ui/label";
+import Link from "next/link";
+import { Suspense, useState } from "react";
 
 function ForgotPasswordInner() {
   const { resetPassword, isLoading } = useAuth();

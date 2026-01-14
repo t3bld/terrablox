@@ -1,7 +1,7 @@
-import { NextResponse } from "next/server";
+import type { GitProviderId } from "@terrablox/git-import";
 
 import { githubProvider } from "@terrablox/git-import/github";
-import type { GitProviderId } from "@terrablox/git-import";
+import { NextResponse } from "next/server";
 
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 

@@ -1,10 +1,10 @@
+import { createSupabaseServerAuth } from "@terrablox/auth/adapters/supabase";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
-import { createSupabaseServerAuth } from "@terrablox/auth/adapters/supabase";
 import {
+  type AuthRoutingConfig,
   buildNextParam,
   defaultAuthRouting,
-  type AuthRoutingConfig,
 } from "@/lib/auth/auth-routing";
 
 function isPublicAuthPath(pathname: string, cfg: AuthRoutingConfig) {

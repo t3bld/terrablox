@@ -1,8 +1,8 @@
 "use client";
 
+import { useAuth } from "@terrablox/auth/hooks";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { useAuth } from "@terrablox/auth/hooks";
 
 /**
  * Public layout.

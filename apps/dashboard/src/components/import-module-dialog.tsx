@@ -22,7 +22,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createModuleFromGitImport } from "@/actions/module-actions";
 import { MultiRepoFolderPicker } from "@/components/multi-repo-folder-picker";
-import { RepoFolderPicker } from "@/components/repo-folder-picker";
+import { FolderPicker } from "@/components/repo-folder-picker";
 import { TagsInput } from "@/components/tags-input";
 
 interface ImportModuleDialogProps {
@@ -584,7 +584,7 @@ export function ImportModuleDialog({
         {step === 4 ? (
           <div className="space-y-5">
             {selectedRepo && refChoice ? (
-              <RepoFolderPicker
+              <FolderPicker
                 label="Terraform root path"
                 value={terraformRootFolder}
                 onChange={setTerraformRootFolder}

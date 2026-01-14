@@ -2,7 +2,7 @@
 
 import { Button } from "@terrablox/ui/button";
 import { X } from "lucide-react";
-import { RepoFolderPicker } from "./repo-folder-picker";
+import { FolderPicker } from "./repo-folder-picker";
 
 export interface MultiRepoFolderPickerProps {
   label: string;
@@ -48,7 +48,7 @@ export function MultiRepoFolderPicker({
         ) : null}
       </div>
 
-      <RepoFolderPicker
+      <FolderPicker
         label={""}
         value={"."}
         onChange={(picked: string) => {

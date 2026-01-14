@@ -1,7 +1,6 @@
 "use client";
 
-import { Boxes, Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useAuth } from "@terrablox/auth/hooks";
 import { Card, CardContent } from "@terrablox/ui/card";
 import { Input } from "@terrablox/ui/input";
 import { Separator } from "@terrablox/ui/separator";
@@ -10,10 +9,10 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@terrablox/ui/sidebar";
-
+import { Boxes, Search } from "lucide-react";
+import { useMemo, useState } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ModuleImportActions } from "@/components/module-import-actions";
-import { useAuth } from "@terrablox/auth/hooks";
 
 interface Module {
   id: string;

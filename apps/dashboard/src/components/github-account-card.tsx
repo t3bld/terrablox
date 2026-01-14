@@ -1,5 +1,6 @@
 "use client";
 
+import { useAuth } from "@terrablox/auth/hooks";
 import { Button } from "@terrablox/ui/button";
 import {
   Card,
@@ -10,7 +11,6 @@ import {
 } from "@terrablox/ui/card";
 import { Github, Link as LinkIcon, Unlink } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useAuth } from "@terrablox/auth/hooks";
 
 export function GithubAccountCard() {
   const { user, signInWithOAuth } = useAuth();

@@ -1,15 +1,12 @@
-import { NextResponse } from "next/server";
-
 import type { GitProviderId } from "@terrablox/git-import";
 import { githubProvider } from "@terrablox/git-import/github";
+import { NextResponse } from "next/server";
 
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 
 export async function GET(
   req: Request,
-  {
-    params,
-  }: { params: { provider: string; owner: string; repo: string } },
+  { params }: { params: { provider: string; owner: string; repo: string } },
 ) {
   const providerId = params.provider as GitProviderId;
 
@@ -31,10 +28,7 @@ export async function GET(
   const owner = params.owner?.trim();
   const repo = params.repo?.trim();
   if (!owner || !repo) {
-    return NextResponse.json(
-      { error: "Missing owner/repo" },
-      { status: 400 },
-    );
+    return NextResponse.json({ error: "Missing owner/repo" }, { status: 400 });
   }
 
   const repoFullName = `${owner}/${repo}`;

@@ -1,7 +1,6 @@
 "use client";
 
-import { User2 } from "lucide-react";
-import { useEffect } from "react";
+import { useAuth } from "@terrablox/auth/hooks";
 import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
 import {
   Card,
@@ -16,10 +15,10 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@terrablox/ui/sidebar";
-
+import { User2 } from "lucide-react";
+import { useEffect } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { GithubAccountCard } from "@/components/github-account-card";
-import { useAuth } from "@terrablox/auth/hooks";
 
 export default function AccountPage() {
   const { user, isAuthenticated, refreshSession } = useAuth();

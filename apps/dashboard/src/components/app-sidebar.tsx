@@ -1,5 +1,6 @@
 "use client";
 
+import { useAuth } from "@terrablox/auth/hooks";
 import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
 import {
   DropdownMenu,
@@ -23,7 +24,6 @@ import {
 import { Boxes, ChevronUp, FolderKanban, LogOut, User2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useAuth } from "@terrablox/auth/hooks";
 
 const navItems = [
   {

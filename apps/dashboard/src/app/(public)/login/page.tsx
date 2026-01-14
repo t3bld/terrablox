@@ -4,11 +4,6 @@ import { useAuth } from "@terrablox/auth/hooks";
 
 export const dynamic = "force-dynamic";
 
-import { Github } from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-
 import { Alert, AlertDescription } from "@terrablox/ui/alert";
 import { Button } from "@terrablox/ui/button";
 import {
@@ -21,6 +16,10 @@ import {
 import { Input } from "@terrablox/ui/input";
 import { Label } from "@terrablox/ui/label";
 import { Separator } from "@terrablox/ui/separator";
+import { Github } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 
 export default function LoginPage() {
   const router = useRouter();
