@@ -121,8 +121,6 @@ export function ImportModuleDialog({
     string[]
   >([]);
 
-  const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
-
   // Reset the wizard on open/close.
   useEffect(() => {
     if (open) {
@@ -361,6 +359,73 @@ export function ImportModuleDialog({
     }
   }
 
+  const [existingImport, setExistingImport] = useState<
+    | {
+        source: {
+          name: string;
+          description: string | null;
+          tags: string[];
+          url: string;
+        };
+        module: {
+          id: string;
+          versionTag: string | null;
+          terraformRootFolder: string | null;
+          terraformSubmodulesFolders: string[];
+          url: string | null;
+        };
+      }
+    | null
+  >(null);
+  const [existingImportLoading, setExistingImportLoading] = useState(false);
+
+  // When repo + ref are chosen, check whether the root module is already imported.
+  useEffect(() => {
+    if (!open) return;
+    if (!user?.id) return;
+    if (!selectedRepo || !refChoice) {
+      setExistingImport(null);
+      return;
+    }
+
+    setExistingImportLoading(true);
+
+    fetch(
+      `/api/modules/lookup-import?userId=${encodeURIComponent(
+        user.id,
+      )}&repoFullName=${encodeURIComponent(
+        selectedRepo.full_name,
+      )}&refName=${encodeURIComponent(refChoice.name)}&terraformRootFolder=${encodeURIComponent(
+        terraformRootFolder || ".",
+      )}`,
+    )
+      .then(async (res) => {
+        const b = (await res.json().catch(() => null)) as any;
+        if (!res.ok) {
+          setExistingImport(null);
+          return;
+        }
+        if (b?.exists && b?.source && b?.module) {
+          setExistingImport({ source: b.source, module: b.module });
+          // Populate existing values so the user sees what's in DB.
+          setModuleName(String(b.source?.name ?? moduleName));
+          setModuleDescription(String(b.source?.description ?? ""));
+          setTags(Array.isArray(b.source?.tags) ? b.source.tags : []);
+          setTerraformRootFolder(String(b.module?.terraformRootFolder ?? terraformRootFolder ?? "."));
+          setTerraformSubmodulesFolders(
+            Array.isArray(b.module?.terraformSubmodulesFolders)
+              ? b.module.terraformSubmodulesFolders
+              : [],
+          );
+        } else {
+          setExistingImport(null);
+        }
+      })
+      .catch(() => setExistingImport(null))
+      .finally(() => setExistingImportLoading(false));
+    // We intentionally include terraformRootFolder: if the user changes it, we re-check.
+  }, [open, user?.id, selectedRepo?.full_name, refChoice?.name, terraformRootFolder]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[760px]">
@@ -375,6 +440,13 @@ export function ImportModuleDialog({
             </div>
           </DialogDescription>
         </DialogHeader>
+
+        {existingImport && (step === 3 || step === 4) ? (
+          <div className="rounded-md border bg-muted/30 p-3 text-sm">
+            This module is already imported for this version. The fields below are read-only and
+            show what’s stored in the database.
+          </div>
+        ) : null}
 
         {step === 1 ? (
           <>
@@ -566,6 +638,7 @@ export function ImportModuleDialog({
                 value={moduleName}
                 onChange={(e) => setModuleName(e.target.value)}
                 placeholder="What is the name of your module?"
+                disabled={!!existingImport}
               />
             </div>
 
@@ -576,6 +649,7 @@ export function ImportModuleDialog({
                 value={moduleDescription}
                 onChange={(e) => setModuleDescription(e.target.value)}
                 placeholder="What does this module do?"
+                disabled={!!existingImport}
               />
             </div>
 
@@ -584,6 +658,7 @@ export function ImportModuleDialog({
               value={tags}
               onChange={setTags}
               suggestions={tagSuggestions}
+              disabled={!!existingImport}
             />
 
             {saveError ? (
@@ -604,6 +679,7 @@ export function ImportModuleDialog({
                 provider="github"
                 repoFullName={selectedRepo.full_name}
                 refName={refChoice.name}
+                disabled={!!existingImport}
               />
             ) : (
               <div className="space-y-2">
@@ -613,6 +689,7 @@ export function ImportModuleDialog({
                   value={terraformRootFolder}
                   onChange={(e) => setTerraformRootFolder(e.target.value)}
                   placeholder="e.g. . or modules/vpc"
+                  disabled={!!existingImport}
                 />
               </div>
             )}
@@ -625,6 +702,7 @@ export function ImportModuleDialog({
                 provider="github"
                 repoFullName={selectedRepo.full_name}
                 refName={refChoice.name}
+                disabled={!!existingImport}
               />
             ) : null}
 
@@ -665,19 +743,23 @@ export function ImportModuleDialog({
                   if (step === 2 && refChoice) setStep(3);
                   if (step === 3) setStep(4);
                 }}
-                disabled={!canContinue || saving}
+                disabled={!canContinue || saving || existingImportLoading}
               >
                 Continue
               </Button>
             ) : (
-              <Button type="button" onClick={onFinish} disabled={saving}>
+              <Button
+                type="button"
+                onClick={onFinish}
+                disabled={saving}
+              >
                 {saving ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Importing…
                   </>
                 ) : (
-                  "Import module"
+                  existingImport ? "Close" : "Import module"
                 )}
               </Button>
             )}
