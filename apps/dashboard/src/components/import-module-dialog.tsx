@@ -306,6 +306,12 @@ export function ImportModuleDialog({
   // const stepMeta = STEP_META[step];
 
   async function onFinish() {
+    // If the exact version is already imported, this dialog is effectively a viewer.
+    if (existingImport) {
+      onOpenChange(false);
+      return;
+    }
+
     if (!user?.id) {
       setSaveError("You must be signed in.");
       return;
@@ -378,6 +384,62 @@ export function ImportModuleDialog({
     | null
   >(null);
   const [existingImportLoading, setExistingImportLoading] = useState(false);
+
+  const [repoImportedInfo, setRepoImportedInfo] = useState<
+    | {
+        source: {
+          name: string;
+          description: string | null;
+          tags: string[];
+          url: string;
+        };
+        importedVersions: string[];
+      }
+    | null
+  >(null);
+  const [repoImportedLoading, setRepoImportedLoading] = useState(false);
+
+  const importedVersionSet = useMemo(() => {
+    return new Set((repoImportedInfo?.importedVersions ?? []).map((v) => v.trim()));
+  }, [repoImportedInfo?.importedVersions]);
+
+  const lockRepoProvidedFields = !!repoImportedInfo;
+
+  // When repo is selected, check whether it was imported before and which versions exist.
+  useEffect(() => {
+    if (!open) return;
+    if (!user?.id) return;
+    if (!selectedRepo) {
+      setRepoImportedInfo(null);
+      return;
+    }
+
+    setRepoImportedLoading(true);
+    fetch(
+      `/api/modules/imported-versions?userId=${encodeURIComponent(
+        user.id,
+      )}&repoFullName=${encodeURIComponent(selectedRepo.full_name)}`,
+    )
+      .then(async (res) => {
+        const b = (await res.json().catch(() => null)) as any;
+        if (!res.ok) {
+          setRepoImportedInfo(null);
+          return;
+        }
+
+        if (b?.repoImported && b?.source && Array.isArray(b?.importedVersions)) {
+          setRepoImportedInfo({ source: b.source, importedVersions: b.importedVersions });
+          // Populate fields from the source; these are stored on terraform_module_sources.
+          setModuleName(String(b.source?.name ?? moduleName));
+          setModuleDescription(String(b.source?.description ?? ""));
+          setTags(Array.isArray(b.source?.tags) ? b.source.tags : []);
+        } else {
+          setRepoImportedInfo(null);
+        }
+      })
+      .catch(() => setRepoImportedInfo(null))
+      .finally(() => setRepoImportedLoading(false));
+  }, [open, user?.id, selectedRepo?.full_name]);
 
   // When repo + ref are chosen, check whether the root module is already imported.
   useEffect(() => {
@@ -524,6 +586,12 @@ export function ImportModuleDialog({
 
         {step === 2 ? (
           <div className="space-y-4">
+            {repoImportedInfo ? (
+              <div className="rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">
+                This repository was imported before. Versions already imported are disabled.
+              </div>
+            ) : null}
+
             <div className="flex items-center gap-2">
               <Button
                 type="button"
@@ -561,21 +629,33 @@ export function ImportModuleDialog({
                     const selected =
                       refChoice?.type === "release" &&
                       refChoice.name === r.tag_name;
+
+                    const alreadyImported = importedVersionSet.has(r.tag_name);
+
                     return (
                       <button
                         type="button"
                         key={r.id}
                         className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                           selected ? "border-primary" : "border-transparent"
-                        }`}
+                        } ${alreadyImported ? "opacity-60 cursor-not-allowed" : ""}`}
                         onClick={() => {
+                          if (alreadyImported) return;
                           setRefChoice({ type: "release", name: r.tag_name });
                           setStep(3);
                         }}
                         aria-pressed={selected}
+                        aria-disabled={alreadyImported}
                       >
                         <div className="min-w-0">
-                          <div className="font-medium">{r.tag_name}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="font-medium">{r.tag_name}</div>
+                            {alreadyImported ? (
+                              <span className="text-[11px] rounded border px-2 py-0.5 text-muted-foreground">
+                                Already imported
+                              </span>
+                            ) : null}
+                          </div>
                           <div className="text-xs text-muted-foreground truncate">
                             {r.name || "Release"}
                           </div>
@@ -595,21 +675,33 @@ export function ImportModuleDialog({
                   branches.map((b) => {
                     const selected =
                       refChoice?.type === "branch" && refChoice.name === b.name;
+
+                    const alreadyImported = importedVersionSet.has(b.name);
+
                     return (
                       <button
                         type="button"
                         key={b.name}
                         className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                           selected ? "border-primary" : "border-transparent"
-                        }`}
+                        } ${alreadyImported ? "opacity-60 cursor-not-allowed" : ""}`}
                         onClick={() => {
+                          if (alreadyImported) return;
                           setRefChoice({ type: "branch", name: b.name });
                           setStep(3);
                         }}
                         aria-pressed={selected}
+                        aria-disabled={alreadyImported}
                       >
                         <div className="min-w-0">
-                          <div className="font-medium">{b.name}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="font-medium">{b.name}</div>
+                            {alreadyImported ? (
+                              <span className="text-[11px] rounded border px-2 py-0.5 text-muted-foreground">
+                                Already imported
+                              </span>
+                            ) : null}
+                          </div>
                           {b.commitSha ? (
                             <div className="text-xs text-muted-foreground">
                               {b.commitSha.slice(0, 7)}
@@ -638,7 +730,7 @@ export function ImportModuleDialog({
                 value={moduleName}
                 onChange={(e) => setModuleName(e.target.value)}
                 placeholder="What is the name of your module?"
-                disabled={!!existingImport}
+                disabled={lockRepoProvidedFields}
               />
             </div>
 
@@ -649,7 +741,7 @@ export function ImportModuleDialog({
                 value={moduleDescription}
                 onChange={(e) => setModuleDescription(e.target.value)}
                 placeholder="What does this module do?"
-                disabled={!!existingImport}
+                disabled={lockRepoProvidedFields}
               />
             </div>
 
@@ -658,7 +750,7 @@ export function ImportModuleDialog({
               value={tags}
               onChange={setTags}
               suggestions={tagSuggestions}
-              disabled={!!existingImport}
+              disabled={lockRepoProvidedFields}
             />
 
             {saveError ? (
@@ -679,7 +771,7 @@ export function ImportModuleDialog({
                 provider="github"
                 repoFullName={selectedRepo.full_name}
                 refName={refChoice.name}
-                disabled={!!existingImport}
+                disabled={lockRepoProvidedFields}
               />
             ) : (
               <div className="space-y-2">
@@ -689,7 +781,7 @@ export function ImportModuleDialog({
                   value={terraformRootFolder}
                   onChange={(e) => setTerraformRootFolder(e.target.value)}
                   placeholder="e.g. . or modules/vpc"
-                  disabled={!!existingImport}
+                  disabled={lockRepoProvidedFields}
                 />
               </div>
             )}
@@ -702,7 +794,7 @@ export function ImportModuleDialog({
                 provider="github"
                 repoFullName={selectedRepo.full_name}
                 refName={refChoice.name}
-                disabled={!!existingImport}
+                disabled={lockRepoProvidedFields}
               />
             ) : null}
 
@@ -743,16 +835,12 @@ export function ImportModuleDialog({
                   if (step === 2 && refChoice) setStep(3);
                   if (step === 3) setStep(4);
                 }}
-                disabled={!canContinue || saving || existingImportLoading}
+                disabled={!canContinue || saving || existingImportLoading || repoImportedLoading}
               >
                 Continue
               </Button>
             ) : (
-              <Button
-                type="button"
-                onClick={onFinish}
-                disabled={saving}
-              >
+              <Button type="button" onClick={onFinish} disabled={saving}>
                 {saving ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
