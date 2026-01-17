@@ -6,11 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@terrablox/auth/hooks";
 import { Card, CardContent } from "@terrablox/ui/card";
 import { Separator } from "@terrablox/ui/separator";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@terrablox/ui/sidebar";
+import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -250,35 +246,34 @@ export default function ModuleDetailPage({
       <SidebarInset>
         <header className="flex items-center justify-between border-b px-4 py-3">
           <div className="flex items-center gap-3">
-            <SidebarTrigger />
-            <div className="min-w-0">
-              <div className="text-xs text-muted-foreground">
-                <Link href="/modules" className="hover:underline">
-                  Modules
-                </Link>
+             <div className="min-w-0">
+               <div className="text-xs text-muted-foreground">
+                 <Link href="/modules" className="hover:underline">
+                   Modules
+                 </Link>
 
-                {mod?.isSubmodule && parentMod ? (
-                  <>
-                    <span className="mx-2">/</span>
-                    <Link
-                      href={`/modules/${encodeURIComponent(parentMod.id)}`}
-                      className="hover:underline"
-                    >
-                      {parentMod.effectiveName}
-                    </Link>
-                    <span className="mx-2">/</span>
-                    <span className="truncate">{title}</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="mx-2">/</span>
-                    <span className="truncate">{title}</span>
-                  </>
-                )}
-              </div>
-              <h1 className="text-lg font-semibold truncate">{title}</h1>
-            </div>
-          </div>
+                 {mod?.isSubmodule && parentMod ? (
+                   <>
+                     <span className="mx-2">/</span>
+                     <Link
+                       href={`/modules/${encodeURIComponent(parentMod.id)}`}
+                       className="hover:underline"
+                     >
+                       {parentMod.effectiveName}
+                     </Link>
+                     <span className="mx-2">/</span>
+                     <span className="truncate">{title}</span>
+                   </>
+                 ) : (
+                   <>
+                     <span className="mx-2">/</span>
+                     <span className="truncate">{title}</span>
+                   </>
+                 )}
+               </div>
+               <h1 className="text-lg font-semibold truncate">{title}</h1>
+             </div>
+           </div>
         </header>
 
         <main className="p-4 space-y-4">
