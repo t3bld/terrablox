@@ -10,24 +10,19 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Missing userId" }, { status: 400 });
   }
 
-  const sources = await database.terraformModuleSource.findMany({
+  const modules = await database.terraformModule.findMany({
     where: { userId },
     orderBy: { updatedAt: "desc" },
     include: {
-      versions: {
-        orderBy: { updatedAt: "desc" },
-      },
+      source: true,
     },
   });
 
-  const sourcesWithEffectiveFields = sources.map((source) => ({
-    ...source,
-    versions: source.versions.map((version) => ({
-      ...version,
-      effectiveName: version.submoduleName ?? source.name,
-      effectiveDescription: source.description,
-    })),
+  const modulesWithEffectiveFields = modules.map((mod) => ({
+    ...mod,
+    effectiveName: mod.submoduleName ?? mod.source?.name ?? "(unnamed)",
+    effectiveDescription: mod.source?.description ?? null,
   }));
 
-  return NextResponse.json({ sources: sourcesWithEffectiveFields });
+  return NextResponse.json({ modules: modulesWithEffectiveFields });
 }
