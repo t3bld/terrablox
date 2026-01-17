@@ -56,8 +56,9 @@ model TerraformModuleSource {
 model TerraformModule {
   id                  String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
   userId              String   @map("user_id") @db.Uuid
+  /// Optional display name for submodules. Root module name/description live on TerraformModuleSource.
+  submoduleName       String?  @map("submodule_name") @db.Text
   versionTag          String?  @map("version_tag") @db.Text
-  description         String?  @db.Text
   url                 String?  @db.Text
   sourceId            String?  @map("source_id") @db.Uuid
   terraformRootFolder String?  @map("terraform_root_folder") @db.Text
@@ -135,4 +136,3 @@ model ProviderResource {
   @@map("provider_resources")
   @@schema("public")
 }
-
