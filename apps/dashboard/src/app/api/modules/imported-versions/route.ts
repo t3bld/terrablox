@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 
 /**
@@ -9,15 +10,18 @@ import { database } from "@/lib/database";
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  const userId = searchParams.get("userId")?.trim();
+  const userId = await getCurrentUserId();
   const repoFullName = searchParams.get("repoFullName")?.trim();
 
   if (!userId) {
-    return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   if (!repoFullName || !repoFullName.includes("/")) {
-    return NextResponse.json({ error: "Missing repoFullName" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing repoFullName" },
+      { status: 400 },
+    );
   }
 
   const canonicalSourceUrl = `https://github.com/${repoFullName}.git`;
@@ -45,7 +49,11 @@ export async function GET(req: Request) {
   });
 
   const importedVersions = Array.from(
-    new Set((roots ?? []).map((r) => r.versionTag).filter((v): v is string => !!v && v.trim() !== "")),
+    new Set(
+      (roots ?? [])
+        .map((r) => r.versionTag)
+        .filter((v): v is string => !!v && v.trim() !== ""),
+    ),
   ).sort();
 
   return NextResponse.json({
@@ -54,4 +62,3 @@ export async function GET(req: Request) {
     importedVersions,
   });
 }
-

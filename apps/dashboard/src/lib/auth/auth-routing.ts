@@ -1,25 +1,3 @@
-import type { NextRequest, NextResponse } from "next/server";
-
-/**
- * Server-side auth contract used by middleware.
- *
- * Why this exists:
- * - Middleware runs on the server/edge and can only see cookies/headers.
- * - We want the dashboard to be open-source friendly and not hard depend on a specific auth provider.
- *
- * Implementations should:
- * - Determine whether the incoming request is authenticated (usually via cookies).
- * - Optionally refresh/rotate cookies on the outgoing response.
- */
-export interface ServerAuth {
-  /**
-   * Returns true if the request represents an authenticated user.
-   *
-   * Implementations MUST NOT throw for anonymous visitors.
-   */
-  isAuthenticated: (req: NextRequest, res: NextResponse) => Promise<boolean>;
-}
-
 /**
  * Builds the `next` query parameter used for post-login redirects.
  */
@@ -47,13 +25,22 @@ export type AuthRoutingConfig = {
   isProtectedPath: (pathname: string) => boolean;
 };
 
+/**
+ * Reachable without a session. `/reset-password` is opened from an email link,
+ * so it has to work for someone who by definition cannot sign in.
+ */
+const UNAUTHENTICATED_PATHS = [
+  "/login",
+  "/signup",
+  "/forgot-password",
+  "/reset-password",
+];
+
 export const defaultAuthRouting: AuthRoutingConfig = {
   publicPaths: ["/login", "/signup", "/forgot-password"],
   homePath: "/projects",
   loginPath: "/login",
-  isProtectedPath: (pathname) =>
-    pathname === "/" ||
-    pathname.startsWith("/projects") ||
-    pathname.startsWith("/modules") ||
-    pathname.startsWith("/account"),
+  // Everything else needs a session. Stated as an exception list because the
+  // allowlist it replaces silently skipped every page nobody remembered to add.
+  isProtectedPath: (pathname) => !UNAUTHENTICATED_PATHS.includes(pathname),
 };

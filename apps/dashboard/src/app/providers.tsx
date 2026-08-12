@@ -1,7 +1,7 @@
 "use client";
 
 import { AuthProvider } from "@terrablox/auth";
-import { SupabaseAuthAdapter } from "@terrablox/auth/adapters/supabase";
+import { BetterAuthAdapter } from "@terrablox/auth/adapters/better-auth";
 import type React from "react";
 import { useMemo } from "react";
 
@@ -17,16 +17,8 @@ export function Providers({ children }: ProvidersProps) {
     }
 
     try {
-      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-      if (!supabaseUrl || !supabaseAnonKey) {
-        throw new Error("Missing Supabase environment variables.");
-      }
-
-      return new SupabaseAuthAdapter({
-        url: supabaseUrl,
-        anonKey: supabaseAnonKey,
+      return new BetterAuthAdapter({
+        baseURL: process.env.NEXT_PUBLIC_APP_URL ?? window.location.origin,
       });
     } catch {
       return null;

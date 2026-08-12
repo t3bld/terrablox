@@ -24,6 +24,11 @@ export interface GitRelease {
   published_at?: string | null;
 }
 
+export interface GitTag {
+  name: string;
+  commitSha?: string;
+}
+
 export type GitTreeEntryType = "tree" | "blob";
 
 export interface GitTreeEntry {
@@ -33,8 +38,20 @@ export interface GitTreeEntry {
 
 export interface IGitProvider {
   getRepos(token: string): Promise<GitRepo[]>;
+  /**
+   * Lists the repositories a GitHub App installation may access.
+   *
+   * Installation tokens are not tied to a user, so `/user/repos` returns
+   * nothing for them; the installation has its own repository selection.
+   */
+  getInstallationRepos(token: string): Promise<GitRepo[]>;
   getBranches(token: string, repoFullName: string): Promise<GitBranch[]>;
   getReleases(token: string, repoFullName: string): Promise<GitRelease[]>;
+  /**
+   * Lists git tags. Many module repos publish versions as plain tags without
+   * ever creating a GitHub Release, so tags are the more complete list.
+   */
+  getTags(token: string, repoFullName: string): Promise<GitTag[]>;
   getTree(
     token: string,
     repoFullName: string,

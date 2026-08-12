@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
-import { analyzeTerraformFromTexts } from "@/lib/terraform/analyze";
+import { analyzeTerraformFiles } from "@/lib/terraform/analyze";
 
 interface AnalyzeGitModuleInput {
   provider: "github";
@@ -55,16 +55,22 @@ async function fetchTextFile(params: {
 }
 
 export async function POST(req: Request) {
-  const body = (await req.json().catch(() => null)) as
-    | AnalyzeGitModuleInput
-    | null;
+  const body = (await req
+    .json()
+    .catch(() => null)) as AnalyzeGitModuleInput | null;
 
   if (!body) {
-    return NextResponse.json({ error: "Missing request body" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing request body" },
+      { status: 400 },
+    );
   }
 
   if (body.provider !== "github") {
-    return NextResponse.json({ error: "Unsupported provider" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Unsupported provider" },
+      { status: 400 },
+    );
   }
 
   const repoFullName = body.repoFullName?.trim();
@@ -95,39 +101,50 @@ export async function POST(req: Request) {
     { headers: req.headers, cache: "no-store" },
   );
 
-  const treeBody = (await treeRes.json().catch(() => null)) as
-    | { entries?: Array<{ path: string; type: "tree" | "blob" }> }
-    | { error?: string; scopes?: string };
+  const treeBody = (await treeRes.json().catch(() => null)) as {
+    entries?: Array<{ path: string; type: "tree" | "blob" }>;
+    error?: string;
+  } | null;
 
   if (!treeRes.ok) {
     return NextResponse.json(
-      { error: (treeBody as any)?.error ?? "Failed to fetch repo tree" },
+      { error: treeBody?.error ?? "Failed to fetch repo tree" },
       { status: treeRes.status },
     );
   }
 
-  const entries = (treeBody as any)?.entries ?? [];
-  const rootPrefix = terraformRootFolder === "." ? "" : `${terraformRootFolder}/`;
+  const entries = treeBody?.entries ?? [];
+  const rootPrefix =
+    terraformRootFolder === "." ? "" : `${terraformRootFolder}/`;
 
   const tfFiles = entries
-    .filter((e: any) => e.type === "blob")
-    .map((e: any) => String(e.path))
-    .filter((p: string) => (rootPrefix ? p.startsWith(rootPrefix) : true))
-    .filter((p: string) => p.endsWith(".tf"))
+    .filter((e) => e.type === "blob")
+    .map((e) => String(e.path))
+    .filter((p) => (rootPrefix ? p.startsWith(rootPrefix) : true))
+    .filter((p) => p.endsWith(".tf"))
     // Only include direct folder (no nested modules unless user picked a submodule folder).
-    .filter((p: string) => {
+    .filter((p) => {
       const rel = rootPrefix ? p.slice(rootPrefix.length) : p;
       return !rel.includes("/");
     })
     .slice(0, 50); // protect against huge modules
 
-  const contents: string[] = [];
-  for (const p of tfFiles) {
-    const t = await fetchTextFile({ token, repoFullName, ref: refName, path: p });
-    if (t) contents.push(t);
-  }
+  const fetched = await Promise.all(
+    tfFiles.map(async (path: string) => {
+      const content = await fetchTextFile({
+        token,
+        repoFullName,
+        ref: refName,
+        path,
+      });
 
-  const analysis = analyzeTerraformFromTexts(contents);
+      return content === null ? null : { path, content };
+    }),
+  );
+
+  const analysis = await analyzeTerraformFiles(
+    fetched.filter((f): f is { path: string; content: string } => f !== null),
+  );
 
   return NextResponse.json({
     terraformRootFolder,
@@ -142,4 +159,3 @@ export async function POST(req: Request) {
     analysis,
   });
 }
-

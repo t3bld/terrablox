@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 
 /**
@@ -9,17 +10,22 @@ import { database } from "@/lib/database";
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  const userId = searchParams.get("userId")?.trim();
+  const userId = await getCurrentUserId();
   const repoFullName = searchParams.get("repoFullName")?.trim();
   const refName = searchParams.get("refName")?.trim();
-  const terraformRootFolderRaw = searchParams.get("terraformRootFolder")?.trim();
+  const terraformRootFolderRaw = searchParams
+    .get("terraformRootFolder")
+    ?.trim();
 
   if (!userId) {
-    return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   if (!repoFullName || !repoFullName.includes("/")) {
-    return NextResponse.json({ error: "Missing repoFullName" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Missing repoFullName" },
+      { status: 400 },
+    );
   }
 
   if (!refName) {
@@ -69,4 +75,3 @@ export async function GET(req: Request) {
     module,
   });
 }
-

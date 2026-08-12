@@ -9,16 +9,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
-import { Separator } from "@terrablox/ui/separator";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@terrablox/ui/sidebar";
+import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { User2 } from "lucide-react";
 import { useEffect } from "react";
+import { AwsAccountsCard } from "@/components/account/aws-accounts-card";
 import { AppSidebar } from "@/components/app-sidebar";
 import { GithubAccountCard } from "@/components/github-account-card";
+import { PageHeader } from "@/components/layout/page-header";
 
 export default function AccountPage() {
   const { user, isAuthenticated, refreshSession } = useAuth();
@@ -52,11 +49,7 @@ export default function AccountPage() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
-          <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="mr-2 h-4" />
-          <h1 className="text-lg font-semibold">Account</h1>
-        </header>
+        <PageHeader breadcrumbs={[{ label: "Account" }]} />
 
         <main className="flex-1 p-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -105,6 +98,10 @@ export default function AccountPage() {
             </Card>
 
             <GithubAccountCard />
+
+            <div className="lg:col-span-3">
+              <AwsAccountsCard />
+            </div>
           </div>
         </main>
       </SidebarInset>

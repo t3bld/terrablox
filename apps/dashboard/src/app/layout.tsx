@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "../styles/globals.css";
+// React Flow ships its own stylesheet; without it the graph renders unstyled.
+import "@terrablox/graph/styles.css";
 import { Providers } from "./providers";
 
 const inter = Inter({ subsets: ["latin"] });

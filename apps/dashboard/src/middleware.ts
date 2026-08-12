@@ -1,4 +1,4 @@
-import { createSupabaseServerAuth } from "@terrablox/auth/adapters/supabase";
+import { getSessionCookie } from "better-auth/cookies";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import {
@@ -16,14 +16,11 @@ export async function middleware(req: NextRequest) {
 
   const cfg = defaultAuthRouting;
 
-  // Always prepare a response so auth providers can attach refreshed cookies.
-  const res = NextResponse.next();
-
-  // In a real application, you might use a factory pattern to switch between
-  // different auth providers. For this example, we'll directly use the
-  // Supabase implementation.
-  const auth = createSupabaseServerAuth();
-  const isAuthed = await auth.isAuthenticated(req, res);
+  // Next.js 14 middleware runs on the Edge runtime, which cannot reach the
+  // database. We only check for the presence of the session cookie here to
+  // redirect optimistically - this is NOT an authorization check. Route
+  // handlers and pages must validate the session with `auth.api.getSession`.
+  const isAuthed = !!getSessionCookie(req);
 
   if (!isAuthed && cfg.isProtectedPath(pathname)) {
     const redirectUrl = req.nextUrl.clone();
@@ -44,11 +41,11 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(redirectUrl);
   }
 
-  return res;
+  return NextResponse.next();
 }
 
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|assets|robots.txt|sitemap.xml).*)",
+    "/((?!api|_next/static|_next/image|favicon.ico|assets|robots.txt|sitemap.xml).*)",
   ],
 };

@@ -6,6 +6,7 @@ import type {
   GitProviderId,
   GitRelease,
   GitRepo,
+  GitTag,
 } from "@terrablox/git-import";
 import { Button } from "@terrablox/ui/button";
 import {
@@ -19,21 +20,32 @@ import { Input } from "@terrablox/ui/input";
 import { Label } from "@terrablox/ui/label";
 import { Github, Loader2, Search } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { MultiRepoFolderPicker } from "@/components/multi-repo-folder-picker";
 import { FolderPicker } from "@/components/repo-folder-picker";
 import { TagsInput } from "@/components/tags-input";
+import {
+  type CompanySettingsDto,
+  findSubmoduleFolders,
+} from "@/lib/company-settings";
 
 interface ImportModuleDialogProps {
   provider: GitProviderId;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Fired once the import request succeeded, before the dialog closes. The
+   * module already exists in the database at this point, so a caller can
+   * refetch immediately.
+   */
+  onImported?: () => void;
 }
 
 type Step = 1 | 2 | 3 | 4;
 
 type RefChoice =
   | { type: "release"; name: string }
+  | { type: "tag"; name: string }
   | { type: "branch"; name: string };
 
 function Stepper({ current }: { current: Step }) {
@@ -87,6 +99,7 @@ export function ImportModuleDialog({
   provider,
   open,
   onOpenChange,
+  onImported,
 }: ImportModuleDialogProps) {
   const { user } = useAuth();
 
@@ -101,11 +114,18 @@ export function ImportModuleDialog({
 
   // Step 2
   const [releases, setReleases] = useState<GitRelease[]>([]);
+  // Git tags of the repository. Distinct from the user-defined metadata `tags`
+  // in step 3, which have nothing to do with git.
+  const [gitTags, setGitTags] = useState<GitTag[]>([]);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [refLoading, setRefLoading] = useState(false);
   const [refError, setRefError] = useState<string | null>(null);
   const [refChoice, setRefChoice] = useState<RefChoice | null>(null);
-  const [refTab, setRefTab] = useState<"release" | "branch">("release");
+  const [refTab, setRefTab] = useState<"release" | "tag" | "branch">("release");
+  // Which repo the current ref lists belong to. The fetch effect is keyed on
+  // `step`, so without this it re-runs on every Back and wipes the user's
+  // choice — painful with hundreds of tags.
+  const loadedRefsForRepo = useRef<string | null>(null);
 
   // Step 3
   const [moduleName, setModuleName] = useState("");
@@ -121,6 +141,19 @@ export function ImportModuleDialog({
     string[]
   >([]);
 
+  // Company-wide conventions. Null while unknown so nothing is applied early.
+  const [companySettings, setCompanySettings] =
+    useState<CompanySettingsDto | null>(null);
+  const [discovery, setDiscovery] = useState<{
+    status: "idle" | "loading" | "done" | "error";
+    folders: string[];
+    message?: string;
+  }>({ status: "idle", folders: [] });
+  // Auto-discovery must apply once per repo+ref, otherwise stepping back and
+  // forth would resurrect submodules the user deliberately removed.
+  const appliedDiscoveryFor = useRef<string | null>(null);
+  const appliedCompanyRoot = useRef(false);
+
   // Reset the wizard on open/close.
   useEffect(() => {
     if (open) {
@@ -128,6 +161,7 @@ export function ImportModuleDialog({
       setSearchQuery("");
       setSelectedRepo(null);
       setRefChoice(null);
+      loadedRefsForRepo.current = null;
       setModuleName("");
       setModuleDescription("");
       setTags([]);
@@ -136,6 +170,9 @@ export function ImportModuleDialog({
       setRefError(null);
       setTerraformRootFolder(".");
       setTerraformSubmodulesFolders([]);
+      setDiscovery({ status: "idle", folders: [] });
+      appliedDiscoveryFor.current = null;
+      appliedCompanyRoot.current = false;
     }
   }, [open]);
 
@@ -162,6 +199,43 @@ export function ImportModuleDialog({
 
     fetchTags();
   }, [open]);
+
+  // Load company conventions once per opening.
+  useEffect(() => {
+    if (!open) return;
+
+    let cancelled = false;
+
+    fetch("/api/company-settings")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (cancelled) return;
+        setCompanySettings(
+          (body?.settings as CompanySettingsDto | undefined) ?? null,
+        );
+      })
+      .catch(() => {
+        // Conventions are a convenience; the wizard stays fully usable without.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  // Apply the company's default root folder, but only before the user reaches
+  // the folder step so it never overwrites a deliberate choice.
+  useEffect(() => {
+    if (!open || appliedCompanyRoot.current) return;
+
+    const root = companySettings?.terraformRootFolder;
+    if (!root) return;
+
+    appliedCompanyRoot.current = true;
+    if (step < 4) {
+      setTerraformRootFolder(root);
+    }
+  }, [open, companySettings, step]);
 
   // Step 1: fetch repos
   useEffect(() => {
@@ -221,10 +295,15 @@ export function ImportModuleDialog({
 
     const repoToLoad = selectedRepo;
 
+    // Already loaded for this repo (e.g. the user navigated back) — keep the
+    // lists and the current selection instead of refetching and resetting.
+    if (loadedRefsForRepo.current === repoToLoad.full_name) return;
+
     async function fetchRefs() {
       setRefLoading(true);
       setRefError(null);
       setReleases([]);
+      setGitTags([]);
       setBranches([]);
       setRefChoice(null);
 
@@ -234,17 +313,17 @@ export function ImportModuleDialog({
           throw new Error("Invalid repository name.");
         }
 
-        const [releasesRes, branchesRes] = await Promise.all([
-          fetch(
-            `/api/git-provider/${provider}/repos/${owner}/${repo}/releases`,
-          ),
-          fetch(
-            `/api/git-provider/${provider}/repos/${owner}/${repo}/branches`,
-          ),
+        const base = `/api/git-provider/${provider}/repos/${owner}/${repo}`;
+
+        const [releasesRes, tagsRes, branchesRes] = await Promise.all([
+          fetch(`${base}/releases`),
+          fetch(`${base}/tags`),
+          fetch(`${base}/branches`),
         ]);
 
-        const [releasesBody, branchesBody] = await Promise.all([
+        const [releasesBody, tagsBody, branchesBody] = await Promise.all([
           releasesRes.json(),
+          tagsRes.json(),
           branchesRes.json(),
         ]);
 
@@ -256,6 +335,17 @@ export function ImportModuleDialog({
             releasesBody?.error
               ? `${releasesBody.error}${scopes}`
               : "Failed to fetch releases.",
+          );
+        }
+
+        if (!tagsRes.ok) {
+          const scopes = tagsBody?.scopes
+            ? ` (scopes: ${tagsBody.scopes})`
+            : "";
+          throw new Error(
+            tagsBody?.error
+              ? `${tagsBody.error}${scopes}`
+              : "Failed to fetch tags.",
           );
         }
 
@@ -271,20 +361,27 @@ export function ImportModuleDialog({
         }
 
         const rels = (releasesBody?.releases ?? []) as GitRelease[];
+        const tgs = (tagsBody?.tags ?? []) as GitTag[];
         const brs = (branchesBody?.branches ?? []) as GitBranch[];
 
         setReleases(rels);
+        setGitTags(tgs);
         setBranches(brs);
+        loadedRefsForRepo.current = repoToLoad.full_name;
 
         // Pick a sensible default so users can "Continue" quickly.
         if (rels.length > 0 && rels[0]) {
           setRefTab("release");
           setRefChoice({ type: "release", name: rels[0].tag_name });
+        } else if (tgs.length > 0 && tgs[0]) {
+          setRefTab("tag");
+          setRefChoice({ type: "tag", name: tgs[0].name });
         } else if (brs.length > 0 && brs[0]) {
           setRefTab("branch");
           setRefChoice({ type: "branch", name: brs[0].name });
         }
       } catch (err) {
+        loadedRefsForRepo.current = null;
         setRefError(
           err instanceof Error ? err.message : "Failed to load versions.",
         );
@@ -321,7 +418,7 @@ export function ImportModuleDialog({
       return;
     }
     if (!refChoice) {
-      setSaveError("Choose a release or branch first.");
+      setSaveError("Choose a release, tag or branch first.");
       return;
     }
 
@@ -355,6 +452,7 @@ export function ImportModuleDialog({
         );
       }
 
+      onImported?.();
       onOpenChange(false);
     } catch (err) {
       setSaveError(
@@ -365,45 +463,69 @@ export function ImportModuleDialog({
     }
   }
 
-  const [existingImport, setExistingImport] = useState<
-    | {
-        source: {
-          name: string;
-          description: string | null;
-          tags: string[];
-          url: string;
-        };
-        module: {
-          id: string;
-          versionTag: string | null;
-          terraformRootFolder: string | null;
-          terraformSubmodulesFolders: string[];
-          url: string | null;
-        };
-      }
-    | null
-  >(null);
+  const [existingImport, setExistingImport] = useState<{
+    source: {
+      name: string;
+      description: string | null;
+      tags: string[];
+      url: string;
+    };
+    module: {
+      id: string;
+      versionTag: string | null;
+      terraformRootFolder: string | null;
+      terraformSubmodulesFolders: string[];
+      url: string | null;
+    };
+  } | null>(null);
   const [existingImportLoading, setExistingImportLoading] = useState(false);
 
-  const [repoImportedInfo, setRepoImportedInfo] = useState<
-    | {
-        source: {
-          name: string;
-          description: string | null;
-          tags: string[];
-          url: string;
-        };
-        importedVersions: string[];
-      }
-    | null
-  >(null);
+  const [repoImportedInfo, setRepoImportedInfo] = useState<{
+    source: {
+      name: string;
+      description: string | null;
+      tags: string[];
+      url: string;
+    };
+    importedVersions: string[];
+  } | null>(null);
   const [repoImportedLoading, setRepoImportedLoading] = useState(false);
 
   const importedVersionSet = useMemo(() => {
-    return new Set((repoImportedInfo?.importedVersions ?? []).map((v) => v.trim()));
+    return new Set(
+      (repoImportedInfo?.importedVersions ?? []).map((v) => v.trim()),
+    );
   }, [repoImportedInfo?.importedVersions]);
 
   const lockRepoProvidedFields = !!repoImportedInfo;
+  // When a repo already has a module_source, we don't allow changing terraform paths/folders.
+  // For already-imported versions we display the stored folders from the DB via lookup-import.
+  const lockTerraformFields = !!repoImportedInfo;
+
+  const companyDiscoveryHint = useMemo(() => {
+    const path = companySettings?.terraformSubmodulesPath;
+    if (!path || lockTerraformFields) return undefined;
+
+    if (discovery.status === "loading") {
+      return `Looking for submodules in ${path}/ …`;
+    }
+    if (discovery.status === "error") {
+      return `Could not apply the company convention: ${discovery.message}`;
+    }
+    if (discovery.status === "done") {
+      return discovery.folders.length > 0
+        ? `Pre-selected ${discovery.folders.length} submodule${
+            discovery.folders.length === 1 ? "" : "s"
+          } found in ${path}/ (company setting).`
+        : `No submodules found in ${path}/ (company setting).`;
+    }
+
+    return undefined;
+  }, [
+    companySettings?.terraformSubmodulesPath,
+    discovery,
+    lockTerraformFields,
+  ]);
 
   // When repo is selected, check whether it was imported before and which versions exist.
   useEffect(() => {
@@ -427,8 +549,15 @@ export function ImportModuleDialog({
           return;
         }
 
-        if (b?.repoImported && b?.source && Array.isArray(b?.importedVersions)) {
-          setRepoImportedInfo({ source: b.source, importedVersions: b.importedVersions });
+        if (
+          b?.repoImported &&
+          b?.source &&
+          Array.isArray(b?.importedVersions)
+        ) {
+          setRepoImportedInfo({
+            source: b.source,
+            importedVersions: b.importedVersions,
+          });
           // Populate fields from the source; these are stored on terraform_module_sources.
           setModuleName(String(b.source?.name ?? moduleName));
           setModuleDescription(String(b.source?.description ?? ""));
@@ -473,7 +602,9 @@ export function ImportModuleDialog({
           setModuleName(String(b.source?.name ?? moduleName));
           setModuleDescription(String(b.source?.description ?? ""));
           setTags(Array.isArray(b.source?.tags) ? b.source.tags : []);
-          setTerraformRootFolder(String(b.module?.terraformRootFolder ?? terraformRootFolder ?? "."));
+          setTerraformRootFolder(
+            String(b.module?.terraformRootFolder ?? terraformRootFolder ?? "."),
+          );
           setTerraformSubmodulesFolders(
             Array.isArray(b.module?.terraformSubmodulesFolders)
               ? b.module.terraformSubmodulesFolders
@@ -486,7 +617,88 @@ export function ImportModuleDialog({
       .catch(() => setExistingImport(null))
       .finally(() => setExistingImportLoading(false));
     // We intentionally include terraformRootFolder: if the user changes it, we re-check.
-  }, [open, user?.id, selectedRepo?.full_name, refChoice?.name, terraformRootFolder]);
+  }, [
+    open,
+    user?.id,
+    selectedRepo?.full_name,
+    refChoice?.name,
+    terraformRootFolder,
+  ]);
+
+  // Pre-select submodules using the company convention. Stored values from a
+  // previous import always win, so this waits for both lookups to settle.
+  useEffect(() => {
+    const submodulesPath = companySettings?.terraformSubmodulesPath;
+    const repoFullName = selectedRepo?.full_name;
+    const refName = refChoice?.name;
+    if (!open || !repoFullName || !refName || !submodulesPath) return;
+    if (existingImportLoading || repoImportedLoading) return;
+    if (existingImport || repoImportedInfo) return;
+
+    const key = `${repoFullName}@${refName}@${submodulesPath}`;
+    if (appliedDiscoveryFor.current === key) return;
+    appliedDiscoveryFor.current = key;
+
+    // The response is matched against the ref rather than an effect-scoped
+    // flag: unrelated dependencies (the import lookups) settle while the tree
+    // is in flight, and cancelling on every re-run would strand the request.
+    const isCurrent = () => appliedDiscoveryFor.current === key;
+    setDiscovery({ status: "loading", folders: [] });
+
+    const [owner, repo] = repoFullName.split("/");
+    fetch(
+      `/api/git-provider/github/repos/${owner}/${repo}/tree?ref=${encodeURIComponent(
+        refName,
+      )}`,
+    )
+      .then(async (res) => {
+        const body = (await res.json().catch(() => null)) as {
+          entries?: Array<{ path: string; type: string }>;
+          error?: string;
+        } | null;
+
+        if (!isCurrent()) return;
+
+        if (!res.ok) {
+          setDiscovery({
+            status: "error",
+            folders: [],
+            message: body?.error ?? "Could not read the repository tree.",
+          });
+          return;
+        }
+
+        const folders = findSubmoduleFolders(
+          (body?.entries ?? [])
+            .filter((entry) => entry.type === "blob")
+            .map((entry) => entry.path),
+          submodulesPath,
+        );
+
+        setDiscovery({ status: "done", folders });
+        if (folders.length > 0) {
+          setTerraformSubmodulesFolders(folders);
+        }
+      })
+      .catch((e: unknown) => {
+        if (!isCurrent()) return;
+        setDiscovery({
+          status: "error",
+          folders: [],
+          message:
+            e instanceof Error ? e.message : "Could not read the repository.",
+        });
+      });
+  }, [
+    open,
+    selectedRepo?.full_name,
+    refChoice?.name,
+    companySettings?.terraformSubmodulesPath,
+    existingImport,
+    existingImportLoading,
+    repoImportedInfo,
+    repoImportedLoading,
+  ]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -505,8 +717,8 @@ export function ImportModuleDialog({
 
         {existingImport && (step === 3 || step === 4) ? (
           <div className="rounded-md border bg-muted/30 p-3 text-sm">
-            This module is already imported for this version. The fields below are read-only and
-            show what’s stored in the database.
+            This module is already imported for this version. The fields below
+            are read-only and show what’s stored in the database.
           </div>
         ) : null}
 
@@ -588,7 +800,8 @@ export function ImportModuleDialog({
           <div className="space-y-4">
             {repoImportedInfo ? (
               <div className="rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">
-                This repository was imported before. Versions already imported are disabled.
+                This repository was imported before. Versions already imported
+                are disabled.
               </div>
             ) : null}
 
@@ -600,6 +813,14 @@ export function ImportModuleDialog({
                 onClick={() => setRefTab("release")}
               >
                 Releases ({releases.length})
+              </Button>
+              <Button
+                type="button"
+                variant={refTab === "tag" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setRefTab("tag")}
+              >
+                Tags ({gitTags.length})
               </Button>
               <Button
                 type="button"
@@ -659,6 +880,54 @@ export function ImportModuleDialog({
                           <div className="text-xs text-muted-foreground truncate">
                             {r.name || "Release"}
                           </div>
+                        </div>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            ) : refTab === "tag" ? (
+              <div className="space-y-2 h-[260px] overflow-y-auto pr-2">
+                {gitTags.length === 0 ? (
+                  <div className="rounded-md border p-3 text-sm text-muted-foreground">
+                    No tags found for this repository.
+                  </div>
+                ) : (
+                  gitTags.map((t) => {
+                    const selected =
+                      refChoice?.type === "tag" && refChoice.name === t.name;
+
+                    const alreadyImported = importedVersionSet.has(t.name);
+
+                    return (
+                      <button
+                        type="button"
+                        key={t.name}
+                        className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                          selected ? "border-primary" : "border-transparent"
+                        } ${alreadyImported ? "opacity-60 cursor-not-allowed" : ""}`}
+                        onClick={() => {
+                          if (alreadyImported) return;
+                          setRefChoice({ type: "tag", name: t.name });
+                          setStep(3);
+                        }}
+                        aria-pressed={selected}
+                        aria-disabled={alreadyImported}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <div className="font-medium">{t.name}</div>
+                            {alreadyImported ? (
+                              <span className="text-[11px] rounded border px-2 py-0.5 text-muted-foreground">
+                                Already imported
+                              </span>
+                            ) : null}
+                          </div>
+                          {t.commitSha ? (
+                            <div className="text-xs text-muted-foreground">
+                              {t.commitSha.slice(0, 7)}
+                            </div>
+                          ) : null}
                         </div>
                       </button>
                     );
@@ -771,7 +1040,7 @@ export function ImportModuleDialog({
                 provider="github"
                 repoFullName={selectedRepo.full_name}
                 refName={refChoice.name}
-                disabled={lockRepoProvidedFields}
+                disabled={lockTerraformFields}
               />
             ) : (
               <div className="space-y-2">
@@ -781,7 +1050,7 @@ export function ImportModuleDialog({
                   value={terraformRootFolder}
                   onChange={(e) => setTerraformRootFolder(e.target.value)}
                   placeholder="e.g. . or modules/vpc"
-                  disabled={lockRepoProvidedFields}
+                  disabled={lockTerraformFields}
                 />
               </div>
             )}
@@ -790,11 +1059,18 @@ export function ImportModuleDialog({
               <MultiRepoFolderPicker
                 label="Terraform submodule folders"
                 value={terraformSubmodulesFolders}
-                onChange={setTerraformSubmodulesFolders}
+                onChange={(next) => {
+                  // Any manual edit ends auto-discovery for this repo+ref.
+                  appliedDiscoveryFor.current = "manual";
+                  setTerraformSubmodulesFolders(next);
+                }}
                 provider="github"
                 repoFullName={selectedRepo.full_name}
                 refName={refChoice.name}
-                disabled={lockRepoProvidedFields}
+                disabled={lockTerraformFields}
+                {...(companyDiscoveryHint
+                  ? { description: companyDiscoveryHint }
+                  : {})}
               />
             ) : null}
 
@@ -835,7 +1111,12 @@ export function ImportModuleDialog({
                   if (step === 2 && refChoice) setStep(3);
                   if (step === 3) setStep(4);
                 }}
-                disabled={!canContinue || saving || existingImportLoading || repoImportedLoading}
+                disabled={
+                  !canContinue ||
+                  saving ||
+                  existingImportLoading ||
+                  repoImportedLoading
+                }
               >
                 Continue
               </Button>
@@ -846,8 +1127,10 @@ export function ImportModuleDialog({
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Importing…
                   </>
+                ) : existingImport ? (
+                  "Close"
                 ) : (
-                  existingImport ? "Close" : "Import module"
+                  "Import module"
                 )}
               </Button>
             )}

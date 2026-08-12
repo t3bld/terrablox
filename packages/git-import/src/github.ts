@@ -3,12 +3,25 @@ import {
   GithubApiError,
   type GitRelease,
   type GitRepo,
+  type GitTag,
   type GitTreeEntry,
   type IGitProvider,
 } from "./types";
 
 const REPOS_PER_PAGE = 100;
 const MAX_PAGINATION_PAGES = 10;
+
+function mapRepo(repo: GitRepo): GitRepo {
+  return {
+    id: repo.id,
+    name: repo.name,
+    full_name: repo.full_name,
+    private: repo.private,
+    html_url: repo.html_url,
+    description: repo.description,
+    updated_at: repo.updated_at,
+  };
+}
 
 class GithubProvider implements IGitProvider {
   private async githubFetch(
@@ -63,15 +76,33 @@ class GithubProvider implements IGitProvider {
       page++;
     }
 
-    return allRepos.map((repo) => ({
-      id: repo.id,
-      name: repo.name,
-      full_name: repo.full_name,
-      private: repo.private,
-      html_url: repo.html_url,
-      description: repo.description,
-      updated_at: repo.updated_at,
-    }));
+    return allRepos.map(mapRepo);
+  }
+
+  public async getInstallationRepos(token: string): Promise<GitRepo[]> {
+    const allRepos: GitRepo[] = [];
+    let page = 1;
+
+    while (page <= MAX_PAGINATION_PAGES) {
+      const url = new URL("https://api.github.com/installation/repositories");
+      url.searchParams.set("per_page", String(REPOS_PER_PAGE));
+      url.searchParams.set("page", String(page));
+
+      const res = await this.githubFetch(token, url.toString());
+
+      const body = (await res.json()) as { repositories?: GitRepo[] };
+      const pageData = body.repositories ?? [];
+      allRepos.push(...pageData);
+
+      if (pageData.length < REPOS_PER_PAGE) {
+        break;
+      }
+      page++;
+    }
+
+    return allRepos
+      .map(mapRepo)
+      .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
   }
 
   public async getBranches(
@@ -124,6 +155,36 @@ class GithubProvider implements IGitProvider {
         isPrerelease: r.prerelease,
         published_at: r.published_at,
       }));
+  }
+
+  public async getTags(token: string, repoFullName: string): Promise<GitTag[]> {
+    const all: GitTag[] = [];
+    let page = 1;
+
+    while (page <= MAX_PAGINATION_PAGES) {
+      const url = new URL(`https://api.github.com/repos/${repoFullName}/tags`);
+      url.searchParams.set("per_page", String(REPOS_PER_PAGE));
+      url.searchParams.set("page", String(page));
+
+      const res = await this.githubFetch(token, url.toString());
+      const pageData = (await res.json()) as Array<{
+        name: string;
+        commit?: { sha?: string };
+      }>;
+
+      for (const t of pageData) {
+        if (t.name) all.push({ name: t.name, commitSha: t.commit?.sha });
+      }
+
+      if (pageData.length < REPOS_PER_PAGE) break;
+      page++;
+    }
+
+    // GitHub returns tags in commit order; users expect the newest version
+    // first. `numeric` keeps v6.10.0 ahead of v6.9.0.
+    return all.sort((a, b) =>
+      b.name.localeCompare(a.name, "en", { numeric: true }),
+    );
   }
 
   public async getTree(

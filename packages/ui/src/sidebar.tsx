@@ -382,6 +382,10 @@ const SidebarInset = React.forwardRef<
         "flex",
         "min-h-svh",
         "flex-1",
+        // Without min-w-0 a flex child keeps its intrinsic width, so wide page
+        // content (README tables, code blocks) stretches the whole inset past
+        // the viewport and pushes header actions out of sight.
+        "min-w-0",
         "flex-col",
         "bg-background",
         "peer-data-[variant=inset]:min-h-[calc(100svh-theme(spacing.4))]",

@@ -20,8 +20,20 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarRail,
+  useSidebar,
 } from "@terrablox/ui/sidebar";
-import { Boxes, ChevronUp, FolderKanban, LogOut, User2 } from "lucide-react";
+import {
+  Bot,
+  Boxes,
+  Building2,
+  ChevronUp,
+  FolderKanban,
+  LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
+  User2,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
@@ -42,6 +54,11 @@ export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const { user, signOut } = useAuth();
+  const { state, isMobile, toggleSidebar } = useSidebar();
+
+  // On mobile the sidebar is an overlay that is either fully there or gone, so
+  // the icon rail never applies and closing it is the sheet's own job.
+  const iconOnly = state === "collapsed" && !isMobile;
 
   const handleSignOut = async () => {
     await signOut({
@@ -52,20 +69,55 @@ export function AppSidebar() {
   };
 
   return (
-    <Sidebar>
+    // Collapsing to icons rather than off-canvas keeps navigation one click away
+    // while the canvas gets the width.
+    <Sidebar collapsible="icon">
       <SidebarHeader>
         <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="lg" asChild>
-              <Link href="/">
-                <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                  <span className="font-bold text-lg">T</span>
+          <SidebarMenuItem className="flex items-center gap-1">
+            {iconOnly ? (
+              // Only one control fits across 3rem, so the logo becomes the way
+              // back out — the same spot that collapsed it.
+              <SidebarMenuButton
+                size="lg"
+                onClick={toggleSidebar}
+                tooltip="Expand sidebar (Ctrl/⌘ B)"
+                aria-label="Expand sidebar"
+                className="group/brand"
+              >
+                <div className="relative flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                  <span className="font-bold text-lg transition-opacity group-hover/brand:opacity-0">
+                    T
+                  </span>
+                  <PanelLeftOpen className="absolute size-4 opacity-0 transition-opacity group-hover/brand:opacity-100" />
                 </div>
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-semibold">TerraBlox</span>
-                </div>
-              </Link>
-            </SidebarMenuButton>
+              </SidebarMenuButton>
+            ) : (
+              <>
+                <SidebarMenuButton size="lg" asChild className="flex-1">
+                  <Link href="/">
+                    <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+                      <span className="font-bold text-lg">T</span>
+                    </div>
+                    <div className="grid flex-1 text-left text-sm leading-tight">
+                      <span className="truncate font-semibold">TerraBlox</span>
+                    </div>
+                  </Link>
+                </SidebarMenuButton>
+
+                {isMobile ? null : (
+                  <button
+                    type="button"
+                    onClick={toggleSidebar}
+                    aria-label="Collapse sidebar"
+                    title="Collapse sidebar (Ctrl/⌘ B)"
+                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring"
+                  >
+                    <PanelLeftClose className="size-4" />
+                  </button>
+                )}
+              </>
+            )}
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
@@ -140,6 +192,18 @@ export function AppSidebar() {
                     Account
                   </Link>
                 </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/agent" className="cursor-pointer">
+                    <Bot className="mr-2 h-4 w-4" />
+                    Agent
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/company" className="cursor-pointer">
+                    <Building2 className="mr-2 h-4 w-4" />
+                    Company
+                  </Link>
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   onClick={handleSignOut}
@@ -153,6 +217,9 @@ export function AppSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+
+      {/* Drag/click strip on the border, for people who never find the button. */}
+      <SidebarRail />
     </Sidebar>
   );
 }

@@ -1,7 +1,5 @@
 "use client";
 
-import { useAuth } from "@terrablox/auth/hooks";
-import type { Project } from "@terrablox/database";
 import { Button } from "@terrablox/ui/button";
 import {
   Card,
@@ -10,67 +8,68 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
-import { Separator } from "@terrablox/ui/separator";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@terrablox/ui/sidebar";
+import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
-import { Plus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { AlertCircle, GitBranch, Plus } from "lucide-react";
+import Link from "next/link";
+import { useCallback, useEffect, useState } from "react";
+
 import { AppSidebar } from "@/components/app-sidebar";
+import { PageHeader } from "@/components/layout/page-header";
+import { CreateProjectDialog } from "@/components/projects/create-project-dialog";
+import type { ProjectDto } from "@/lib/projects/types";
 
 export default function ProjectsPage() {
-  const { user, isAuthenticated } = useAuth();
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [projectsLoading, setProjectsLoading] = useState(true);
+  const [projects, setProjects] = useState<ProjectDto[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   useEffect(() => {
-    async function fetchProjects() {
-      if (user?.id) {
-        try {
-          const res = await fetch(
-            `/api/projects?userId=${encodeURIComponent(user.id)}`
+    let cancelled = false;
+
+    fetch("/api/projects")
+      .then(async (res) => {
+        const body = await res.json();
+        if (!res.ok) throw new Error(body?.error ?? "Failed to load projects");
+        if (!cancelled) setProjects(body.projects ?? []);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Failed to load projects",
           );
-          const body = await res.json();
-          if (!res.ok) throw new Error(body?.error || "Failed to load projects");
-          setProjects((body?.projects ?? []) as Project[]);
-        } catch {
-          setProjects([]);
-        } finally {
-          setProjectsLoading(false);
         }
-      }
-    }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
 
-    if (isAuthenticated && user?.id) {
-      fetchProjects();
-    }
-  }, [isAuthenticated, user?.id]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  if (!isAuthenticated) {
-    return null;
-  }
+  const handleCreated = useCallback((project: ProjectDto) => {
+    setProjects((current) => [project, ...current]);
+  }, []);
 
   return (
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
-          <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="mr-2 h-4" />
-          <h1 className="text-lg font-semibold">Your Projects</h1>
-          <div className="ml-auto">
-            <Button size="sm">
+        <PageHeader
+          breadcrumbs={[{ label: "Projects" }]}
+          actions={
+            <Button size="sm" onClick={() => setDialogOpen(true)}>
               <Plus className="h-4 w-4 mr-2" />
               New Project
             </Button>
-          </div>
-        </header>
+          }
+        />
 
         <main className="flex-1 p-6">
-          {projectsLoading ? (
+          {loading ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {[1, 2, 3].map((i) => (
                 <Card key={i}>
@@ -84,6 +83,13 @@ export default function ProjectsPage() {
                 </Card>
               ))}
             </div>
+          ) : error ? (
+            <Card className="border-destructive/40">
+              <CardContent className="flex items-start gap-2 py-6 text-sm text-destructive">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                {error}
+              </CardContent>
+            </Card>
           ) : projects.length === 0 ? (
             <Card className="border-dashed">
               <CardContent className="flex flex-col items-center justify-center py-12">
@@ -92,9 +98,9 @@ export default function ProjectsPage() {
                 </div>
                 <h3 className="text-lg font-semibold mb-1">No projects yet</h3>
                 <p className="text-muted-foreground text-center mb-4">
-                  Create your first project to get started with TerraBlox.
+                  A project connects a repository to a graph you can edit.
                 </p>
-                <Button>
+                <Button onClick={() => setDialogOpen(true)}>
                   <Plus className="h-4 w-4 mr-2" />
                   Create Project
                 </Button>
@@ -103,27 +109,44 @@ export default function ProjectsPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {projects.map((project) => (
-                <Card
-                  key={project.id}
-                  className="cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
-                >
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base">{project.name}</CardTitle>
-                    <CardDescription className="text-sm line-clamp-2">
-                      {project.description || "No description"}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-xs text-muted-foreground">
-                      Updated {new Date(project.updatedAt).toLocaleDateString()}
-                    </p>
-                  </CardContent>
-                </Card>
+                <Link key={project.id} href={`/projects/${project.id}`}>
+                  <Card className="h-full cursor-pointer hover:border-primary/50 hover:shadow-md transition-all">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base">
+                        {project.name}
+                      </CardTitle>
+                      <CardDescription className="text-sm line-clamp-2">
+                        {project.description || "No description"}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-1">
+                      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <GitBranch className="h-3 w-3 shrink-0" />
+                        <span className="truncate">
+                          {project.repoFullName}
+                          <span className="opacity-60">
+                            @{project.repoBranch}
+                          </span>
+                        </span>
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Updated{" "}
+                        {new Date(project.updatedAt).toLocaleDateString()}
+                      </p>
+                    </CardContent>
+                  </Card>
+                </Link>
               ))}
             </div>
           )}
         </main>
       </SidebarInset>
+
+      <CreateProjectDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onCreated={handleCreated}
+      />
     </SidebarProvider>
   );
 }

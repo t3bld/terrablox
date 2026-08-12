@@ -1,13 +1,17 @@
 import type { Prisma } from "@terrablox/database";
 import { NextResponse } from "next/server";
-import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
+import {
+  getCurrentUserId,
+  getProviderTokenForRequest,
+} from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { analyzeTerraformFromTexts } from "@/lib/terraform/analyze";
+import { analyzeTerraformFiles } from "@/lib/terraform/analyze";
+import { persistAnalysis } from "@/lib/terraform/persist";
 
-type GitRefType = "release" | "branch";
+// A release is identified by its tag, so all three resolve to a git ref name.
+type GitRefType = "release" | "branch" | "tag";
 
 interface CreateModuleFromGitImportInput {
-  userId: string;
   repoFullName: string;
   refType: GitRefType;
   refName: string;
@@ -199,18 +203,24 @@ async function analyzeFolder(params: {
     folder: params.folder,
   });
 
-  const contents: string[] = [];
-  for (const p of files) {
-    const t = await fetchTextFile({
-      token: params.token,
-      repoFullName: params.repoFullName,
-      ref: params.refName,
-      path: p,
-    });
-    if (t) contents.push(t);
-  }
+  // Fetched in parallel; a module with 50 files would otherwise serialise 50
+  // round trips to GitHub.
+  const fetched = await Promise.all(
+    files.map(async (path) => {
+      const content = await fetchTextFile({
+        token: params.token,
+        repoFullName: params.repoFullName,
+        ref: params.refName,
+        path,
+      });
 
-  return analyzeTerraformFromTexts(contents);
+      return content === null ? null : { path, content };
+    }),
+  );
+
+  return analyzeTerraformFiles(
+    fetched.filter((f): f is { path: string; content: string } => f !== null),
+  );
 }
 
 async function resolveSubmoduleFolders(params: {
@@ -265,13 +275,13 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as Partial<CreateModuleFromGitImportInput>;
 
-    const userId = body.userId?.trim();
+    const userId = await getCurrentUserId();
     const repoFullName = body.repoFullName?.trim();
     const refType = body.refType;
     const refName = body.refName?.trim();
 
     if (!userId) {
-      return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     if (!repoFullName || !repoFullName.includes("/")) {
@@ -281,7 +291,7 @@ export async function POST(req: Request) {
       );
     }
 
-    if (refType !== "release" && refType !== "branch") {
+    if (refType !== "release" && refType !== "branch" && refType !== "tag") {
       return NextResponse.json({ error: "Invalid refType" }, { status: 400 });
     }
 
@@ -377,42 +387,54 @@ export async function POST(req: Request) {
 
     const created = await database.$transaction(
       async (tx) => {
-        // Root module: idempotent create based on unique (sourceId, versionTag, terraformRootFolder)
-        let rootModule = await tx.terraformModule.findFirst({
+        // Root module: idempotent on the unique (sourceId, versionTag, terraformRootFolder) tuple.
+        const existingRoot = await tx.terraformModule.findFirst({
           where: {
             userId,
             sourceId: source.id,
             versionTag,
             terraformRootFolder,
           },
+          select: { id: true },
         });
 
-        if (!rootModule) {
-          rootModule = await tx.terraformModule.create({
-            data: {
-              userId,
-              sourceId: source.id,
-              // Root module display is derived from terraform_module_sources.
-              submoduleName: null,
-              versionTag,
-              url,
-              terraformRootFolder,
-              terraformSubmodulesFolders,
-              variables: rootAnalysis.variables as unknown as Prisma.JsonArray,
-              outputs: rootAnalysis.outputs as unknown as Prisma.JsonArray,
-              isSubmodule: false,
-            },
-          });
-        }
+        // A re-import must refresh the analysis: the previous run may have been
+        // produced by an older analyzer, or the ref may have moved (branches).
+        const rootModule = existingRoot
+          ? await tx.terraformModule.update({
+              where: { id: existingRoot.id },
+              data: {
+                url,
+                terraformSubmodulesFolders,
+                variables:
+                  rootAnalysis.variables as unknown as Prisma.JsonArray,
+                outputs: rootAnalysis.outputs as unknown as Prisma.JsonArray,
+              },
+            })
+          : await tx.terraformModule.create({
+              data: {
+                userId,
+                sourceId: source.id,
+                // Root module display is derived from terraform_module_sources.
+                submoduleName: null,
+                versionTag,
+                url,
+                terraformRootFolder,
+                terraformSubmodulesFolders,
+                variables:
+                  rootAnalysis.variables as unknown as Prisma.JsonArray,
+                outputs: rootAnalysis.outputs as unknown as Prisma.JsonArray,
+                isSubmodule: false,
+              },
+            });
 
-        const createdSubmodulesWithAnalysis = [] as Array<{
-          id: string;
-          terraformRootFolder: string;
-          analysis: typeof rootAnalysis;
-        }>;
+        const submodules: Array<{ id: string; terraformRootFolder: string }> =
+          [];
 
-        for (const { folder: subFolder, analysis: subAnalysis } of submoduleAnalyses) {
-          // Submodule: idempotent create based on same unique tuple.
+        for (const {
+          folder: subFolder,
+          analysis: subAnalysis,
+        } of submoduleAnalyses) {
           const existingSub = await tx.terraformModule.findFirst({
             where: {
               userId,
@@ -423,103 +445,45 @@ export async function POST(req: Request) {
             select: { id: true },
           });
 
-          if (existingSub?.id) {
-            // already imported for this version+folder; do nothing
-            continue;
-          }
+          const sub = existingSub
+            ? await tx.terraformModule.update({
+                where: { id: existingSub.id },
+                data: {
+                  url,
+                  parentModuleId: rootModule.id,
+                  variables:
+                    subAnalysis.variables as unknown as Prisma.JsonArray,
+                  outputs: subAnalysis.outputs as unknown as Prisma.JsonArray,
+                },
+              })
+            : await tx.terraformModule.create({
+                data: {
+                  userId,
+                  sourceId: source.id,
+                  // For imported submodules, store the folder basename as submodule_name.
+                  submoduleName: subFolder.split("/").pop() ?? subFolder,
+                  versionTag,
+                  url,
+                  terraformRootFolder: subFolder,
+                  terraformSubmodulesFolders: [],
+                  variables:
+                    subAnalysis.variables as unknown as Prisma.JsonArray,
+                  outputs: subAnalysis.outputs as unknown as Prisma.JsonArray,
+                  isSubmodule: true,
+                  parentModuleId: rootModule.id,
+                },
+              });
 
-          const sub = await tx.terraformModule.create({
-            data: {
-              userId,
-              sourceId: source.id,
-              // For imported submodules, store the folder basename as submodule_name.
-              submoduleName: subFolder.split("/").pop() ?? subFolder,
-              versionTag,
-              url,
-              terraformRootFolder: subFolder,
-              terraformSubmodulesFolders: [],
-              variables: subAnalysis.variables as unknown as Prisma.JsonArray,
-              outputs: subAnalysis.outputs as unknown as Prisma.JsonArray,
-              isSubmodule: true,
-              parentModuleId: rootModule.id,
-            },
-          });
-
-          createdSubmodulesWithAnalysis.push({
-            id: sub.id,
-            terraformRootFolder: subFolder,
-            analysis: subAnalysis,
-          });
+          await persistAnalysis(tx, sub.id, subAnalysis);
+          submodules.push({ id: sub.id, terraformRootFolder: subFolder });
         }
 
-        // Provider resources: best-effort mapping. Use detected providers (fallback to prefix before first underscore).
-        async function upsertProviderResources(
-          moduleId: string,
-          analysis: typeof rootAnalysis,
-        ) {
-          // wipe and re-create for now to avoid having to diff
-          await tx.providerResource.deleteMany({ where: { moduleId } });
+        await persistAnalysis(tx, rootModule.id, rootAnalysis);
 
-          const providerNames = analysis.providers
-            .map((p) => p.name)
-            .filter((n) => n.length > 0);
-
-          const rows: Prisma.ProviderResourceCreateManyInput[] =
-            analysis.resources.map((r) => {
-              const inferredProvider =
-                (r.type.includes("_") ? r.type.split("_")[0] : r.type) ||
-                "unknown";
-
-              const providerName = providerNames.includes(inferredProvider)
-                ? inferredProvider
-                : (providerNames[0] ?? inferredProvider);
-
-              return {
-                moduleId,
-                resourceType: r.type,
-                resourceName: r.name,
-                providerName,
-                version: null,
-                resourceUrl: null,
-                providerUrl: null,
-                resourceDescription: null,
-              };
-            });
-
-          if (rows.length) {
-            await tx.providerResource.createMany({ data: rows });
-          }
-        }
-
-        // Only analyze/resources-write on newly created rows.
-        // If the root already existed for this version+folder, we treat import as a no-op.
-        // (Future enhancement: add a "refresh" option to re-analyze.)
-        if (createdSubmodulesWithAnalysis.length > 0 || !rootModule) {
-          // (rootModule is never null here), keep for clarity
-        }
-
-        // If we created the root module in this request, write its resources.
-        // Detect by checking whether provider resources already exist is expensive;
-        // we just track creation via the branch above.
-        // Use a simple heuristic: if rootModule.updatedAt is "now" isn't reliable.
-        // So instead, re-check whether it existed before create is hard.
-        // We'll just always upsert provider resources for the root; it's safe and keeps data fresh.
-        await upsertProviderResources(rootModule.id, rootAnalysis);
-
-        for (const sub of createdSubmodulesWithAnalysis) {
-          await upsertProviderResources(sub.id, sub.analysis);
-        }
-
-        return {
-          rootModule,
-          submodules: createdSubmodulesWithAnalysis.map(({ id, terraformRootFolder }) => ({
-            id,
-            terraformRootFolder,
-          })),
-        };
+        return { rootModule, submodules };
       },
-      // Avoid interactive transaction timeouts; DB work should be fast now,
-      // but provider resource rewrites can still take a bit on large modules.
+      // Analysis is done before the transaction opens, but resource rewrites
+      // can still take a moment on large modules.
       { timeout: 30_000 },
     );
 
@@ -528,6 +492,7 @@ export async function POST(req: Request) {
         module: created.rootModule,
         submodules: created.submodules,
         source,
+        warnings: rootAnalysis.errors,
       },
       { status: 201 },
     );

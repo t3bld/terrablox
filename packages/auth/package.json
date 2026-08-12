@@ -6,7 +6,7 @@
     ".": "./src/index.tsx",
     "./hooks": "./src/hooks/use-auth.tsx",
     "./types": "./src/types.ts",
-    "./adapters/supabase": "./src/adapters/supabase.ts",
+    "./adapters/better-auth": "./src/adapters/better-auth.ts",
     "./auth-provider": "./src/components/auth-provider.tsx"
   },
   "scripts": {
@@ -15,8 +15,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@supabase/ssr": "^0.6.0",
-    "@supabase/supabase-js": "^2.39.0"
+    "better-auth": "^1.6.25"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",

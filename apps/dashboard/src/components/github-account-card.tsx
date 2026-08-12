@@ -10,35 +10,81 @@ import {
   CardTitle,
 } from "@terrablox/ui/card";
 import { Github, Link as LinkIcon, Unlink } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+/**
+ * Only relevant in "user" mode. GitHub App user tokens do not use scopes at
+ * all - they use the fine-grained permissions of the App installation.
+ */
+const REQUIRED_SCOPES = ["repo", "read:org"];
+
+type GitAuthMode = "app" | "user" | "none";
+
+type AuthConfig = {
+  githubConfigured: boolean;
+  gitAuthMode: GitAuthMode;
+};
 
 export function GithubAccountCard() {
-  const { user, signInWithOAuth } = useAuth();
+  const { user, linkOAuth } = useAuth();
   const [isLinking, setIsLinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // null while unknown, so the button never flashes the wrong state.
+  const [config, setConfig] = useState<AuthConfig | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetch("/api/auth-config")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (cancelled) return;
+        setConfig({
+          githubConfigured: !!body?.providers?.github,
+          gitAuthMode: (body?.gitAuthMode as GitAuthMode) ?? "none",
+        });
+      })
+      .catch(() => {
+        // Assume available and let the link attempt surface the real error.
+        if (!cancelled) {
+          setConfig({ githubConfigured: true, gitAuthMode: "user" });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const github = useMemo(() => {
     const identity = user?.identities?.find((id) => id.provider === "github");
-    const username = identity?.identity_data?.user_name;
     return {
       linked: !!identity,
-      username: typeof username === "string" ? username : undefined,
+      scopes: identity?.scopes ?? [],
     };
   }, [user]);
+
+  const isAppMode = config?.gitAuthMode === "app";
+
+  const missingScopes = useMemo(() => {
+    if (!github.linked || isAppMode) return [];
+    return REQUIRED_SCOPES.filter((scope) => !github.scopes.includes(scope));
+  }, [github, isAppMode]);
 
   async function handleLink() {
     setError(null);
     setIsLinking(true);
     try {
-      await signInWithOAuth("github", {
+      await linkOAuth("github", {
         redirectTo: window.location.href,
-        scopes: ["read:org", "repo"],
+        // A GitHub App ignores scopes; sending them would be misleading.
+        scopes: isAppMode ? undefined : REQUIRED_SCOPES,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to link account");
-    } finally {
       setIsLinking(false);
     }
+    // On success the browser leaves for GitHub, so the state is not reset here.
   }
 
   return (
@@ -49,8 +95,9 @@ export function GithubAccountCard() {
           GitHub
         </CardTitle>
         <CardDescription>
-          Connect your GitHub account to import private and organization
-          modules.
+          {isAppMode
+            ? "Link your GitHub identity. Repositories are read through the GitHub App installation, so every member sees the same modules."
+            : "Connect your GitHub account to import private and organization modules."}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -67,25 +114,45 @@ export function GithubAccountCard() {
               {github.linked ? "Linked" : "Not linked"}
             </span>
           </div>
-          {github.linked ? (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {github.linked ? (
               <LinkIcon className="h-3.5 w-3.5" />
-              {github.username ?? "GitHub"}
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            ) : (
               <Unlink className="h-3.5 w-3.5" />
-              GitHub
-            </div>
-          )}
+            )}
+            GitHub
+          </div>
         </div>
+
+        {config && !config.githubConfigured ? (
+          <div className="space-y-1 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground">
+              GitHub sign-in is not configured on this server.
+            </p>
+            <p>
+              Register a GitHub App with the callback URL{" "}
+              <code className="font-mono">/api/auth/callback/github</code>, then
+              set <code className="font-mono">GITHUB_CLIENT_ID</code> and{" "}
+              <code className="font-mono">GITHUB_CLIENT_SECRET</code> in{" "}
+              <code className="font-mono">apps/dashboard/.env</code> and restart
+              the dev server.
+            </p>
+          </div>
+        ) : null}
+
+        {missingScopes.length > 0 ? (
+          <p className="text-xs text-amber-600 dark:text-amber-500">
+            Missing scopes: {missingScopes.join(", ")}. Re-link the account to
+            grant them.
+          </p>
+        ) : null}
 
         <div className="flex flex-col gap-2">
           {!github.linked ? (
             <Button
               className="w-full"
               onClick={handleLink}
-              disabled={isLinking}
+              disabled={isLinking || !config?.githubConfigured}
             >
               {isLinking ? "Linking..." : "Link GitHub account"}
             </Button>

@@ -1,276 +1,433 @@
 import "server-only";
 
-// NOTE: This analyzer is intentionally lightweight (no full HCL parser) and is used by
-// `/api/modules/import-from-git` and `/api/modules/analyze-git`.
+import {
+  collectReferences,
+  type ReferenceSourceBlock,
+  type TerraformReferenceEndpointKind,
+} from "./references";
+import {
+  emptyAnalysis,
+  type TerraformAnalysis,
+  type TerraformAnalysisError,
+  type TerraformModuleCall,
+  type TerraformModuleSourceKind,
+  type TerraformOutput,
+  type TerraformProvider,
+  type TerraformResource,
+  type TerraformResourceKind,
+  type TerraformSourceFile,
+  type TerraformVariable,
+} from "./types";
 
-export interface TerraformVariable {
-  name: string;
-  description?: string | null;
-  type?: string | null;
-  default?: unknown;
-  sensitive?: boolean;
+/**
+ * Terraform analysis backed by HashiCorp's own HCL parser (`@cdktf/hcl2json`,
+ * a WASM build of the upstream Go parser).
+ *
+ * A hand-rolled regex parser cannot handle the constructs real modules use --
+ * multi-line `object({...})` types, heredoc descriptions, nested blocks inside
+ * `required_providers` -- so anything short of a real parser silently produces
+ * wrong data rather than failing loudly.
+ *
+ * The package resolves its WASM payload relative to `__dirname`, which webpack
+ * would rewrite. It is therefore listed in `serverComponentsExternalPackages`
+ * in `next.config.mjs`; removing that entry breaks parsing at runtime.
+ */
+
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export interface TerraformOutput {
-  name: string;
-  description?: string | null;
-  sensitive?: boolean;
+/**
+ * HCL blocks are addressed by label and may legally repeat, so the parser
+ * always yields arrays of bodies. Callers only care about the merged body.
+ */
+function blockBodies(value: unknown): JsonRecord[] {
+  if (Array.isArray(value)) return value.filter(isRecord);
+  if (isRecord(value)) return [value];
+  return [];
 }
 
-export interface TerraformProvider {
-  name: string;
-  version?: string | null;
+function firstBody(value: unknown): JsonRecord {
+  return blockBodies(value)[0] ?? {};
 }
 
-export interface TerraformResource {
-  kind: "resource" | "data";
-  type: string;
-  name: string;
-}
-
-export interface TerraformModuleCall {
-  name: string;
-  source?: string | null;
-  version?: string | null;
-}
-
-export interface TerraformAnalysis {
-  variables: TerraformVariable[];
-  outputs: TerraformOutput[];
-  providers: TerraformProvider[];
-  resources: TerraformResource[];
-  moduleCalls: TerraformModuleCall[];
-}
-
-function stripComments(input: string) {
-  // Remove // and # comments (best-effort; avoids wrecking quoted strings by being conservative).
-  return input
-    .split("\n")
-    .map((line) => {
-      const trimmed = line.trimStart();
-      if (trimmed.startsWith("#") || trimmed.startsWith("//")) return "";
-      // inline // is tricky; ignore.
-      return line;
-    })
-    .join("\n");
-}
-
-function findBlocks(
-  text: string,
-  blockType: string,
-): Array<{ name: string; body: string }> {
-  // Very small HCL-ish parser: find `blockType "name" { ... }` and return body.
-  // Balanced-brace scan; ignores braces in strings (best-effort).
-  const out: Array<{ name: string; body: string }> = [];
-  const re = new RegExp(`${blockType}\\s+\"([^\"]+)\"\\s*\\{`, "g");
-
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text))) {
-    const name = match[1] ?? "";
-    const startIdx = re.lastIndex; // after the opening {
-    let i = startIdx;
-    let depth = 1;
-    let inString: '"' | "'" | null = null;
-
-    for (; i < text.length; i++) {
-      const ch = text[i];
-      if (inString) {
-        if (ch === "\\" && i + 1 < text.length) {
-          i++;
-          continue;
-        }
-        if (ch === inString) inString = null;
-        continue;
-      }
-      if (ch === '"' || ch === "'") {
-        inString = ch;
-        continue;
-      }
-      if (ch === "{") depth++;
-      if (ch === "}") {
-        depth--;
-        if (depth === 0) break;
-      }
-    }
-
-    if (depth !== 0) continue;
-    const body = text.slice(startIdx, i);
-    out.push({ name, body });
-    re.lastIndex = i + 1;
+function asString(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
   }
-
-  return out;
+  return null;
 }
 
-function findTerraformBlock(text: string) {
-  const re = /terraform\s*\{/g;
-  const m = re.exec(text);
-  if (!m) return null;
-  const startIdx = re.lastIndex;
-  let i = startIdx;
-  let depth = 1;
-  let inString: '"' | "'" | null = null;
-  for (; i < text.length; i++) {
-    const ch = text[i];
-    if (inString) {
-      if (ch === "\\" && i + 1 < text.length) {
-        i++;
-        continue;
-      }
-      if (ch === inString) inString = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      inString = ch;
-      continue;
-    }
-    if (ch === "{") depth++;
-    if (ch === "}") {
-      depth--;
-      if (depth === 0) break;
-    }
+function asBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return null;
+}
+
+/**
+ * Type expressions and other unevaluated HCL come back wrapped as `${...}`.
+ * Unwrap it so the UI shows `object({ ... })` rather than `${object({ ... })}`.
+ */
+function unwrapExpression(value: unknown): string | null {
+  const raw = asString(value);
+  if (raw === null) return null;
+
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("${") && trimmed.endsWith("}")) {
+    return trimmed.slice(2, -1).trim();
   }
-  if (depth !== 0) return null;
-  return text.slice(startIdx, i);
+  return trimmed;
 }
 
-function parseAssignments(body: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  const lines = body
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
+function classifyModuleSource(
+  source: string | null,
+): TerraformModuleSourceKind {
+  if (!source) return "unknown";
 
-  for (const line of lines) {
-    // key = value
-    const m = /^([A-Za-z0-9_\-]+)\s*=\s*(.+)$/.exec(line);
-    if (!m) continue;
-    const key = m[1] ?? "";
-    out[key] = m[2] ?? "";
-  }
-  return out;
-}
-
-function unquote(s: string) {
-  const t = s.trim();
+  const s = source.trim();
+  if (s.startsWith("./") || s.startsWith("../")) return "local";
   if (
-    (t.startsWith('"') && t.endsWith('"')) ||
-    (t.startsWith("'") && t.endsWith("'"))
+    s.startsWith("git::") ||
+    s.startsWith("git@") ||
+    s.startsWith("github.com/") ||
+    s.startsWith("bitbucket.org/") ||
+    /^https?:\/\//.test(s)
   ) {
-    return t.slice(1, -1);
+    return "git";
   }
-  return t;
+
+  // Registry addresses are `[<host>/]<namespace>/<name>/<provider>`.
+  const parts = s.split("/");
+  if (parts.length === 3 || parts.length === 4) return "registry";
+
+  return "unknown";
 }
 
-function tryParseJsonLike(value: string): unknown {
-  const v = value.trim();
-  if (v === "true") return true;
-  if (v === "false") return false;
-  if (v === "null") return null;
-  if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
-  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-    return unquote(v);
-  }
-  // Best-effort: don't attempt to eval HCL expressions.
-  return v;
+/**
+ * Terraform derives a resource's provider from the prefix of its type, so
+ * `aws_s3_bucket` belongs to the provider with local name `aws`.
+ */
+function providerFromResourceType(type: string): string {
+  const idx = type.indexOf("_");
+  if (idx <= 0) return type;
+  return type.slice(0, idx);
 }
 
-export function analyzeTerraformFromTexts(fileContents: string[]): TerraformAnalysis {
-  const joined = stripComments(fileContents.join("\n\n"));
+function collectVariables(body: JsonRecord, file: string): TerraformVariable[] {
+  const declared = body["variable"];
+  if (!isRecord(declared)) return [];
 
-  const variables = findBlocks(joined, "variable").map(({ name, body }) => {
-    const a = parseAssignments(body);
-    return {
+  const out: TerraformVariable[] = [];
+
+  for (const [name, raw] of Object.entries(declared)) {
+    const v = firstBody(raw);
+    const hasDefault = Object.hasOwn(v, "default");
+
+    out.push({
       name,
-      description: a["description"] ? unquote(a["description"]) : null,
-      type: a["type"] ? a["type"].trim() : null,
-      default: a["default"] ? tryParseJsonLike(a["default"]) : undefined,
-      sensitive: a["sensitive"]
-        ? Boolean(tryParseJsonLike(a["sensitive"]))
-        : undefined,
-    } satisfies TerraformVariable;
-  });
-
-  const outputs = findBlocks(joined, "output").map(({ name, body }) => {
-    const a = parseAssignments(body);
-    return {
-      name,
-      description: a["description"] ? unquote(a["description"]) : null,
-      sensitive: a["sensitive"]
-        ? Boolean(tryParseJsonLike(a["sensitive"]))
-        : undefined,
-    } satisfies TerraformOutput;
-  });
-
-  const moduleCalls = findBlocks(joined, "module").map(({ name, body }) => {
-    const a = parseAssignments(body);
-    return {
-      name,
-      source: a["source"] ? unquote(a["source"]) : null,
-      version: a["version"] ? unquote(a["version"]) : null,
-    } satisfies TerraformModuleCall;
-  });
-
-  const resOut: TerraformResource[] = [];
-  {
-    const rre = /resource\s+"([^"]+)"\s+"([^"]+)"\s*\{/g;
-    let m: RegExpExecArray | null;
-    while ((m = rre.exec(joined))) {
-      resOut.push({ kind: "resource", type: m[1] ?? "", name: m[2] ?? "" });
-    }
-    const dre = /data\s+"([^"]+)"\s+"([^"]+)"\s*\{/g;
-    while ((m = dre.exec(joined))) {
-      resOut.push({ kind: "data", type: m[1] ?? "", name: m[2] ?? "" });
-    }
-  }
-
-  const providers: TerraformProvider[] = [];
-  // provider "aws" { ... }
-  for (const p of findBlocks(joined, "provider")) {
-    const a = parseAssignments(p.body);
-    providers.push({
-      name: p.name,
-      version: a["version"] ? unquote(a["version"]) : null,
+      description: asString(v["description"]),
+      type: unwrapExpression(v["type"]),
+      ...(hasDefault ? { default: v["default"] } : {}),
+      required: !hasDefault,
+      sensitive: asBoolean(v["sensitive"]) ?? false,
+      nullable: asBoolean(v["nullable"]),
+      file,
     });
   }
-  // terraform { required_providers { aws = { source = "hashicorp/aws", version = "~> 5.0" } } }
-  const tf = findTerraformBlock(joined);
-  if (tf) {
-    const rpBlockMatch = /required_providers\s*\{([\s\S]*?)\}/m.exec(tf);
-    const rpBody = rpBlockMatch?.[1];
-    if (rpBody) {
-      // Look for lines like: aws = { ... version = "..." }
-      const entryRe = new RegExp(
-        "([A-Za-z0-9_\\-]+)\\s*=\\s*\\{([\\s\\S]*?)}",
-        "g",
-      );
-      let m: RegExpExecArray | null;
-      while ((m = entryRe.exec(rpBody))) {
-        const name = m[1] ?? "";
-        const body = m[2] ?? "";
-        const a = parseAssignments(body);
-        const version = a["version"] ? unquote(a["version"]) : null;
-        if (name) providers.push({ name, version });
+
+  return out;
+}
+
+function collectOutputs(body: JsonRecord, file: string): TerraformOutput[] {
+  const declared = body["output"];
+  if (!isRecord(declared)) return [];
+
+  return Object.entries(declared).map(([name, raw]) => {
+    const o = firstBody(raw);
+    return {
+      name,
+      description: asString(o["description"]),
+      sensitive: asBoolean(o["sensitive"]) ?? false,
+      file,
+    } satisfies TerraformOutput;
+  });
+}
+
+function collectModuleCalls(
+  body: JsonRecord,
+  file: string,
+): TerraformModuleCall[] {
+  const declared = body["module"];
+  if (!isRecord(declared)) return [];
+
+  return Object.entries(declared).map(([name, raw]) => {
+    const m = firstBody(raw);
+    const source = asString(m["source"]);
+
+    return {
+      name,
+      source,
+      version: asString(m["version"]),
+      sourceKind: classifyModuleSource(source),
+      file,
+    } satisfies TerraformModuleCall;
+  });
+}
+
+function collectResourcesOfKind(
+  body: JsonRecord,
+  key: "resource" | "data",
+  kind: TerraformResourceKind,
+  file: string,
+): TerraformResource[] {
+  const declared = body[key];
+  if (!isRecord(declared)) return [];
+
+  const out: TerraformResource[] = [];
+
+  for (const [type, byName] of Object.entries(declared)) {
+    if (!isRecord(byName)) continue;
+
+    for (const name of Object.keys(byName)) {
+      out.push({
+        kind,
+        type,
+        name,
+        provider: providerFromResourceType(type),
+        file,
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Providers are declared in two independent places and both must be read:
+ * `required_providers` carries source and version, while a bare `provider`
+ * block only proves the provider is configured.
+ */
+function collectProviders(body: JsonRecord): TerraformProvider[] {
+  const out: TerraformProvider[] = [];
+
+  for (const tfBlock of blockBodies(body["terraform"])) {
+    for (const required of blockBodies(tfBlock["required_providers"])) {
+      for (const [name, raw] of Object.entries(required)) {
+        if (isRecord(raw)) {
+          out.push({
+            name,
+            source: asString(raw["source"]),
+            version: asString(raw["version"]),
+          });
+          continue;
+        }
+
+        // Legacy shorthand: `aws = "~> 5.0"`.
+        out.push({ name, source: null, version: asString(raw) });
       }
     }
   }
 
-  // Dedup providers by name (keep first non-null version)
-  const providerMap = new Map<string, TerraformProvider>();
-  for (const p of providers) {
-    const existing = providerMap.get(p.name);
-    if (!existing) {
-      providerMap.set(p.name, p);
-    } else if (!existing.version && p.version) {
-      providerMap.set(p.name, { ...existing, version: p.version });
+  const configured = body["provider"];
+  if (isRecord(configured)) {
+    for (const [name, raw] of Object.entries(configured)) {
+      const p = firstBody(raw);
+      out.push({ name, source: null, version: asString(p["version"]) });
     }
   }
 
-  return {
-    variables,
-    outputs,
-    providers: [...providerMap.values()],
-    resources: resOut,
-    moduleCalls,
-  };
+  return out;
+}
+
+function collectRequiredVersion(body: JsonRecord): string | null {
+  for (const tfBlock of blockBodies(body["terraform"])) {
+    const v = asString(tfBlock["required_version"]);
+    if (v) return v;
+  }
+  return null;
+}
+
+/**
+ * `locals` blocks are module-wide, so they are merged across every file before
+ * references are resolved. A local declared in `locals.tf` is routinely used by
+ * a resource in `main.tf`.
+ */
+function collectLocals(body: JsonRecord, into: Map<string, unknown>): void {
+  for (const block of blockBodies(body["locals"])) {
+    for (const [name, expression] of Object.entries(block)) {
+      if (!into.has(name)) into.set(name, expression);
+    }
+  }
+}
+
+/**
+ * Rebuilds the addressable blocks from a parsed file so references can be
+ * resolved against them. Mirrors `collectResourcesOfKind`, but keeps the bodies
+ * that the resource collector deliberately drops.
+ */
+function collectReferenceBlocks(
+  body: JsonRecord,
+  into: ReferenceSourceBlock[],
+): void {
+  for (const [key, kind] of [
+    ["resource", "resource"],
+    ["data", "data"],
+  ] as const) {
+    const declared = body[key];
+    if (!isRecord(declared)) continue;
+
+    for (const [type, byName] of Object.entries(declared)) {
+      if (!isRecord(byName)) continue;
+
+      for (const [name, blockBody] of Object.entries(byName)) {
+        const address =
+          kind === "data" ? `data.${type}.${name}` : `${type}.${name}`;
+        into.push({ address, kind, body: blockBody });
+      }
+    }
+  }
+
+  const modules = body["module"];
+  if (isRecord(modules)) {
+    for (const [name, blockBody] of Object.entries(modules)) {
+      into.push({
+        address: `module.${name}`,
+        kind: "module",
+        body: blockBody,
+      });
+    }
+  }
+}
+
+/** Keeps the richest entry per provider, since declarations are split. */
+function mergeProviders(providers: TerraformProvider[]): TerraformProvider[] {
+  const merged = new Map<string, TerraformProvider>();
+
+  for (const p of providers) {
+    if (!p.name) continue;
+
+    const existing = merged.get(p.name);
+    if (!existing) {
+      merged.set(p.name, p);
+      continue;
+    }
+
+    merged.set(p.name, {
+      name: p.name,
+      source: existing.source ?? p.source,
+      version: existing.version ?? p.version,
+    });
+  }
+
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Later declarations of the same key are dropped rather than duplicated; real
+ * Terraform would reject duplicates anyway.
+ */
+function dedupeByKey<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+
+  for (const item of items) {
+    const k = key(item);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(item);
+  }
+
+  return out;
+}
+
+export async function analyzeTerraformFiles(
+  files: TerraformSourceFile[],
+): Promise<TerraformAnalysis> {
+  if (files.length === 0) return emptyAnalysis();
+
+  // Imported lazily so the WASM payload is only initialised when a module is
+  // actually analysed, not on every request that touches this module.
+  const { parse } = await import("@cdktf/hcl2json");
+
+  const analysis = emptyAnalysis();
+  const errors: TerraformAnalysisError[] = [];
+  const providers: TerraformProvider[] = [];
+  const locals = new Map<string, unknown>();
+  const referenceBlocks: ReferenceSourceBlock[] = [];
+
+  for (const file of files) {
+    let body: JsonRecord;
+
+    try {
+      const parsed: unknown = await parse(file.path, file.content);
+      if (!isRecord(parsed)) {
+        errors.push({ file: file.path, message: "Parser returned no object" });
+        continue;
+      }
+      body = parsed;
+    } catch (e) {
+      errors.push({
+        file: file.path,
+        message: e instanceof Error ? e.message : String(e),
+      });
+      continue;
+    }
+
+    analysis.variables.push(...collectVariables(body, file.path));
+    analysis.outputs.push(...collectOutputs(body, file.path));
+    analysis.moduleCalls.push(...collectModuleCalls(body, file.path));
+    analysis.resources.push(
+      ...collectResourcesOfKind(body, "resource", "resource", file.path),
+      ...collectResourcesOfKind(body, "data", "data", file.path),
+    );
+    providers.push(...collectProviders(body));
+    collectLocals(body, locals);
+    collectReferenceBlocks(body, referenceBlocks);
+
+    analysis.requiredVersion ??= collectRequiredVersion(body);
+  }
+
+  analysis.variables = dedupeByKey(analysis.variables, (v) => v.name).sort(
+    (a, b) => a.name.localeCompare(b.name),
+  );
+  analysis.outputs = dedupeByKey(analysis.outputs, (o) => o.name).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  analysis.moduleCalls = dedupeByKey(analysis.moduleCalls, (m) => m.name).sort(
+    (a, b) => a.name.localeCompare(b.name),
+  );
+  analysis.resources = dedupeByKey(
+    analysis.resources,
+    (r) => `${r.kind}.${r.type}.${r.name}`,
+  ).sort(
+    (a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name),
+  );
+  analysis.providers = mergeProviders(providers);
+
+  // Resolved last: locals are module-wide and a reference may point at a block
+  // declared in a different file, so every file must be parsed first.
+  const knownAddresses = new Map<string, TerraformReferenceEndpointKind>();
+  for (const r of analysis.resources) {
+    knownAddresses.set(
+      r.kind === "data" ? `data.${r.type}.${r.name}` : `${r.type}.${r.name}`,
+      r.kind,
+    );
+  }
+  for (const m of analysis.moduleCalls) {
+    knownAddresses.set(`module.${m.name}`, "module");
+  }
+
+  analysis.references = collectReferences({
+    blocks: referenceBlocks,
+    locals,
+    knownAddresses,
+  });
+
+  analysis.errors = errors;
+
+  return analysis;
 }

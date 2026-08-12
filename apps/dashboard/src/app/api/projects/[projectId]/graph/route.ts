@@ -1,0 +1,165 @@
+import { NextResponse } from "next/server";
+
+import {
+  getCurrentUserId,
+  getProviderTokenForRequest,
+} from "@/lib/auth/server-helpers";
+import { GithubRequestError } from "@/lib/github/repo-files";
+import {
+  applyProjectMutation,
+  findOwnedProject,
+  loadProjectGraph,
+  MutationError,
+} from "@/lib/projects/service";
+import type { ProjectGraphMutation } from "@/lib/projects/types";
+
+/** Reads the graph straight from the repository, which is its source of truth. */
+export async function GET(
+  req: Request,
+  { params }: { params: { projectId: string } },
+) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const project = await findOwnedProject(userId, params.projectId);
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+
+  const token = await getProviderTokenForRequest(req, project.provider);
+  if (!token) {
+    return NextResponse.json(
+      { error: "GitHub is not connected" },
+      { status: 401 },
+    );
+  }
+
+  try {
+    const graph = await loadProjectGraph(token, project);
+    return NextResponse.json({ graph });
+  } catch (e) {
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Failed to read repository" },
+      { status: e instanceof GithubRequestError ? e.status : 500 },
+    );
+  }
+}
+
+function parseMutation(body: unknown): ProjectGraphMutation | null {
+  if (typeof body !== "object" || body === null) return null;
+  const input = body as Record<string, unknown>;
+  const action = input.action;
+
+  const str = (key: string) =>
+    typeof input[key] === "string" && (input[key] as string).trim()
+      ? (input[key] as string).trim()
+      : null;
+
+  switch (action) {
+    case "add-module": {
+      const moduleId = str("moduleId");
+      if (!moduleId) return null;
+
+      const position = input.position as
+        | { x?: unknown; y?: unknown }
+        | undefined;
+
+      return {
+        action,
+        moduleId,
+        ...(str("name") ? { name: str("name") as string } : {}),
+        ...(typeof position?.x === "number" && typeof position?.y === "number"
+          ? { position: { x: position.x, y: position.y } }
+          : {}),
+      };
+    }
+    case "remove-module": {
+      const name = str("name");
+      return name ? { action, name } : null;
+    }
+    case "connect": {
+      const source = str("source");
+      const sourceOutput = str("sourceOutput");
+      const target = str("target");
+      const targetInput = str("targetInput");
+      if (!source || !sourceOutput || !target || !targetInput) return null;
+      return { action, source, sourceOutput, target, targetInput };
+    }
+    case "disconnect": {
+      const target = str("target");
+      const targetInput = str("targetInput");
+      return target && targetInput ? { action, target, targetInput } : null;
+    }
+    case "rename-module": {
+      const name = str("name");
+      const newName = str("newName");
+      return name && newName ? { action, name, newName } : null;
+    }
+    case "set-argument": {
+      const name = str("name");
+      const inputName = str("input");
+      // An empty value is meaningful — it writes `""` — so only the presence
+      // of the field is checked.
+      const value = typeof input.value === "string" ? input.value : null;
+      if (!name || !inputName || value === null) return null;
+      return { action, name, input: inputName, value };
+    }
+    case "auto-connect": {
+      const name = str("name");
+      return name ? { action, name } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * Applies a graph edit and commits it. The response carries the graph as it is
+ * after the commit, so the canvas never has to guess what the repository now
+ * contains.
+ */
+export async function POST(
+  req: Request,
+  { params }: { params: { projectId: string } },
+) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const project = await findOwnedProject(userId, params.projectId);
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+
+  const mutation = parseMutation(await req.json().catch(() => null));
+  if (!mutation) {
+    return NextResponse.json(
+      { error: "Unsupported or incomplete graph change" },
+      { status: 400 },
+    );
+  }
+
+  const token = await getProviderTokenForRequest(req, project.provider);
+  if (!token) {
+    return NextResponse.json(
+      { error: "GitHub is not connected" },
+      { status: 401 },
+    );
+  }
+
+  try {
+    const result = await applyProjectMutation(token, project, mutation);
+    return NextResponse.json(result);
+  } catch (e) {
+    if (e instanceof MutationError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
+    return NextResponse.json(
+      { error: e instanceof Error ? e.message : "Failed to apply change" },
+      { status: e instanceof GithubRequestError ? e.status : 500 },
+    );
+  }
+}

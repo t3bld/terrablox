@@ -25,6 +25,12 @@ export function useAuth(): AuthContextValue {
         signInWithOAuth: async () => {
           throw new Error("Auth not initialized");
         },
+        linkOAuth: async () => {
+          throw new Error("Auth not initialized");
+        },
+        refreshIdentities: async () => {
+          // No session during SSR; nothing to load.
+        },
         signOut: async () => {
           throw new Error("Auth not initialized");
         },

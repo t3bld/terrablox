@@ -1,5 +1,0 @@
--- Baseline migration.
---
--- This project started using Prisma Migrate against an existing Supabase database.
--- We mark this migration as applied via `prisma migrate resolve` so Prisma can track
--- subsequent migrations without forcing a destructive reset.

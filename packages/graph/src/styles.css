@@ -1,0 +1,151 @@
+/* Import this once from the consuming Next.js App Router root layout:
+   import "@terrablox/graph/styles.css";
+*/
+@import "@xyflow/react/dist/style.css";
+
+.tbx-dependency-graph .react-flow__attribution {
+  background: hsl(var(--card) / 0.85);
+  color: hsl(var(--muted-foreground));
+}
+
+.tbx-dependency-graph .react-flow__controls,
+.tbx-dependency-graph .react-flow__minimap {
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 8px 30px hsl(var(--foreground) / 0.08);
+}
+
+.tbx-dependency-graph .react-flow__controls-button {
+  background: hsl(var(--card));
+  border-bottom: 1px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+}
+
+.tbx-dependency-graph .react-flow__controls-button:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
+.tbx-dependency-graph .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.tbx-dependency-graph .react-flow__minimap {
+  background: hsl(var(--card));
+}
+
+/* --- Highlighting the connections of a clicked node ----------------------
+   Direction is carried by two things, not just colour: outgoing edges also
+   animate and are dashed, incoming ones stay solid. Colour alone would leave
+   a red-green colour-blind reader with no way to tell them apart. */
+.tbx-dependency-graph {
+  --tbx-edge-out: 217 91% 55%;
+  --tbx-edge-in: 32 95% 44%;
+}
+
+.dark .tbx-dependency-graph {
+  --tbx-edge-out: 213 94% 68%;
+  --tbx-edge-in: 43 96% 56%;
+}
+
+/* Spelled out to the same depth xyflow uses for its own stroke, which would
+   otherwise win over a colour inherited from the group. */
+.tbx-dependency-graph .react-flow__edge.tbx-edge-out .react-flow__edge-path {
+  stroke: hsl(var(--tbx-edge-out));
+  stroke-width: 2.5;
+}
+
+.tbx-dependency-graph .react-flow__edge.tbx-edge-in .react-flow__edge-path {
+  stroke: hsl(var(--tbx-edge-in));
+  stroke-width: 2.5;
+}
+
+.tbx-dependency-graph
+  .react-flow__edge.tbx-edge-out
+  .react-flow__arrowhead
+  polyline,
+.tbx-dependency-graph .react-flow__edge.tbx-edge-out marker polyline {
+  stroke: hsl(var(--tbx-edge-out));
+  fill: hsl(var(--tbx-edge-out));
+}
+
+.tbx-dependency-graph
+  .react-flow__edge.tbx-edge-in
+  .react-flow__arrowhead
+  polyline,
+.tbx-dependency-graph .react-flow__edge.tbx-edge-in marker polyline {
+  stroke: hsl(var(--tbx-edge-in));
+  fill: hsl(var(--tbx-edge-in));
+}
+
+/* Faded rather than hidden: a reader still sees that the rest of the graph is
+   there, so the highlight reads as an emphasis and not as a filter. */
+.tbx-dependency-graph .react-flow__edge.tbx-edge-muted {
+  opacity: 0.12;
+}
+
+.tbx-dependency-graph .react-flow__node.tbx-node-muted {
+  opacity: 0.4;
+}
+
+.tbx-dependency-graph .react-flow__edge.tbx-edge-out,
+.tbx-dependency-graph .react-flow__edge.tbx-edge-in {
+  /* Lifts the whole edge group, so a highlighted label is never covered by a
+     faded edge that happens to be painted later. */
+  z-index: 20;
+}
+
+/* The node the highlight belongs to. Neutral on purpose: it is neither the
+   source nor the target of itself, so borrowing either direction's colour
+   would read as a claim about direction. */
+.tbx-dependency-graph .react-flow__node.tbx-node-picked {
+  outline: 2px solid hsl(var(--foreground) / 0.55);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+/* --- Editable project canvas -------------------------------------------- */
+
+.tbx-project-canvas .react-flow__controls,
+.tbx-project-canvas .react-flow__minimap {
+  border: 1px solid hsl(var(--border));
+  box-shadow: 0 8px 30px hsl(var(--foreground) / 0.08);
+}
+
+.tbx-project-canvas .react-flow__controls-button {
+  background: hsl(var(--card));
+  border-bottom: 1px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+}
+
+.tbx-project-canvas .react-flow__controls-button:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
+.tbx-project-canvas .react-flow__controls-button svg {
+  fill: currentColor;
+}
+
+.tbx-project-canvas .react-flow__minimap {
+  background: hsl(var(--card));
+}
+
+.tbx-project-canvas .react-flow__edge-path {
+  stroke: hsl(var(--muted-foreground));
+  stroke-width: 1.5;
+}
+
+.tbx-project-canvas .react-flow__edge.selected .react-flow__edge-path {
+  stroke: hsl(var(--primary));
+  stroke-width: 2;
+}
+
+/* Wide enough to grab without zooming in, while the visible dot stays small. */
+.tbx-project-canvas .react-flow__handle {
+  width: 10px;
+  height: 10px;
+}
+
+.tbx-project-canvas .react-flow__handle-connecting {
+  background: hsl(var(--primary));
+}

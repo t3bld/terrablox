@@ -6,6 +6,7 @@
   "exports": {
     "./alert": "./src/alert.tsx",
     "./avatar": "./src/avatar.tsx",
+    "./badge": "./src/badge.tsx",
     "./button": "./src/button.tsx",
     "./card": "./src/card.tsx",
     "./dialog": "./src/dialog.tsx",
@@ -19,6 +20,7 @@
     "./sidebar": "./src/sidebar.tsx",
     "./skeleton": "./src/skeleton.tsx",
     "./tags-input": "./src/tags-input.tsx",
+    "./textarea": "./src/textarea.tsx",
     "./tooltip": "./src/tooltip.tsx",
     "./hooks/use-mobile": "./src/hooks/use-mobile.tsx",
     "./lib/utils": "./src/lib/utils.ts",
@@ -50,6 +52,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",
+    "@tailwindcss/typography": "^0.5.20",
     "@terrablox/tsconfig": "workspace:*",
     "@types/react": "^18.2.45",
     "tailwindcss": "^3.4.0",

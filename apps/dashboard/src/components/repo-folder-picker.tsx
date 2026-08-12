@@ -1,11 +1,10 @@
 "use client";
 
-import { useCallback } from "react";
-
 import {
-  FolderPicker as UiFolderPicker,
   type FolderTreeEntry,
+  FolderPicker as UiFolderPicker,
 } from "@terrablox/ui/folder-picker";
+import { useCallback } from "react";
 
 export interface FolderPickerProps {
   label?: string;

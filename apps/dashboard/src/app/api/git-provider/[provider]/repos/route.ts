@@ -3,7 +3,10 @@ import type { GitProviderId } from "@terrablox/git-import";
 import { githubProvider } from "@terrablox/git-import/github";
 import { NextResponse } from "next/server";
 
-import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
+import {
+  getGitAuthMode,
+  getProviderTokenForRequest,
+} from "@/lib/auth/server-helpers";
 
 export async function GET(
   req: Request,
@@ -27,7 +30,10 @@ export async function GET(
   }
 
   try {
-    const repos = await githubProvider.getRepos(token);
+    const repos =
+      getGitAuthMode() === "app"
+        ? await githubProvider.getInstallationRepos(token)
+        : await githubProvider.getRepos(token);
     return NextResponse.json({ repos });
   } catch (error: unknown) {
     const err = error as {

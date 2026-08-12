@@ -30,9 +30,6 @@ yarn-error.log*
 .env.test.local
 .env.production.local
 
-# Vercel
-.vercel
-
 # Turbo
 .turbo
 
@@ -46,3 +43,7 @@ yarn-error.log*
 *.swo
 *~
 
+# MCP config (contains personal access tokens) - keep .mcp.json.example committed
+.mcp.json
+
+seed/

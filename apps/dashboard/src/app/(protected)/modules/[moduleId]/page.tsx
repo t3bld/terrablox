@@ -1,87 +1,103 @@
 "use client";
 
+import { useAuth } from "@terrablox/auth/hooks";
+import { Badge } from "@terrablox/ui/badge";
+import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
+import {
+  ArrowLeft,
+  ArrowRightLeft,
+  Boxes,
+  ExternalLink,
+  FileText,
+  GitBranch,
+  LayoutGrid,
+  Network,
+  Package,
+} from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
-import { useAuth } from "@terrablox/auth/hooks";
-import { Card, CardContent } from "@terrablox/ui/card";
-import { Separator } from "@terrablox/ui/separator";
-import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
-
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-
 import { AppSidebar } from "@/components/app-sidebar";
+import { PageHeader } from "@/components/layout/page-header";
+import { TabsNav, tabPanelProps } from "@/components/layout/tabs-nav";
+import { ModuleActionsMenu } from "@/components/module-actions/module-actions-menu";
+import { ArchitectureTab } from "@/components/module-detail/architecture-tab";
+import { ConnectionsTab } from "@/components/module-detail/connections-tab";
+import { DependenciesTab } from "@/components/module-detail/dependencies-tab";
+import { ModuleDetailSkeleton } from "@/components/module-detail/detail-skeleton";
+import { ReadmeTab } from "@/components/module-detail/readme-tab";
+import { ResourcesTab } from "@/components/module-detail/resources-tab";
+import { SourceTab } from "@/components/module-detail/source-tab";
+import { SubmoduleSwitcher } from "@/components/module-detail/submodule-switcher";
+import {
+  type ModuleDetailDto,
+  type ModuleSubmoduleDto,
+  parseOutputs,
+  parseVariables,
+} from "@/components/module-detail/types";
+import { VariablesTab } from "@/components/module-detail/variables-tab";
+import { VersionSwitcher } from "@/components/module-detail/version-switcher";
+import { useHashTab } from "@/lib/use-hash-tab";
 
 type TabKey =
   | "readme"
   | "variables"
   | "dependencies"
+  | "architecture"
+  | "connections"
   | "resources"
-  | "submodules"
   | "source";
 
-interface ModuleDetailDto {
-  id: string;
-  effectiveName: string;
-  effectiveDescription: string | null;
-  versionTag: string | null;
-  url: string | null;
-  terraformRootFolder: string | null;
-  isSubmodule: boolean;
-  submoduleName: string | null;
-  parentModuleId: string | null;
-  variables: unknown;
-  outputs: unknown;
-  resources: Array<{
-    id: string;
-    providerName: string;
-    resourceType: string;
-    resourceName: string | null;
-  }>;
-  submodules?: Array<{
-    id: string;
-    submoduleName: string | null;
-    terraformRootFolder: string | null;
-  }>;
-  source: {
-    id: string;
-    name: string;
-    description: string | null;
-    tags: string[];
-    url: string;
-    provider: string;
-  } | null;
-}
+const TAB_KEYS: readonly TabKey[] = [
+  "readme",
+  "variables",
+  "dependencies",
+  "architecture",
+  "connections",
+  "resources",
+  "source",
+];
 
-function TabButton(props: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      className={
-        props.active
-          ? "px-3 py-2 text-sm font-medium border-b-2 border-foreground"
-          : "px-3 py-2 text-sm text-muted-foreground hover:text-foreground"
-      }
-      onClick={props.onClick}
-    >
-      {props.children}
-    </button>
-  );
-}
+/** Links handed out while inputs and outputs were separate tabs. */
+const TAB_ALIASES: Readonly<Record<string, TabKey>> = {
+  inputs: "variables",
+  outputs: "variables",
+};
+
+const README_CANDIDATES = [
+  "README.md",
+  "readme.md",
+  "README.MD",
+  "Readme.md",
+  "README.markdown",
+];
 
 function extractOwnerRepo(url: string): { owner: string; repo: string } | null {
-  // supports: https://github.com/owner/repo(.git)
-  const m = url.match(/github\.com\/(?<owner>[^/]+)\/(?<repo>[^/#?]+)(?:[/?#].*)?$/i);
-  const owner = m?.groups?.owner;
-  const repoRaw = m?.groups?.repo;
+  const m = url.match(
+    /github\.com\/(?<owner>[^/]+)\/(?<repo>[^/#?]+)(?:[/?#].*)?$/i,
+  );
+  const owner = m?.groups?.["owner"];
+  const repoRaw = m?.groups?.["repo"];
   if (!owner || !repoRaw) return null;
-  const repo = repoRaw.replace(/\.git$/i, "");
-  return { owner, repo };
+  return { owner, repo: repoRaw.replace(/\.git$/i, "") };
+}
+
+function decodeBase64Utf8(value: string): string {
+  const binary = atob(value.replace(/\n/g, ""));
+  const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function InfoField(props: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-xs font-medium text-muted-foreground">
+        {props.label}
+      </div>
+      <div className="text-sm">{props.children}</div>
+    </div>
+  );
 }
 
 export default function ModuleDetailPage({
@@ -90,17 +106,23 @@ export default function ModuleDetailPage({
   params: { moduleId: string };
 }) {
   const { isAuthenticated, user } = useAuth();
+  const router = useRouter();
   const moduleId = params.moduleId;
 
-  const [tab, setTab] = useState<TabKey>("readme");
+  const [tab, setTab] = useHashTab<TabKey>(
+    TAB_KEYS,
+    "readme",
+    moduleId,
+    TAB_ALIASES,
+  );
   const [mod, setMod] = useState<ModuleDetailDto | null>(null);
-  const [parentMod, setParentMod] = useState<
-    | {
-        id: string;
-        effectiveName: string;
-      }
-    | null
-  >(null);
+  const [parentMod, setParentMod] = useState<{
+    id: string;
+    effectiveName: string;
+    submodules: ModuleSubmoduleDto[];
+  } | null>(null);
+  // A link to the retired submodules tab should still arrive at the list.
+  const [submodulesOpen, setSubmodulesOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -108,17 +130,27 @@ export default function ModuleDetailPage({
   const [readmeLoading, setReadmeLoading] = useState(false);
   const [readmeError, setReadmeError] = useState<string | null>(null);
 
+  // The submodules tab became a dropdown. `useHashTab` no longer knows the
+  // fragment and falls back to the README, so open the dropdown instead of
+  // dropping the reader somewhere unrelated, and correct the address bar.
+  //
+  // `moduleId` is listed without being read: like the hook's own `resetKey` it
+  // exists to re-run this on navigating to another module.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deliberate re-run trigger
+  useEffect(() => {
+    if (window.location.hash !== "#submodules") return;
+    setSubmodulesOpen(true);
+    window.history.replaceState(null, "", "#readme");
+  }, [moduleId]);
+
   useEffect(() => {
     if (!user?.id || !moduleId) return;
 
+    let cancelled = false;
     setLoading(true);
     setError(null);
 
-    fetch(
-      `/api/modules/${encodeURIComponent(moduleId)}?userId=${encodeURIComponent(
-        user.id,
-      )}`,
-    )
+    fetch(`/api/modules/${encodeURIComponent(moduleId)}`)
       .then(async (res) => {
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -128,473 +160,392 @@ export default function ModuleDetailPage({
               : "Failed to load module",
           );
         }
-        const moduleDto = (body?.module ?? null) as ModuleDetailDto | null;
+        return (body?.module ?? null) as ModuleDetailDto | null;
+      })
+      .then((moduleDto) => {
+        if (cancelled) return;
         setMod(moduleDto);
 
-        // If this is a submodule, fetch its parent for breadcrumb display.
-        const parentId = moduleDto?.isSubmodule ? moduleDto?.parentModuleId : null;
-        if (parentId) {
-          fetch(
-            `/api/modules/${encodeURIComponent(parentId)}?userId=${encodeURIComponent(
-              user.id,
-            )}`,
-          )
-            .then(async (r) => {
-              const b = await r.json().catch(() => ({}));
-              if (!r.ok) return;
-              const p = (b?.module ?? null) as
-                | { id: string; effectiveName?: string }
-                | null;
-              if (p?.id) {
-                setParentMod({
-                  id: p.id,
-                  effectiveName: p.effectiveName ?? "Parent Module",
-                });
-              }
-            })
-            .catch(() => {
-              // ignore breadcrumb fetch errors
-            });
-        } else {
+        const parentId = moduleDto?.isSubmodule
+          ? moduleDto.parentModuleId
+          : null;
+
+        if (!parentId) {
           setParentMod(null);
+          return;
+        }
+
+        // Breadcrumb and sibling switcher; failures are not worth surfacing.
+        fetch(`/api/modules/${encodeURIComponent(parentId)}`)
+          .then(async (r) => (r.ok ? await r.json() : null))
+          .then((b) => {
+            const p = b?.module as ModuleDetailDto | null;
+            if (!cancelled && p?.id) {
+              setParentMod({
+                id: p.id,
+                effectiveName: p.effectiveName ?? "Parent module",
+                submodules: p.submodules ?? [],
+              });
+            }
+          })
+          .catch(() => undefined);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load module");
         }
       })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load module"))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [user?.id, moduleId]);
 
-  useEffect(() => {
-    if (!mod?.source?.url || !mod.versionTag || !user?.id) return;
-
-    // only fetch when README tab is open (keeps it snappy)
-    if (tab !== "readme") return;
-
+  const repoRef = useMemo(() => {
+    if (!mod?.source?.url) return null;
     const parsed = extractOwnerRepo(mod.source.url);
-    if (!parsed) {
-      setReadmeError("Unsupported repo URL.");
-      return;
-    }
+    if (!parsed) return null;
+    return { ...parsed, ref: mod.versionTag };
+  }, [mod?.source?.url, mod?.versionTag]);
 
-    const { owner, repo } = parsed;
+  useEffect(() => {
+    // Fetched lazily so opening other tabs does not spend GitHub rate limit.
+    if (tab !== "readme") return;
+    if (readmeMd !== null || readmeError !== null) return;
+    if (!repoRef?.ref) return;
 
+    const { owner, repo, ref } = repoRef;
+    // A submodule's README lives inside its folder, not at the repo root.
+    const folder =
+      mod?.terraformRootFolder && mod.terraformRootFolder !== "."
+        ? `${mod.terraformRootFolder.replace(/^\/+|\/+$/g, "")}/`
+        : "";
+
+    let cancelled = false;
     setReadmeLoading(true);
     setReadmeError(null);
 
-    // Try common README names in order.
-    const candidates = ["README.md", "readme.md", "README.MD", "Readme.md"];
-
     (async () => {
-      for (const path of candidates) {
-        try {
-          const res = await fetch(
-            `/api/git-provider/github/repos/${encodeURIComponent(
-              owner,
-            )}/${encodeURIComponent(repo)}/contents?ref=${encodeURIComponent(
-              mod.versionTag ?? "",
-            )}&path=${encodeURIComponent(path)}`,
-          );
+      for (const name of README_CANDIDATES) {
+        // Prefer the module folder, but fall back to the repo root.
+        for (const path of folder ? [`${folder}${name}`, name] : [name]) {
+          try {
+            const res = await fetch(
+              `/api/git-provider/github/repos/${encodeURIComponent(
+                owner,
+              )}/${encodeURIComponent(repo)}/contents?ref=${encodeURIComponent(
+                ref,
+              )}&path=${encodeURIComponent(path)}`,
+            );
+            if (!res.ok) continue;
 
-          if (!res.ok) continue;
-          const body: unknown = await res.json().catch(() => null);
-          const content: unknown = (body as any)?.content;
-          const encoding: unknown = (body as any)?.encoding;
-          if (typeof content !== "string") continue;
-          if (encoding !== "base64") continue;
+            const body = await res.json().catch(() => null);
+            if (
+              typeof body?.content !== "string" ||
+              body?.encoding !== "base64"
+            ) {
+              continue;
+            }
 
-          const decoded = atob(content.replace(/\n/g, ""));
-          setReadmeMd(decoded);
-          setReadmeLoading(false);
-          return;
-        } catch {
-          // keep trying next candidate
+            if (!cancelled) {
+              setReadmeMd(decodeBase64Utf8(body.content));
+              setReadmeLoading(false);
+            }
+            return;
+          } catch {
+            // Try the next candidate.
+          }
         }
       }
 
-      setReadmeMd(null);
-      setReadmeError("README.md not found in repository.");
-      setReadmeLoading(false);
+      if (!cancelled) {
+        setReadmeError("No README found in this repository.");
+        setReadmeLoading(false);
+      }
     })();
-  }, [mod?.source?.url, mod?.versionTag, tab, user?.id]);
 
-  const title = mod?.effectiveName ?? "Module";
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, repoRef, mod?.terraformRootFolder, readmeMd, readmeError]);
 
-  const variablesRows = useMemo(() => {
-    const vars = Array.isArray((mod as any)?.variables) ? ((mod as any).variables as any[]) : [];
-    return vars.map((v) => ({
-      name: String(v?.name ?? ""),
-      description: (v?.description ?? null) as string | null,
-      type: (v?.type ?? null) as string | null,
-      default: v?.default,
-      sensitive: v?.sensitive === true,
-    }));
-  }, [mod]);
+  const variables = useMemo(() => parseVariables(mod?.variables), [mod]);
+  const outputs = useMemo(() => parseOutputs(mod?.outputs), [mod]);
 
-  const outputsRows = useMemo(() => {
-    const outs = Array.isArray((mod as any)?.outputs) ? ((mod as any).outputs as any[]) : [];
-    return outs.map((o) => ({
-      name: String(o?.name ?? ""),
-      description: (o?.description ?? null) as string | null,
-      sensitive: o?.sensitive === true,
-    }));
-  }, [mod]);
+  const providers = useMemo(
+    () =>
+      (mod?.providers ?? []).map((p) => ({ name: p.name, version: p.version })),
+    [mod?.providers],
+  );
+
+  const readmeImageBase = useMemo(() => {
+    if (!repoRef?.ref) return null;
+    const folder =
+      mod?.terraformRootFolder && mod.terraformRootFolder !== "."
+        ? `/${mod.terraformRootFolder.replace(/^\/+|\/+$/g, "")}`
+        : "";
+    return `https://raw.githubusercontent.com/${repoRef.owner}/${repoRef.repo}/${repoRef.ref}${folder}`;
+  }, [repoRef, mod?.terraformRootFolder]);
 
   if (!isAuthenticated) return null;
+
+  const title = mod?.effectiveName ?? "Module";
 
   return (
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="flex items-center justify-between border-b px-4 py-3">
-          <div className="flex items-center gap-3">
-             <div className="min-w-0">
-               <div className="text-xs text-muted-foreground">
-                 <Link href="/modules" className="hover:underline">
-                   Modules
-                 </Link>
+        <PageHeader
+          loading={loading}
+          breadcrumbs={[
+            { label: "Modules", href: "/modules" },
+            ...(mod?.isSubmodule && parentMod
+              ? [
+                  {
+                    label: parentMod.effectiveName,
+                    href: `/modules/${encodeURIComponent(parentMod.id)}`,
+                  },
+                ]
+              : []),
+            { label: title },
+          ]}
+          actions={
+            mod ? (
+              <>
+                <VersionSwitcher
+                  currentModuleId={mod.id}
+                  switchTargetId={
+                    mod.isSubmodule ? (mod.parentModuleId ?? undefined) : mod.id
+                  }
+                  versions={mod.versions ?? []}
+                />
 
-                 {mod?.isSubmodule && parentMod ? (
-                   <>
-                     <span className="mx-2">/</span>
-                     <Link
-                       href={`/modules/${encodeURIComponent(parentMod.id)}`}
-                       className="hover:underline"
-                     >
-                       {parentMod.effectiveName}
-                     </Link>
-                     <span className="mx-2">/</span>
-                     <span className="truncate">{title}</span>
-                   </>
-                 ) : (
-                   <>
-                     <span className="mx-2">/</span>
-                     <span className="truncate">{title}</span>
-                   </>
-                 )}
-               </div>
-               <h1 className="text-lg font-semibold truncate">{title}</h1>
-             </div>
-           </div>
-        </header>
+                <ModuleActionsMenu
+                  module={{
+                    id: mod.id,
+                    name: title,
+                    versionTag: mod.versionTag,
+                    repoUrl: mod.source?.url ?? null,
+                    refUrl: mod.url,
+                    terraformRootFolder: mod.terraformRootFolder,
+                    isSubmodule: mod.isSubmodule,
+                    parentModuleId: mod.parentModuleId,
+                    versionCount: mod.versions?.length ?? 1,
+                  }}
+                  onDeleted={() => router.push("/modules")}
+                />
+              </>
+            ) : null
+          }
+        />
 
-        <main className="p-4 space-y-4">
+        <main className="space-y-4 p-4">
           {loading ? (
-            <div className="text-sm text-muted-foreground">Loading…</div>
+            <ModuleDetailSkeleton />
           ) : error ? (
-            <div className="text-sm text-destructive">{error}</div>
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
+              {error}
+            </div>
           ) : !mod ? (
-            <div className="text-sm text-muted-foreground">Module not found.</div>
+            <div className="text-sm text-muted-foreground">
+              Module not found.
+            </div>
           ) : (
             <>
-              {/* General info section (above tabs) */}
-              <div className="space-y-4">
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-muted-foreground">
-                    Description
-                  </div>
-                  <div className="text-sm leading-6 break-words">
+              <section className="rounded-lg border bg-card p-4">
+                {/* The name lives in the header; repeating it here would give
+                    the page two titles. */}
+                <div className="flex items-start justify-between gap-4">
+                  <p className="min-w-0 text-sm leading-6 break-words">
+                    {mod.isSubmodule ? (
+                      <Badge variant="outline" className="mr-2 align-middle">
+                        Submodule
+                      </Badge>
+                    ) : null}
                     {mod.effectiveDescription?.trim()
                       ? mod.effectiveDescription
                       : "No description provided."}
-                  </div>
-                </div>
+                  </p>
 
-                <div className="space-y-2">
-                  <div className="text-xs font-medium text-muted-foreground">Tags</div>
-                  {mod.source?.tags?.length ? (
-                    <div className="flex flex-wrap gap-2">
-                      {mod.source.tags.map((t) => (
-                        <span
-                          key={t}
-                          className="inline-flex items-center rounded-md border bg-muted/40 px-2 py-1 text-xs"
-                        >
-                          {t}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-sm text-muted-foreground">No tags.</div>
-                  )}
-                </div>
-
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-muted-foreground">Version</div>
-                  {mod.url && mod.versionTag ? (
-                    <a
-                      className="text-sm underline break-all"
-                      href={mod.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      title="Open repository at selected version"
+                  {mod.isSubmodule && parentMod ? (
+                    <Link
+                      className="inline-flex shrink-0 items-center gap-1.5 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                      href={`/modules/${encodeURIComponent(parentMod.id)}`}
                     >
-                      {mod.versionTag}
-                    </a>
-                  ) : (
-                    <div className="text-sm text-muted-foreground">
-                      {mod.versionTag ? mod.versionTag : "(none)"}
-                    </div>
-                  )}
-                </div>
-
-                {mod.source?.url ? (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-muted-foreground">Repository</div>
-                    <a
-                      className="text-sm underline break-all"
-                      href={mod.source.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      {mod.source.url}
-                    </a>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="border-b flex items-center gap-1 overflow-x-auto">
-                <TabButton active={tab === "readme"} onClick={() => setTab("readme")}>
-                  README
-                </TabButton>
-                <TabButton
-                  active={tab === "variables"}
-                  onClick={() => setTab("variables")}
-                >
-                  Variables
-                </TabButton>
-                <TabButton
-                  active={tab === "dependencies"}
-                  onClick={() => setTab("dependencies")}
-                >
-                  Dependencies
-                </TabButton>
-                <TabButton
-                  active={tab === "resources"}
-                  onClick={() => setTab("resources")}
-                >
-                  Resources
-                </TabButton>
-                {!mod.isSubmodule ? (
-                  <TabButton
-                    active={tab === "submodules"}
-                    onClick={() => setTab("submodules")}
-                  >
-                    Submodules
-                  </TabButton>
-                ) : null}
-                <TabButton active={tab === "source"} onClick={() => setTab("source")}>
-                  Source code
-                </TabButton>
-              </div>
-
-              {tab === "readme" ? (
-                <div className="space-y-3">
-                  {readmeLoading ? (
-                    <div className="text-sm text-muted-foreground">Loading README…</div>
-                  ) : readmeError ? (
-                    <div className="text-sm text-muted-foreground">{readmeError}</div>
-                  ) : readmeMd ? (
-                    <div className="rounded-md border bg-background p-3 md:p-4 overflow-hidden">
-                      {/*
-                        Keep README compact and always fit to screen:
-                        - wrap long words/urls
-                        - never allow content to force the page wider
-                        - allow horizontal scroll only inside code blocks / tables
-                      */}
-                      <div data-readme-prose>
-                        <article className="prose prose-sm max-w-none dark:prose-invert text-sm leading-6 break-words">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                            {readmeMd}
-                          </ReactMarkdown>
-                        </article>
-                      </div>
-
-                      <style jsx global>{`
-                        /* Scope styles strictly to the README renderer */
-                        [data-readme-prose] {
-                          overflow-wrap: anywhere;
-                          word-break: break-word;
-                        }
-                        [data-readme-prose] pre {
-                          max-width: 100%;
-                          overflow-x: auto;
-                        }
-                        [data-readme-prose] code {
-                          word-break: break-word;
-                          white-space: pre-wrap;
-                        }
-                        /* keep tables from blowing up the layout */
-                        [data-readme-prose] table {
-                          display: block;
-                          max-width: 100%;
-                          overflow-x: auto;
-                        }
-                        [data-readme-prose] img {
-                          max-width: 100%;
-                          height: auto;
-                        }
-                      `}</style>
-                    </div>
-                  ) : (
-                    <div className="text-sm text-muted-foreground">No README available.</div>
-                  )}
-                </div>
-              ) : null}
-
-              {tab === "variables" ? (
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="text-sm font-medium">Inputs</div>
-                      <div className="text-xs text-muted-foreground">
-                        Terraform variables
-                      </div>
-                      <Separator className="my-3" />
-
-                      {variablesRows.length === 0 ? (
-                        <div className="text-sm text-muted-foreground">
-                          No variables detected.
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {variablesRows.map((v) => (
-                            <div key={v.name} className="text-sm">
-                              <div className="font-medium">{v.name}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {v.description ?? ""}
-                                {v.type ? ` · type: ${v.type}` : ""}
-                                {v.sensitive ? " · sensitive" : ""}
-                              </div>
-                              {typeof v.default !== "undefined" ? (
-                                <pre className="text-xs bg-muted p-2 rounded mt-1 overflow-auto">
-                                  {JSON.stringify(v.default, null, 2)}
-                                </pre>
-                              ) : null}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  <Card>
-                    <CardContent className="p-4">
-                      <div className="text-sm font-medium">Outputs</div>
-                      <div className="text-xs text-muted-foreground">
-                        Terraform outputs
-                      </div>
-                      <Separator className="my-3" />
-
-                      {outputsRows.length === 0 ? (
-                        <div className="text-sm text-muted-foreground">
-                          No outputs detected.
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          {outputsRows.map((o) => (
-                            <div key={o.name} className="text-sm">
-                              <div className="font-medium">{o.name}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {o.description ?? ""}
-                                {o.sensitive ? " · sensitive" : ""}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
-              ) : null}
-
-              {tab === "dependencies" ? (
-                <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">
-                    Dependency analysis isn’t persisted yet. Next step would be to store module calls
-                    from the analyzer and show them here.
-                  </div>
-                </div>
-              ) : null}
-
-              {tab === "resources" ? (
-                <div className="space-y-2">
-                  {mod.resources?.length ? (
-                    <div className="space-y-2">
-                      {mod.resources.map((r) => (
-                        <div key={r.id} className="text-sm">
-                          <div className="font-medium">
-                            {r.providerName} · {r.resourceType}
-                            {r.resourceName ? `.${r.resourceName}` : ""}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-sm text-muted-foreground">No resources detected.</div>
-                  )}
-                </div>
-              ) : null}
-
-              {tab === "submodules" && !mod.isSubmodule ? (
-                <div className="space-y-2">
-                  {(mod.submodules?.length ?? 0) === 0 ? (
-                    <div className="text-sm text-muted-foreground">No submodules imported.</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {mod.submodules?.map((s) => (
-                        <Link
-                          key={s.id}
-                          href={`/modules/${encodeURIComponent(s.id)}`}
-                          className="block rounded px-2 py-2 hover:bg-muted"
-                        >
-                          <div className="text-sm font-medium">
-                            {s.submoduleName ?? "(unnamed)"}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            folder: {s.terraformRootFolder ?? "."}
-                          </div>
-                        </Link>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : null}
-
-              {tab === "source" ? (
-                <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">
-                    Opens the source repository (root module).
-                  </div>
-
-                  {mod.source?.url ? (
-                    <a
-                      className="text-sm underline"
-                      href={mod.source.url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open repo root
-                    </a>
+                      <ArrowLeft className="h-3.5 w-3.5" />
+                      Return to {parentMod.effectiveName}
+                    </Link>
                   ) : null}
+                </div>
 
-                  {mod.url ? (
-                    <div className="text-sm">
+                <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <InfoField label="Version">
+                    {mod.url && mod.versionTag ? (
                       <a
-                        className="underline"
+                        className="inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
                         href={mod.url}
-                        target="_blank"
                         rel="noreferrer"
+                        target="_blank"
                       >
-                        Open repo at selected ref
+                        <GitBranch className="h-3.5 w-3.5" />
+                        {mod.versionTag}
                       </a>
-                    </div>
-                  ) : null}
+                    ) : (
+                      <span className="text-muted-foreground">
+                        {mod.versionTag ?? "(none)"}
+                      </span>
+                    )}
+                  </InfoField>
 
-                  {mod.terraformRootFolder ? (
-                    <div className="text-xs text-muted-foreground">
-                      Imported folder: {mod.terraformRootFolder}
-                    </div>
-                  ) : null}
+                  <InfoField label="Repository">
+                    {mod.source?.url ? (
+                      <a
+                        className="inline-flex items-center gap-1 truncate font-medium text-primary underline-offset-4 hover:underline"
+                        href={mod.source.url}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{mod.source.name}</span>
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground">(none)</span>
+                    )}
+                  </InfoField>
+
+                  <InfoField label="Folder">
+                    <code className="font-mono text-xs text-muted-foreground">
+                      {mod.terraformRootFolder || "."}
+                    </code>
+                  </InfoField>
+
+                  <InfoField label="Tags">
+                    {mod.source?.tags?.length ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {mod.source.tags.map((t) => (
+                          <Badge key={t} variant="outline">
+                            {t}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">No tags.</span>
+                    )}
+                  </InfoField>
                 </div>
-              ) : null}
+
+                {/* A submodule lists its siblings, a root module its children;
+                    either way the switcher stays put across every tab. */}
+                <SubmoduleSwitcher
+                  className="mt-4 border-t pt-4"
+                  currentId={mod.isSubmodule ? mod.id : undefined}
+                  onOpenChange={setSubmodulesOpen}
+                  open={submodulesOpen}
+                  submodules={
+                    mod.isSubmodule
+                      ? (parentMod?.submodules ?? [])
+                      : (mod.submodules ?? [])
+                  }
+                />
+              </section>
+
+              <TabsNav
+                tabs={[
+                  { value: "readme", label: "README", icon: FileText },
+                  {
+                    value: "variables",
+                    label: "Variables",
+                    icon: ArrowRightLeft,
+                    count: variables.length + outputs.length,
+                  },
+                  {
+                    value: "dependencies",
+                    label: "Dependencies",
+                    icon: Package,
+                    count: mod.dependencies?.length ?? 0,
+                  },
+                  {
+                    value: "architecture",
+                    label: "Architecture",
+                    icon: LayoutGrid,
+                  },
+                  {
+                    value: "connections",
+                    label: "Connections",
+                    icon: Network,
+                    count: mod.references?.length ?? 0,
+                  },
+                  {
+                    value: "resources",
+                    label: "Resources",
+                    icon: Boxes,
+                    count: mod.resources?.length ?? 0,
+                  },
+                  { value: "source", label: "Source code", icon: FileText },
+                ]}
+                value={tab}
+                onChange={setTab}
+                idPrefix="module"
+                label="Module views"
+              />
+
+              <div {...tabPanelProps("module", tab)} className="space-y-4">
+                {tab === "readme" ? (
+                  <ReadmeTab
+                    error={readmeError}
+                    imageBaseUrl={readmeImageBase}
+                    loading={readmeLoading}
+                    markdown={readmeMd}
+                  />
+                ) : null}
+
+                {tab === "variables" ? (
+                  <VariablesTab outputs={outputs} variables={variables} />
+                ) : null}
+
+                {tab === "dependencies" ? (
+                  <DependenciesTab
+                    dependencies={mod.dependencies ?? []}
+                    dependents={mod.dependents ?? []}
+                    providers={providers}
+                  />
+                ) : null}
+
+                {tab === "architecture" ? (
+                  <ArchitectureTab
+                    dependencies={mod.dependencies ?? []}
+                    moduleId={mod.id}
+                    references={mod.references ?? []}
+                    resources={mod.resources ?? []}
+                  />
+                ) : null}
+
+                {tab === "connections" ? (
+                  <ConnectionsTab
+                    dependencies={mod.dependencies ?? []}
+                    moduleId={mod.id}
+                    references={mod.references ?? []}
+                    resources={mod.resources ?? []}
+                  />
+                ) : null}
+
+                {tab === "resources" ? (
+                  <ResourcesTab resources={mod.resources ?? []} />
+                ) : null}
+
+                {tab === "source" ? (
+                  <SourceTab
+                    gitRef={repoRef?.ref ?? null}
+                    owner={repoRef?.owner ?? null}
+                    repo={repoRef?.repo ?? null}
+                    repoUrl={mod.source?.url ?? null}
+                    rootFolder={mod.terraformRootFolder}
+                  />
+                ) : null}
+              </div>
             </>
           )}
         </main>

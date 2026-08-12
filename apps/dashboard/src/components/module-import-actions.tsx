@@ -6,7 +6,12 @@ import { useState } from "react";
 
 import { ImportModuleDialog } from "@/components/import-module-dialog";
 
-export function ModuleImportActions() {
+export function ModuleImportActions({
+  onImported,
+}: {
+  /** Called after a module was successfully imported, so the caller can refresh. */
+  onImported?: () => void;
+}) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -20,6 +25,7 @@ export function ModuleImportActions() {
         provider="github"
         open={open}
         onOpenChange={setOpen}
+        {...(onImported ? { onImported } : {})}
       />
     </>
   );

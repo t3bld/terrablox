@@ -10,7 +10,7 @@ Flexible authentication package with an adapter pattern for easy customization t
 ## Features
 
 - **Adapter Pattern:** Swap authentication providers and easily implement new auth integrations
-- **Supabase Integration:** Default Supabase auth adapter provided
+- **Better Auth Integration:** Default adapter backed by a self-hosted [Better Auth](https://better-auth.com) instance
 - **React Hooks:** Easy-to-use hooks for client-side auth
 - **Server Utilities:** Protect API routes and server components
 
@@ -27,25 +27,24 @@ pnpm add @terrablox/auth
 ```tsx
 "use client";
 
-import { SupabaseAuthAdapter } from "@terrablox/auth/adapters/supabase";
+import { BetterAuthAdapter } from "@terrablox/auth/adapters/better-auth";
 import { AuthProvider } from "@terrablox/auth";
 import { useMemo } from "react";
 
 export function Providers({ children }) {
     const auth = useMemo(() => {
-        return new SupabaseAuthAdapter({
-            url: process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+        return new BetterAuthAdapter({
+            // Defaults to the current origin when omitted.
+            baseURL: process.env.NEXT_PUBLIC_APP_URL,
         });
     }, []);
-
-    if (!auth) {
-        return <>{children}</>;
-    }
 
     return <AuthProvider adapter={auth}>{children}</AuthProvider>;
 }
 ```
+
+The adapter talks to the Better Auth route handler mounted at
+`/api/auth/[...all]` in the dashboard app.
 
 ### 2. Use auth in components
 

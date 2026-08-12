@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -17,6 +18,7 @@ import {
   SignInCredentials,
   SignUpCredentials,
   User,
+  UserIdentity,
 } from "../types";
 
 export const AuthContext = createContext<AuthContextValue | null>(null);
@@ -29,7 +31,32 @@ export function AuthProvider({
 }: AuthProviderProps): ReactNode {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
+  const [identities, setIdentities] = useState<UserIdentity[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  // Serialises overlapping identity loads so a slow stale response cannot
+  // overwrite a newer one (e.g. an unauthenticated load resolving after
+  // the session became available).
+  const identitiesRequestRef = useRef(0);
+
+  const clearIdentities = useCallback(() => {
+    identitiesRequestRef.current += 1;
+    setIdentities([]);
+  }, []);
+
+  const loadIdentities = useCallback(async () => {
+    const requestId = ++identitiesRequestRef.current;
+    try {
+      const next = await adapter.listIdentities();
+      if (requestId === identitiesRequestRef.current) {
+        setIdentities(next);
+      }
+    } catch {
+      // Linked accounts are supplementary; never block auth on them.
+      if (requestId === identitiesRequestRef.current) {
+        setIdentities([]);
+      }
+    }
+  }, [adapter]);
 
   useEffect(() => {
     let mounted = true;
@@ -73,6 +100,16 @@ export function AuthProvider({
     };
   }, [adapter, onAuthStateChange]);
 
+  const userId = user?.id ?? null;
+
+  useEffect(() => {
+    if (!userId) {
+      clearIdentities();
+      return;
+    }
+    loadIdentities();
+  }, [userId, loadIdentities, clearIdentities]);
+
   const signUp = useCallback(
     async (
       credentials: SignUpCredentials,
@@ -113,14 +150,29 @@ export function AuthProvider({
     [adapter],
   );
 
+  const linkOAuth = useCallback(
+    async (
+      provider: OAuthProvider,
+      options?: { redirectTo?: string; scopes?: string[] },
+    ) => {
+      await adapter.linkOAuth({
+        provider,
+        redirectTo: options?.redirectTo,
+        scopes: options?.scopes,
+      });
+    },
+    [adapter],
+  );
+
   const signOut = useCallback(
     async (options?: { onSuccess?: () => void }) => {
       await adapter.signOut();
       setUser(null);
       setSession(null);
+      clearIdentities();
       options?.onSuccess?.();
     },
-    [adapter],
+    [adapter, clearIdentities],
   );
 
   const resetPassword = useCallback(
@@ -162,15 +214,22 @@ export function AuthProvider({
     [adapter],
   );
 
+  const userWithIdentities = useMemo<User | null>(
+    () => (user ? { ...user, identities } : null),
+    [user, identities],
+  );
+
   const value = useMemo<AuthContextValue>(
     () => ({
-      user,
+      user: userWithIdentities,
       session,
       isLoading,
-      isAuthenticated: !!user,
+      isAuthenticated: !!userWithIdentities,
       signUp,
       signIn,
       signInWithOAuth,
+      linkOAuth,
+      refreshIdentities: loadIdentities,
       signOut,
       resetPassword,
       updatePassword,
@@ -179,12 +238,14 @@ export function AuthProvider({
       getProviderToken,
     }),
     [
-      user,
+      userWithIdentities,
       session,
       isLoading,
       signUp,
       signIn,
       signInWithOAuth,
+      linkOAuth,
+      loadIdentities,
       signOut,
       resetPassword,
       updatePassword,

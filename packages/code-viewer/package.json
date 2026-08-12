@@ -1,0 +1,28 @@
+{
+  "name": "@terrablox/code-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./code-viewer": "./src/code-viewer.tsx",
+    "./file-list": "./src/file-list.tsx",
+    "./language": "./src/language.ts"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
+    "monaco-editor": "^0.56.0",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@terrablox/tsconfig": "workspace:*",
+    "@types/react": "^18.2.45",
+    "typescript": "^5.3.3"
+  }
+}

@@ -1,13 +1,14 @@
 import { type ReactNode } from "react";
-import type { CookieOptions } from "@supabase/ssr";
 
 export interface UserIdentity {
+  /** Provider id as configured on the server, e.g. "github". */
   provider: string;
-  identity_id: string;
-  user_id: string;
-  identity_data?: Record<string, unknown>;
-  created_at?: string;
-  last_sign_in_at?: string;
+  /** The user's account id at the provider. */
+  accountId: string;
+  /** OAuth scopes that were granted when the account was linked. */
+  scopes: string[];
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
 export interface User {
@@ -76,13 +77,12 @@ export type AuthErrorCode =
   | "UNKNOWN_ERROR";
 
 export type AuthAdapterConfig =
-  | { type: "supabase"; config: SupabaseAuthConfig }
+  | { type: "better-auth"; config: BetterAuthAdapterConfig }
   | { type: "custom"; adapter: AuthAdapter };
 
-export interface SupabaseAuthConfig {
-  url: string;
-  anonKey: string;
-  serviceRoleKey?: string;
+export interface BetterAuthAdapterConfig {
+  /** Base URL of the Better Auth server. Defaults to the current origin. */
+  baseURL?: string;
 }
 
 export type AuthStateEvent =
@@ -91,21 +91,6 @@ export type AuthStateEvent =
   | "TOKEN_REFRESHED"
   | "USER_UPDATED"
   | "PASSWORD_RECOVERY";
-
-export interface ServerAuth {
-  isAuthenticated: (
-    req: Request,
-    res: {
-      cookies: {
-        set: (
-          name: string,
-          value: string,
-          options?: Record<string, unknown>,
-        ) => void;
-      };
-    },
-  ) => Promise<boolean>;
-}
 
 export interface AuthState {
   user: User | null;
@@ -127,6 +112,17 @@ export interface AuthActions {
     provider: OAuthProvider,
     options?: { redirectTo?: string; scopes?: string[] },
   ) => Promise<void>;
+  /**
+   * Links an OAuth account to the *currently signed-in* user. Use this instead
+   * of `signInWithOAuth` from within the app; `signInWithOAuth` starts a new
+   * session and is meant for the sign-in screen.
+   */
+  linkOAuth: (
+    provider: OAuthProvider,
+    options?: { redirectTo?: string; scopes?: string[] },
+  ) => Promise<void>;
+  /** Re-reads the linked OAuth accounts of the current user. */
+  refreshIdentities: () => Promise<void>;
   signOut: (options?: { onSuccess?: () => void }) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   updatePassword: (newPassword: string) => Promise<void>;
@@ -146,6 +142,16 @@ export interface AuthProviderProps {
   onAuthStateChange?: (user: User | null) => void;
 }
 
+export type CookieOptions = {
+  domain?: string;
+  expires?: Date;
+  httpOnly?: boolean;
+  maxAge?: number;
+  path?: string;
+  sameSite?: "lax" | "strict" | "none" | boolean;
+  secure?: boolean;
+};
+
 export type NextResponseCookies = {
   set: (name: string, value: string, options?: CookieOptions) => void;
 };
@@ -154,6 +160,8 @@ export abstract class AuthAdapter {
   abstract signUp(credentials: SignUpCredentials): Promise<AuthResult>;
   abstract signIn(credentials: SignInCredentials): Promise<AuthResult>;
   abstract signInWithOAuth(options: OAuthSignInOptions): Promise<void>;
+  abstract linkOAuth(options: OAuthSignInOptions): Promise<void>;
+  abstract listIdentities(): Promise<UserIdentity[]>;
   abstract signOut(): Promise<void>;
   abstract getSession(): Promise<Session | null>;
   abstract refreshSession(): Promise<Session | null>;

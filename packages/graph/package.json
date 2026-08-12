@@ -1,0 +1,30 @@
+{
+  "name": "@terrablox/graph",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./dependency-graph": "./src/dependency-graph.tsx",
+    "./styles.css": "./src/styles.css",
+    "./tailwind.config": "./tailwind.config.js"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "^3.1.0",
+    "@xyflow/react": "^12",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@terrablox/tsconfig": "workspace:*",
+    "@types/react": "^18.2.45",
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.3.3"
+  }
+}

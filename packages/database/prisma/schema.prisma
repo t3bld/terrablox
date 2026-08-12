@@ -4,35 +4,249 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-  schemas  = ["public", "auth"]
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+  schemas   = ["public"]
 }
 
-model Profile {
-  id        String   @id @db.Uuid
-  email     String?  @db.Text
-  fullName  String?  @map("full_name") @db.Text
-  avatarUrl String?  @map("avatar_url") @db.Text
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+// =============================================================================
+// Better Auth - authentication tables (local, no external provider)
+// =============================================================================
 
-  @@map("profiles")
+model User {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String   @db.Text
+  email         String   @unique @db.Text
+  emailVerified Boolean  @default(false)
+  image         String?  @db.Text
+  createdAt     DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  sessions        Session[]
+  accounts        Account[]
+  awsConnections  AwsConnection[]
+  awsSsoLogins    AwsSsoLogin[]
+  agentSettings   AgentSettings?
+  agentMcpServers AgentMcpServer[]
+
+  @@map("user")
   @@schema("public")
 }
 
+model Session {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  expiresAt DateTime @db.Timestamptz(6)
+  token     String   @unique @db.Text
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  ipAddress String?  @db.Text
+  userAgent String?  @db.Text
+  userId    String   @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+  @@schema("public")
+}
+
+model Account {
+  id                    String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  accountId             String    @db.Text
+  providerId            String    @db.Text
+  userId                String    @db.Uuid
+  accessToken           String?   @db.Text
+  refreshToken          String?   @db.Text
+  idToken               String?   @db.Text
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(6)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(6)
+  scope                 String?   @db.Text
+  password              String?   @db.Text
+  createdAt             DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([providerId, accountId])
+  @@map("account")
+  @@schema("public")
+}
+
+model Verification {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  identifier String   @db.Text
+  value      String   @db.Text
+  expiresAt  DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([identifier])
+  @@map("verification")
+  @@schema("public")
+}
+
+/// Organisation-wide defaults. Scoped per user like every other model here,
+/// because the app has no tenant entity: a shared singleton would let one user
+/// silently overwrite another's conventions.
+model CompanySettings {
+  id                      String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                  String  @unique @map("user_id") @db.Uuid
+  name                    String  @default("") @db.Text
+  /// Repository-relative folder that holds one subfolder per submodule, e.g.
+  /// `modules`. Used to pre-select submodules when importing from Git.
+  terraformSubmodulesPath String? @map("terraform_submodules_path") @db.Text
+  /// Default Terraform root folder offered by the import wizard, e.g. `.`.
+  terraformRootFolder     String? @map("terraform_root_folder") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("company_settings")
+  @@schema("public")
+}
+
+/// A project is a Terraform root configuration that lives in a Git repository.
+/// The repository is the source of truth: the graph is derived from its `.tf`
+/// files and every graph edit is written back as a commit. A project without a
+/// repository would have nothing to render, so the binding is created together
+/// with the project and never cleared.
 model Project {
-  id          String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
-  userId      String   @map("user_id") @db.Uuid
-  name        String   @db.Text
-  description String?  @db.Text
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId      String  @map("user_id") @db.Uuid
+  name        String  @db.Text
+  description String? @db.Text
 
-  canvasNodes CanvasNode[]
-  connections Connection[]
+  provider            String  @default("github") @db.Text
+  /// `owner/name`, the only repository identifier GitHub's API accepts.
+  repoFullName        String  @map("repo_full_name") @db.Text
+  repoUrl             String? @map("repo_url") @db.Text
+  repoBranch          String  @default("main") @map("repo_branch") @db.Text
+  /// Repository-relative folder holding the root configuration, e.g. `.`.
+  terraformRootFolder String  @default(".") @map("terraform_root_folder") @db.Text
+  /// File that new `module` blocks are appended to.
+  terraformEntryFile  String  @default("main.tf") @map("terraform_entry_file") @db.Text
 
+  /// Node positions keyed by the `module` block label. Layout is presentation,
+  /// not configuration, so it stays out of the repository.
+  graphPositions Json @default("{}") @map("graph_positions") @db.JsonB
+
+  /// Commit the graph was last built from, used to detect outside changes.
+  lastSyncedSha String?   @map("last_synced_sha") @db.Text
+  lastSyncedAt  DateTime? @map("last_synced_at") @db.Timestamptz(6)
+
+  /// Deployment target. No credentials are stored: the pipeline assumes an IAM
+  /// role through GitHub's OIDC provider, so the role's ARN is all that is
+  /// needed and it is safe to commit into the workflow.
+  awsAccountId   String? @map("aws_account_id") @db.Text
+  awsRegion      String  @default("eu-central-1") @map("aws_region") @db.Text
+  awsRoleArn     String? @map("aws_role_arn") @db.Text
+  /// S3 backend for the Terraform state. Without one, every pipeline run starts
+  /// from an empty state and tries to create the whole stack again.
+  stateBucket    String? @map("state_bucket") @db.Text
+  stateLockTable String? @map("state_lock_table") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  canvasNodes  CanvasNode[]
+  connections  Connection[]
+  chatMessages ProjectChatMessage[]
+
+  @@index([userId])
   @@map("projects")
+  @@schema("public")
+}
+
+/// A connected AWS account, used for reading only.
+///
+/// No credentials are kept. TerraBlox assumes a role the customer created in
+/// their own account and gets a short-lived session for the length of one
+/// request. The external ID is the secret that makes that safe: without it,
+/// anyone who learned the role ARN could ask TerraBlox to assume it on their
+/// behalf, which is the confused-deputy problem AWS documents for exactly this
+/// kind of integration.
+model AwsConnection {
+  id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// What the user calls this account, e.g. "Production".
+  label      String  @default("") @db.Text
+  /// Filled in from sts:GetCallerIdentity, never typed by the user.
+  accountId  String? @map("account_id") @db.Text
+  roleArn    String  @map("role_arn") @db.Text
+  region     String  @default("eu-central-1") @db.Text
+  /// Generated by TerraBlox, must appear in the role's trust policy.
+  externalId String  @map("external_id") @db.Text
+
+  /// Null until the role could actually be assumed. A connection is only
+  /// trusted for reads once this is set.
+  verifiedAt DateTime? @map("verified_at") @db.Timestamptz(6)
+  /// Why the last verification failed, so the UI can explain it.
+  lastError  String?   @map("last_error") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleArn])
+  @@index([userId])
+  @@map("aws_connections")
+  @@schema("public")
+}
+
+/// Transcript of the project agent conversation. Persisted per project because
+/// the agent's context is the repository, so a conversation is only meaningful
+/// next to the project it edited.
+/// A device authorization in flight, and the SSO session it produces.
+///
+/// Kept server-side rather than handed to the browser because the device code
+/// and the client secret are what redeem the login: anyone holding them could
+/// claim the session the user is about to approve. The row is deleted as soon
+/// as the connection is set up, so the SSO token is never a long-lived secret.
+model AwsSsoLogin {
+  id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// The customer's IAM Identity Center portal, e.g. https://acme.awsapps.com/start.
+  startUrl  String @map("start_url") @db.Text
+  /// Region the Identity Center instance lives in, not the target region.
+  ssoRegion String @map("sso_region") @db.Text
+
+  clientId     String @map("client_id") @db.Text
+  clientSecret String @map("client_secret") @db.Text
+  deviceCode   String @map("device_code") @db.Text
+  /// Seconds AWS asks us to wait between polls.
+  interval     Int    @default(5)
+
+  /// Set once the user approves in the browser.
+  accessToken String?  @map("access_token") @db.Text
+  expiresAt   DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("aws_sso_logins")
+  @@schema("public")
+}
+
+model ProjectChatMessage {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+  /// One of "user", "assistant" or "system".
+  role      String @db.Text
+  content   String @db.Text
+  /// What the turn changed, e.g. `{"commits":[{"sha":"…","path":"main.tf"}]}`.
+  /// Kept so the UI can show the effect of a turn without re-reading the repo.
+  metadata  Json   @default("{}") @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@map("project_chat_messages")
   @@schema("public")
 }
 
@@ -54,35 +268,66 @@ model TerraformModuleSource {
 }
 
 model TerraformModule {
-  id                  String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
-  userId              String   @map("user_id") @db.Uuid
+  id                         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                     String   @map("user_id") @db.Uuid
   /// Optional display name for submodules. Root module name/description live on TerraformModuleSource.
-  submoduleName       String?  @map("submodule_name") @db.Text
-  versionTag          String?  @map("version_tag") @db.Text
-  url                 String?  @db.Text
-  sourceId            String?  @map("source_id") @db.Uuid
-  terraformRootFolder String?  @map("terraform_root_folder") @db.Text
-  terraformSubmodulesFolders String[] @map("terraform_submodules_folders") @default([]) @db.Text
-  variables           Json     @default("[]") @db.JsonB
-  outputs             Json     @default("[]") @db.JsonB
-  isSubmodule         Boolean  @default(false) @map("is_submodule")
-  parentModuleId      String?  @map("parent_module_id") @db.Uuid
-  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  submoduleName              String?  @map("submodule_name") @db.Text
+  versionTag                 String?  @map("version_tag") @db.Text
+  url                        String?  @db.Text
+  sourceId                   String?  @map("source_id") @db.Uuid
+  terraformRootFolder        String?  @map("terraform_root_folder") @db.Text
+  terraformSubmodulesFolders String[] @default([]) @map("terraform_submodules_folders") @db.Text
+  variables                  Json     @default("[]") @db.JsonB
+  outputs                    Json     @default("[]") @db.JsonB
+  isSubmodule                Boolean  @default(false) @map("is_submodule")
+  parentModuleId             String?  @map("parent_module_id") @db.Uuid
+  createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   source       TerraformModuleSource? @relation(fields: [sourceId], references: [id], onDelete: Cascade)
-  parentModule TerraformModule?      @relation("ModuleHierarchy", fields: [parentModuleId], references: [id], onDelete: SetNull)
-  submodules   TerraformModule[]     @relation("ModuleHierarchy")
+  parentModule TerraformModule?       @relation("ModuleHierarchy", fields: [parentModuleId], references: [id], onDelete: SetNull)
+  submodules   TerraformModule[]      @relation("ModuleHierarchy")
   resources    ProviderResource[]
+  dependencies ModuleDependency[]
+  providers    ModuleProvider[]
+  references   ResourceReference[]
   canvasNodes  CanvasNode[]
+  graphLayouts ModuleGraphLayout[]
 
   @@unique([sourceId, versionTag, terraformRootFolder])
   @@map("terraform_modules")
   @@schema("public")
 }
 
+/// A reference from one block of a module to another, e.g. `aws_nat_gateway.this`
+/// using `aws_subnet.public[*].id`. Endpoints are stored as Terraform addresses
+/// rather than foreign keys because a reference may legitimately point at a
+/// module call, which is not a row in provider_resources.
+model ResourceReference {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId    String   @map("module_id") @db.Uuid
+  /// Address of the dependent block, e.g. `aws_nat_gateway.this`.
+  fromAddress String   @map("from_address") @db.Text
+  /// One of "resource", "data" or "module".
+  fromKind    String   @map("from_kind") @db.Text
+  /// Address of the block being depended on, e.g. `aws_subnet.public`.
+  toAddress   String   @map("to_address") @db.Text
+  toKind      String   @map("to_kind") @db.Text
+  /// Attributes of the dependent block that produced the edge, e.g. `subnet_id`.
+  attributes  String[] @default([]) @db.Text
+  /// Locals the reference was routed through, if any.
+  viaLocals   String[] @default([]) @map("via_locals") @db.Text
+
+  module TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, fromAddress, toAddress])
+  @@index([moduleId])
+  @@map("resource_references")
+  @@schema("public")
+}
+
 model CanvasNode {
-  id            String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   projectId     String   @map("project_id") @db.Uuid
   moduleId      String   @map("module_id") @db.Uuid
   name          String   @db.Text
@@ -94,17 +339,43 @@ model CanvasNode {
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  project           Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project           Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   module            TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
-  sourceConnections Connection[] @relation("SourceNode")
-  targetConnections Connection[] @relation("TargetNode")
+  sourceConnections Connection[]    @relation("SourceNode")
+  targetConnections Connection[]    @relation("TargetNode")
 
   @@map("canvas_nodes")
   @@schema("public")
 }
 
+/// User-adjusted node positions for a module's connection graph. Stored as one
+/// row per module rather than one per node: the graph is always read and
+/// written as a whole, and node identity is the Terraform address, not a row id.
+model ModuleGraphLayout {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  moduleId  String @map("module_id") @db.Uuid
+  /// Which of the module's diagrams these positions belong to. A module has
+  /// more than one, and their node ids are unrelated — without this they would
+  /// share a row and overwrite each other.
+  graph     String @default("connections")
+  /// Map of node id to `{ x, y }`, e.g. `{"aws_vpc.this":{"x":0,"y":40}}`.
+  /// Ids that no longer exist are ignored on read, so a re-import cannot
+  /// strand the layout.
+  positions Json   @default("{}") @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  module TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, moduleId, graph])
+  @@map("module_graph_layouts")
+  @@schema("public")
+}
+
 model Connection {
-  id           String   @id @default(dbgenerated("extensions.uuid_generate_v4()")) @db.Uuid
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   projectId    String   @map("project_id") @db.Uuid
   sourceNodeId String   @map("source_node_id") @db.Uuid
   sourceOutput String   @map("source_output") @db.Text
@@ -123,16 +394,124 @@ model Connection {
 model ProviderResource {
   id                  String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   moduleId            String  @map("module_id") @db.Uuid
+  /// Either "resource" or "data". Terraform treats data sources as a distinct
+  /// block type and they must not be presented as managed resources.
+  kind                String  @default("resource") @db.Text
   resourceType        String  @map("resource_type") @db.Text
   resourceName        String? @map("resource_name") @db.Text
   providerName        String  @map("provider_name") @db.Text
   version             String? @db.Text
+  sourceFile          String? @map("source_file") @db.Text
   resourceUrl         String? @map("resource_url") @db.Text
   providerUrl         String? @map("provider_url") @db.Text
   resourceDescription String? @map("resource_description") @db.Text
 
   module TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
 
+  @@index([moduleId])
   @@map("provider_resources")
+  @@schema("public")
+}
+
+/// A `module "x" { source = ... }` call found inside a module. These are the
+/// edges of the dependency graph and were previously analysed but discarded.
+model ModuleDependency {
+  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId    String  @map("module_id") @db.Uuid
+  /// Block label, i.e. the `x` in `module "x"`.
+  name        String  @db.Text
+  source      String? @db.Text
+  version     String? @db.Text
+  /// One of "local", "registry", "git" or "unknown".
+  sourceKind  String  @default("unknown") @map("source_kind") @db.Text
+  registryUrl String? @map("registry_url") @db.Text
+  sourceFile  String? @map("source_file") @db.Text
+
+  module TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, name])
+  @@index([moduleId])
+  @@map("module_dependencies")
+  @@schema("public")
+}
+
+/// A provider requirement declared via `required_providers` or a bare
+/// `provider` block, kept separately so versions survive the import.
+model ModuleProvider {
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId String  @map("module_id") @db.Uuid
+  /// Local name used as the resource type prefix, e.g. `aws`.
+  name     String  @db.Text
+  /// Registry source such as `hashicorp/aws`.
+  source   String? @db.Text
+  /// Version constraint such as `~> 5.0`.
+  version  String? @db.Text
+  docsUrl  String? @map("docs_url") @db.Text
+
+  module TerraformModule @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([moduleId, name])
+  @@index([moduleId])
+  @@map("module_providers")
+  @@schema("public")
+}
+
+/// How one person wants the project agent to behave.
+///
+/// Per user rather than per project: the agent runs on the user's own Copilot
+/// licence, so the person who pays for the turn is the one who gets to shape
+/// it. Two colleagues on the same project can differ here.
+model AgentSettings {
+  userId String @id @map("user_id") @db.Uuid
+
+  /// Free text appended to the system prompt, e.g. house naming rules.
+  /// Length is capped in the service, not here, so the limit stays reviewable.
+  instructions String   @default("") @db.Text
+  /// Names of the skills TerraBlox ships that this user switched on. Stored as
+  /// names, not content: the text lives in the repository, so improving a skill
+  /// improves it for everyone without a migration.
+  skills       String[] @default([])
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("agent_settings")
+  @@schema("public")
+}
+
+/// A remote MCP server the agent may call on this user's behalf.
+///
+/// Remote only. A local (stdio) server would be a command executed on the
+/// TerraBlox host, which is remote code execution for anyone with an account,
+/// so that transport is deliberately not modelled at all rather than modelled
+/// and disabled.
+model AgentMcpServer {
+  id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// What the user calls it, and the namespace its tools appear under.
+  name      String @db.Text
+  /// Must be https, enforced in the service.
+  url       String @db.Text
+  /// "http" or "sse".
+  transport String @default("http") @db.Text
+
+  /// Auth headers, AES-256-GCM encrypted. These are bearer tokens for someone
+  /// else's system: a database dump must not be enough to use them.
+  headersCiphertext String? @map("headers_ciphertext") @db.Text
+
+  /// Off by default, so adding a server is not the same as trusting it.
+  enabled Boolean @default(false)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("agent_mcp_servers")
   @@schema("public")
 }
