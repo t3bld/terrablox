@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@terrablox/auth/hooks";
+import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
 import {
   Card,
@@ -9,7 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
-import { Github, Link as LinkIcon, Unlink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 /**
@@ -90,40 +91,40 @@ export function GithubAccountCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Github className="h-5 w-5" />
-          GitHub
-        </CardTitle>
-        <CardDescription>
-          {isAppMode
-            ? "Link your GitHub identity. Repositories are read through the GitHub App installation, so every member sees the same modules."
-            : "Connect your GitHub account to import private and organization modules."}
-        </CardDescription>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-1.5">
+            <CardTitle>GitHub</CardTitle>
+            <Button asChild className="h-7 w-7" size="icon" variant="ghost">
+              <a
+                aria-label="Open GitHub website"
+                href="https://github.com"
+                rel="noreferrer"
+                target="_blank"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </Button>
+          </div>
+          <Badge
+            className={
+              github.linked
+                ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                : "text-muted-foreground"
+            }
+            variant={github.linked ? "secondary" : "outline"}
+          >
+            {github.linked ? "Connected" : "Unconnected"}
+          </Badge>
+        </div>
+        {!github.linked ? (
+          <CardDescription>
+            {isAppMode
+              ? "Link your GitHub identity. Repositories are read through the GitHub App installation, so every member sees the same modules."
+              : "Connect your GitHub account to import private and organization modules."}
+          </CardDescription>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="text-sm">
-            Status:{" "}
-            <span
-              className={
-                github.linked
-                  ? "text-emerald-600 dark:text-emerald-400 font-medium"
-                  : "text-muted-foreground"
-              }
-            >
-              {github.linked ? "Linked" : "Not linked"}
-            </span>
-          </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            {github.linked ? (
-              <LinkIcon className="h-3.5 w-3.5" />
-            ) : (
-              <Unlink className="h-3.5 w-3.5" />
-            )}
-            GitHub
-          </div>
-        </div>
-
         {config && !config.githubConfigured ? (
           <div className="space-y-1 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
             <p className="font-medium text-foreground">
@@ -147,6 +148,38 @@ export function GithubAccountCard() {
           </p>
         ) : null}
 
+        {github.linked ? (
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium">
+              {isAppMode ? "Access" : "Granted scopes"}
+            </p>
+            {isAppMode ? (
+              <p className="text-xs text-muted-foreground">
+                Granted by the GitHub App installation, not by scopes. Change
+                which repositories it can reach in the installation settings.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-1">
+                {github.scopes.length > 0 ? (
+                  github.scopes.map((scope) => (
+                    <Badge className="font-mono" key={scope} variant="outline">
+                      {scope}
+                    </Badge>
+                  ))
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    GitHub reported none. Re-link to refresh.
+                  </p>
+                )}
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              The agent commits with this token, so it can write wherever you
+              can.
+            </p>
+          </div>
+        ) : null}
+
         <div className="flex flex-col gap-2">
           {!github.linked ? (
             <Button
@@ -157,7 +190,7 @@ export function GithubAccountCard() {
               {isLinking ? "Linking..." : "Link GitHub account"}
             </Button>
           ) : (
-            <Button className="w-full" variant="secondary" asChild>
+            <Button className="w-full" variant="outline" asChild>
               <a
                 href="https://github.com/settings/applications"
                 target="_blank"

@@ -25,8 +25,8 @@
     "db:reset": "pnpm --filter @terrablox/database db:migrate:reset",
     "db:generate": "pnpm --filter @terrablox/database db:generate",
     "db:studio": "pnpm --filter @terrablox/database db:studio",
-    "db:up": "docker compose up -d",
-    "db:down": "docker compose down"
+    "db:up": "docker compose -f docker-compose.local.yml up -d",
+    "db:down": "docker compose -f docker-compose.local.yml down"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",

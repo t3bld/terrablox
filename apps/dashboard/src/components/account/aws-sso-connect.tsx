@@ -9,7 +9,6 @@ import {
   Check,
   ExternalLink,
   Loader2,
-  LogIn,
   Search,
   X,
 } from "lucide-react";
@@ -21,8 +20,7 @@ import { readJson } from "@/lib/read-json";
  * Signing in with IAM Identity Center to set up an account in one go.
  *
  * The sign-in is spent immediately on creating the read role and then dropped.
- * TerraBlox keeps no AWS session, which is what makes this a shortcut through
- * the manual setup rather than a second, weaker way in.
+ * TerraBlox keeps no AWS session after setup.
  */
 
 interface ConnectionView {
@@ -67,6 +65,7 @@ export function AwsSsoConnect({
   const [stage, setStage] = useState<Stage>({ name: "idle" });
   const [startUrl, setStartUrl] = useState("");
   const [ssoRegion, setSsoRegion] = useState(DEFAULT_REGION);
+  const [showSsoRegion, setShowSsoRegion] = useState(false);
   const [region, setRegion] = useState(DEFAULT_REGION);
   const [selected, setSelected] = useState<string>("");
   // Which permission set to assume. A user often holds several per account and
@@ -140,6 +139,7 @@ export function AwsSsoConnect({
 
       if (!res.ok || !body.login) {
         setError(body.error ?? "Could not start the sign-in");
+        setShowSsoRegion(true);
         return;
       }
 
@@ -147,6 +147,7 @@ export function AwsSsoConnect({
       window.open(body.login.verificationUri, "_blank", "noopener,noreferrer");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start the sign-in");
+      setShowSsoRegion(true);
     } finally {
       setBusy(false);
     }
@@ -213,7 +214,7 @@ export function AwsSsoConnect({
       {stage.name === "idle" ? (
         <form onSubmit={handleStart} className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
+            <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="ssoStartUrl">Identity Center portal</Label>
               <Input
                 id="ssoStartUrl"
@@ -223,24 +224,31 @@ export function AwsSsoConnect({
                 className="font-mono text-sm"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="ssoRegion">Identity Center region</Label>
-              <Input
-                id="ssoRegion"
-                value={ssoRegion}
-                onChange={(e) => setSsoRegion(e.target.value)}
-                placeholder={DEFAULT_REGION}
-              />
-            </div>
+            {showSsoRegion ? (
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="ssoRegion">Identity Center region</Label>
+                <Input
+                  id="ssoRegion"
+                  value={ssoRegion}
+                  onChange={(e) => setSsoRegion(e.target.value)}
+                  placeholder={DEFAULT_REGION}
+                />
+                <p className="text-muted-foreground text-xs">
+                  The portal URL does not include its AWS region. The default
+                  region failed, so enter the region where IAM Identity Center
+                  is enabled.
+                </p>
+              </div>
+            ) : null}
           </div>
 
-          <Button type="submit" disabled={busy || !startUrl.trim()}>
-            {busy ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <LogIn className="mr-2 h-4 w-4" />
-            )}
-            Sign in with AWS
+          <Button
+            className="cursor-pointer disabled:cursor-not-allowed"
+            type="submit"
+            disabled={busy || !startUrl.trim()}
+          >
+            {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Sign in
           </Button>
         </form>
       ) : null}
@@ -296,13 +304,13 @@ export function AwsSsoConnect({
 
               return (
                 <div className="space-y-2">
-                  <div className="relative">
+                  <div className="relative rounded-md border border-input bg-background focus-within:border-primary">
                     <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                     <Input
                       value={accountFilter}
                       onChange={(e) => setAccountFilter(e.target.value)}
                       placeholder="Search accounts by name or ID"
-                      className="pl-9"
+                      className="border-0 pl-9 focus-visible:ring-0 focus-visible:ring-offset-0"
                       aria-label="Search accounts"
                     />
                   </div>

@@ -1,9 +1,8 @@
 "use client";
 
 import { Button } from "@terrablox/ui/button";
-import { X } from "lucide-react";
+import { ExternalLink, X } from "lucide-react";
 import type { ReactNode } from "react";
-import { CopyButton } from "./field-primitives";
 
 /**
  * The panel beside a graph canvas, and the rows inside it.
@@ -59,7 +58,6 @@ export function GraphDetailPanel({
           <X className="h-4 w-4" />
         </Button>
       </div>
-
       <div className="min-h-0 flex-1 overflow-y-auto p-4">{children}</div>
     </aside>
   );
@@ -68,10 +66,13 @@ export function GraphDetailPanel({
 export function DetailRow({
   label,
   value,
+  href,
   mono = true,
 }: {
   label: string;
   value: string | null | undefined;
+  /** Makes the value an external repository or documentation link. */
+  href?: string | null;
   mono?: boolean;
 }) {
   if (!value) return null;
@@ -80,12 +81,27 @@ export function DetailRow({
     <div className="group grid grid-cols-[7rem_1fr] items-start gap-2 py-1.5">
       <dt className="text-muted-foreground text-xs">{label}</dt>
       <dd className="flex min-w-0 items-start gap-1">
-        <span
-          className={`min-w-0 break-all text-xs ${mono ? "font-mono" : ""}`}
-        >
-          {value}
-        </span>
-        <CopyButton label={label.toLowerCase()} value={value} />
+        {href ? (
+          <a
+            className={`min-w-0 break-all text-xs text-primary underline-offset-4 hover:underline ${
+              mono ? "font-mono" : ""
+            }`}
+            href={href}
+            rel="noreferrer"
+            target="_blank"
+          >
+            {value}
+            {/* Inline so it travels with the last word instead of stranding
+                itself on a line of its own when the value wraps. */}
+            <ExternalLink className="ml-1 inline h-3 w-3 align-[-0.125em]" />
+          </a>
+        ) : (
+          <span
+            className={`min-w-0 break-all text-xs ${mono ? "font-mono" : ""}`}
+          >
+            {value}
+          </span>
+        )}
       </dd>
     </div>
   );

@@ -43,6 +43,10 @@ function resolveUrl(src: string, base: string | null | undefined) {
   }
 }
 
+function markdownForPreview(markdown: string): string {
+  return markdown.replace(/<!--[\s\S]*?-->/g, "");
+}
+
 export function ReadmeTab({
   markdown,
   loading,
@@ -85,22 +89,29 @@ export function ReadmeTab({
     <div className="min-w-0 overflow-hidden rounded-lg border bg-card">
       <div
         className="
-          prose prose-sm dark:prose-invert max-w-none p-6
+          prose prose-sm dark:prose-invert max-w-none p-6 sm:p-8
+          prose-p:my-4 prose-p:leading-7
+          prose-lead:leading-7
+          prose-ul:my-4 prose-ol:my-4 prose-li:my-1
+          prose-li:leading-7
           prose-headings:scroll-mt-20
+          prose-h1:mb-6 prose-h1:border-b prose-h1:pb-3
           prose-h1:text-2xl prose-h1:font-semibold prose-h1:tracking-tight
-          prose-h1:mb-4 prose-h1:pb-2 prose-h1:border-b
-          prose-h2:text-xl prose-h2:font-semibold prose-h2:mt-8
-          prose-h2:pb-2 prose-h2:border-b
-          prose-h3:text-base prose-h3:font-semibold
+          prose-h2:mt-10 prose-h2:mb-4 prose-h2:border-b prose-h2:pb-2
+          prose-h2:text-xl prose-h2:font-semibold
+          prose-h3:mt-8 prose-h3:mb-3 prose-h3:text-base prose-h3:font-semibold
+          prose-h4:mt-6 prose-h4:mb-2 prose-h4:font-semibold
+          prose-hr:my-8
           prose-a:font-medium prose-a:underline-offset-4
           prose-code:rounded prose-code:bg-muted prose-code:px-1.5
           prose-code:py-0.5 prose-code:font-normal prose-code:text-foreground
           prose-code:before:content-none prose-code:after:content-none
-          prose-pre:border prose-pre:bg-muted prose-pre:text-foreground
-          prose-img:rounded-md prose-img:border
-          prose-table:text-sm
-          prose-th:border prose-th:bg-muted/60 prose-th:px-3 prose-th:py-2
-          prose-td:border prose-td:px-3 prose-td:py-2
+          prose-pre:my-5 prose-pre:overflow-x-auto prose-pre:border
+          prose-pre:bg-muted prose-pre:p-4 prose-pre:text-foreground
+          prose-img:my-6 prose-img:rounded-md prose-img:border
+          prose-table:my-5 prose-table:text-sm
+          prose-th:border prose-th:bg-muted/60 prose-th:px-3 prose-th:py-2.5
+          prose-td:border prose-td:px-3 prose-td:py-2.5
           prose-blockquote:border-l-primary/40 prose-blockquote:not-italic
           break-words
         "
@@ -138,7 +149,7 @@ export function ReadmeTab({
           }}
           remarkPlugins={[remarkGfm]}
         >
-          {markdown}
+          {markdownForPreview(markdown)}
         </ReactMarkdown>
       </div>
     </div>

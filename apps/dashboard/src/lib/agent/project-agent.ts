@@ -6,7 +6,11 @@ import {
   type MCPServerConfig,
 } from "@github/copilot-sdk";
 
-import type { ProjectGraph, ProjectGraphMutation } from "@/lib/projects/types";
+import type {
+  AgentStep,
+  ProjectGraph,
+  ProjectGraphMutation,
+} from "@/lib/projects/types";
 
 import {
   COPILOT_MODEL,
@@ -14,7 +18,9 @@ import {
   describeCopilotError,
   discardCopilotClient,
 } from "./copilot";
+import type { ReasoningEffortValue } from "./settings-service";
 import type { AgentSkill } from "./skills";
+import { isKnownTool, PROJECT_AGENT_TOOLS } from "./tool-catalogue";
 
 /**
  * The project agent.
@@ -26,67 +32,7 @@ import type { AgentSkill } from "./skills";
  */
 
 /** Tool definitions, in the shape function-calling APIs expect. */
-export const PROJECT_AGENT_TOOLS = [
-  {
-    name: "add_module",
-    description:
-      "Instantiate a module from the user's library as a new `module` block.",
-    parameters: {
-      type: "object",
-      properties: {
-        moduleId: { type: "string", description: "Library module id." },
-        name: { type: "string", description: "Block label to use." },
-      },
-      required: ["moduleId"],
-    },
-  },
-  {
-    name: "remove_module",
-    description:
-      "Delete a `module` block and every argument elsewhere that referenced it.",
-    parameters: {
-      type: "object",
-      properties: { name: { type: "string" } },
-      required: ["name"],
-    },
-  },
-  {
-    name: "connect",
-    description:
-      "Set an input of one module to an output of another, i.e. `target.targetInput = module.source.sourceOutput`.",
-    parameters: {
-      type: "object",
-      properties: {
-        source: { type: "string" },
-        sourceOutput: { type: "string" },
-        target: { type: "string" },
-        targetInput: { type: "string" },
-      },
-      required: ["source", "sourceOutput", "target", "targetInput"],
-    },
-  },
-  {
-    name: "disconnect",
-    description: "Remove an argument from a module block.",
-    parameters: {
-      type: "object",
-      properties: {
-        target: { type: "string" },
-        targetInput: { type: "string" },
-      },
-      required: ["target", "targetInput"],
-    },
-  },
-  {
-    name: "rename_module",
-    description: "Rename a module block and update every reference to it.",
-    parameters: {
-      type: "object",
-      properties: { name: { type: "string" }, newName: { type: "string" } },
-      required: ["name", "newName"],
-    },
-  },
-] as const;
+export { PROJECT_AGENT_TOOLS } from "./tool-catalogue";
 
 export interface AgentContext {
   projectName: string;
@@ -106,19 +52,42 @@ export interface AgentContext {
   skills?: AgentSkill[];
   /** Remote MCP servers this user enabled, decrypted and ready to use. */
   mcpServers?: Record<string, MCPServerConfig>;
+  /** Copilot model id, or null to let Copilot choose. */
+  model?: string | null;
+  /**
+   * How hard the model should think, when it supports the setting. Typed from
+   * our own validated union because the SDK declares `ReasoningEffort` but does
+   * not re-export it from the package root.
+   */
+  reasoningEffort?: ReasoningEffortValue | null;
+  /** Tools the agent may not call in this project. */
+  disabledTools?: string[];
 }
 
 export interface AgentTurn {
   reply: string;
   /** Mutations to apply, in order. Empty when the turn only answers. */
   mutations: ProjectGraphMutation[];
+  /** How the turn got to its answer, in the order it happened. */
+  steps: AgentStep[];
 }
+
+/**
+ * Caps on the recorded trail.
+ *
+ * The steps are stored on the message and sent to every client that loads the
+ * transcript, so a model that thinks in essays must not be able to grow a row
+ * without bound.
+ */
+const MAX_STEPS = 40;
+const MAX_THOUGHT_LENGTH = 600;
 
 export async function runProjectAgent(
   message: string,
   context: AgentContext,
 ): Promise<AgentTurn> {
   const mutations: ProjectGraphMutation[] = [];
+  const steps: AgentStep[] = [];
   const client = copilotClient();
   let session: CopilotSession | undefined;
 
@@ -131,10 +100,37 @@ export async function runProjectAgent(
       // while our transcript lives in Postgres, so replaying the history we
       // already have is the only version that stays correct.
       sessionId: `terrablox-${context.userId}-${context.projectId}-${Date.now()}`,
-      model: COPILOT_MODEL,
+      model: context.model || COPILOT_MODEL,
       gitHubToken: context.githubToken,
-      tools: buildTools(context, mutations),
+      tools: buildTools(context, mutations, steps),
       ...(usesMcp ? { mcpServers } : {}),
+      // Omitted rather than defaulted: a model that does not support the
+      // setting rejects the session, so "leave it alone" has to mean absent.
+      ...(context.reasoningEffort
+        ? { reasoningEffort: context.reasoningEffort }
+        : {}),
+      // The user's stated goal is to work in the UI instead of the code, which
+      // only holds if they can still see why the agent did what it did. Models
+      // without reasoning summaries ignore this and simply emit no such events.
+      reasoningSummary: "concise",
+      onEvent: (event) => {
+        if (event.type !== "assistant.reasoning") return;
+        const text = event.data.content?.trim();
+        if (text) pushStep(steps, { kind: "thought", text });
+      },
+      // Without this the runtime raises a prompt and waits for a human who is
+      // not there, and the model reports the call back as "permission denied".
+      // The turn runs headless, so the decision has to be made here. What may
+      // ask at all is already fenced in by `availableTools` below.
+      onPermissionRequest: (request) => {
+        pushStep(steps, {
+          kind: "tool",
+          tool: request.kind,
+          summary: "Allowed for this turn",
+          ok: true,
+        });
+        return { kind: "approve-once" };
+      },
       // Belt and braces next to the client's "empty" mode: even if the runtime
       // gains new built-ins, this session only ever sees ours. `mcp:*` is added
       // only for users who enabled a server, so the default stays as tight as it
@@ -154,6 +150,7 @@ export async function runProjectAgent(
         response?.data.content?.trim() ||
         "I could not put together an answer for that.",
       mutations,
+      steps,
     };
   } catch (error) {
     discardCopilotClient(error);
@@ -176,13 +173,29 @@ export async function runProjectAgent(
  * Validation still happens here, against the graph already in memory, so the
  * model gets told about a typo in the same turn rather than after a commit.
  */
-function buildTools(context: AgentContext, sink: ProjectGraphMutation[]) {
+function buildTools(
+  context: AgentContext,
+  sink: ProjectGraphMutation[],
+  steps: AgentStep[],
+) {
+  const disabled = new Set(context.disabledTools ?? []);
   const hasNode = (name: string) =>
     context.graph.nodes.some((node) => node.id === name);
 
-  const queue = (mutation: ProjectGraphMutation) => {
+  const queue = (tool: string, mutation: ProjectGraphMutation) => {
     sink.push(mutation);
+    pushStep(steps, {
+      kind: "tool",
+      tool,
+      summary: describeMutation(mutation),
+      ok: true,
+    });
     return { queued: true, pending: sink.length };
+  };
+
+  const refuse = (tool: string, error: string) => {
+    pushStep(steps, { kind: "tool", tool, summary: error, ok: false });
+    return { error };
   };
 
   return [
@@ -190,19 +203,20 @@ function buildTools(context: AgentContext, sink: ProjectGraphMutation[]) {
       ...spec("add_module"),
       handler: async ({ moduleId, name }) => {
         if (!context.library.some((mod) => mod.id === moduleId)) {
-          return {
-            error: `No module "${moduleId}" in the library. Available: ${context.library.map((mod) => mod.id).join(", ") || "none"}.`,
-          };
+          return refuse(
+            "add_module",
+            `No module "${moduleId}" in the library. Available: ${context.library.map((mod) => mod.id).join(", ") || "none"}.`,
+          );
         }
-        return queue({ action: "add-module", moduleId, name });
+        return queue("add_module", { action: "add-module", moduleId, name });
       },
     }),
     defineTool<{ name: string }>("remove_module", {
       ...spec("remove_module"),
       handler: async ({ name }) =>
         hasNode(name)
-          ? queue({ action: "remove-module", name })
-          : { error: unknownModule(name, context) },
+          ? queue("remove_module", { action: "remove-module", name })
+          : refuse("remove_module", unknownModule(name, context)),
     }),
     defineTool<{
       source: string;
@@ -213,33 +227,72 @@ function buildTools(context: AgentContext, sink: ProjectGraphMutation[]) {
       ...spec("connect"),
       handler: async (args) => {
         for (const side of [args.source, args.target]) {
-          if (!hasNode(side)) return { error: unknownModule(side, context) };
+          if (!hasNode(side)) {
+            return refuse("connect", unknownModule(side, context));
+          }
         }
-        return queue({ action: "connect", ...args });
+        return queue("connect", { action: "connect", ...args });
       },
     }),
     defineTool<{ target: string; targetInput: string }>("disconnect", {
       ...spec("disconnect"),
       handler: async ({ target, targetInput }) =>
         hasNode(target)
-          ? queue({ action: "disconnect", target, targetInput })
-          : { error: unknownModule(target, context) },
+          ? queue("disconnect", { action: "disconnect", target, targetInput })
+          : refuse("disconnect", unknownModule(target, context)),
     }),
     defineTool<{ name: string; newName: string }>("rename_module", {
       ...spec("rename_module"),
       handler: async ({ name, newName }) =>
         hasNode(name)
-          ? queue({ action: "rename-module", name, newName })
-          : { error: unknownModule(name, context) },
+          ? queue("rename_module", { action: "rename-module", name, newName })
+          : refuse("rename_module", unknownModule(name, context)),
     }),
-  ];
+    // Withheld rather than refused at call time: a tool the model cannot see is
+    // one it will not promise the user and then fail to deliver.
+  ].filter((tool) => !disabled.has(tool.name));
+}
+
+/** Appends a step, dropping the overflow rather than the earliest context. */
+function pushStep(steps: AgentStep[], step: AgentStep): void {
+  if (steps.length >= MAX_STEPS) return;
+
+  steps.push(
+    step.kind === "thought" && step.text.length > MAX_THOUGHT_LENGTH
+      ? { kind: "thought", text: `${step.text.slice(0, MAX_THOUGHT_LENGTH)}…` }
+      : step,
+  );
+}
+
+/** The queued edit in the words the canvas uses, not the tool's argument names. */
+function describeMutation(mutation: ProjectGraphMutation): string {
+  switch (mutation.action) {
+    case "add-module":
+      return `Add ${mutation.name ?? mutation.moduleId} from the library`;
+    case "remove-module":
+      return `Remove ${mutation.name}`;
+    case "connect":
+      return `Wire ${mutation.target}.${mutation.targetInput} to ${mutation.source}.${mutation.sourceOutput}`;
+    case "disconnect":
+      return `Clear ${mutation.target}.${mutation.targetInput}`;
+    case "rename-module":
+      return `Rename ${mutation.name} to ${mutation.newName}`;
+    default:
+      return mutation.action;
+  }
 }
 
 /** The description and JSON schema declared once in PROJECT_AGENT_TOOLS. */
 function spec(name: (typeof PROJECT_AGENT_TOOLS)[number]["name"]) {
   const tool = PROJECT_AGENT_TOOLS.find((entry) => entry.name === name);
   if (!tool) throw new Error(`No tool definition for ${name}.`);
-  return { description: tool.description, parameters: tool.parameters };
+  return {
+    description: tool.description,
+    parameters: tool.parameters,
+    // A prompt here would wait for a human who is not in the loop: these tools
+    // only queue a mutation, and the commit afterwards is ours to authorise.
+    skipPermission: true,
+  };
 }
 
 function unknownModule(name: string, context: AgentContext): string {
@@ -312,6 +365,9 @@ function systemPrompt(context: AgentContext): string {
     "You edit Terraform root configurations only through the tools you were given. Never invent HCL in your reply as a substitute for calling a tool.",
     "Every tool call is committed to the repository after your turn, so ask before doing anything destructive such as removing a module.",
     "Keep replies short and concrete. Say what you changed, not how the tools work.",
+    // Named explicitly, because otherwise the model reads a missing tool as its
+    // own failure and apologises instead of telling the user where the switch is.
+    ...disabledToolNotice(context.disabledTools),
     "",
     `## Modules on the canvas (${graph.nodes.length})`,
     modules,
@@ -341,6 +397,16 @@ function systemPrompt(context: AgentContext): string {
       : []),
     ...(history ? ["", "## Conversation so far", history] : []),
   ].join("\n");
+}
+
+/** Tells the model a capability was withheld by the user, not lost to a bug. */
+function disabledToolNotice(disabled: string[] | undefined): string[] {
+  const names = (disabled ?? []).filter(isKnownTool);
+  if (!names.length) return [];
+
+  return [
+    `The user has switched off these tools for this project: ${names.join(", ")}. You do not have them. If asked for one, say it is disabled in the agent settings and offer the closest thing you can still do.`,
+  ];
 }
 
 function skillSections(skills: AgentSkill[] | undefined): string[] {

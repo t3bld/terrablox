@@ -109,6 +109,17 @@ export interface ProjectChatMessageDto {
   createdAt: string;
 }
 
+/**
+ * One step of an agent turn, kept so the user can see how a change came about.
+ *
+ * `thought` is the model's own summary of its reasoning; `tool` is an edit it
+ * asked for, including the ones we rejected — a refused call explains a
+ * surprising answer better than its absence does.
+ */
+export type AgentStep =
+  | { kind: "thought"; text: string }
+  | { kind: "tool"; tool: string; summary: string; ok: boolean };
+
 export type ProjectGraphMutation =
   | {
       action: "add-module";
@@ -136,6 +147,20 @@ export type ProjectGraphMutation =
 export interface ProjectMutationResult {
   graph: ProjectGraph;
   commit: { sha: string; path: string; message: string } | null;
+}
+
+/** Who made an edit. The canvas and the agent share one code path, not one hand. */
+export type OperationOrigin = "canvas" | "agent";
+
+export interface ProjectOperationDto {
+  id: string;
+  origin: OperationOrigin;
+  action: string;
+  summary: string;
+  commitSha: string | null;
+  /** Branch head the edit was applied on top of, i.e. the state to go back to. */
+  parentSha: string | null;
+  createdAt: string;
 }
 
 export interface ProjectDeploySettings {
@@ -188,4 +213,4 @@ export interface ProjectDeployState {
 }
 
 /** The workflows TerraBlox can start on the user's behalf. */
-export type DeployRunKind = "plan" | "apply" | "state";
+export type DeployRunKind = "plan" | "apply" | "state" | "cost";

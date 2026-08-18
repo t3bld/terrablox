@@ -6,6 +6,7 @@ import {
 } from "@terrablox/graph";
 import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
+import { Skeleton } from "@terrablox/ui/skeleton";
 import {
   ArrowLeft,
   ArrowRight,
@@ -32,6 +33,7 @@ import {
   resourceAddress,
 } from "@/lib/terraform/architecture-graph";
 import { layoutArchitecture } from "@/lib/terraform/architecture-layout";
+import { parseModuleSourceRef } from "@/lib/terraform/module-link";
 import {
   ConnectionList,
   DetailRow,
@@ -107,6 +109,23 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 /**
+ * Terraform source addresses include a forwarding prefix, subdirectory and
+ * ref; the repository itself is the useful destination for a reader.
+ */
+function repositoryUrl(source: string | null | undefined): string | null {
+  const withoutForwarder = source?.trim().replace(/^[a-z][a-z0-9+.-]*::/i, "");
+  if (!withoutForwarder?.startsWith("http")) return null;
+
+  const withoutQuery = withoutForwarder.split("?", 1)[0] ?? "";
+  const schemeEnd = withoutQuery.indexOf("://") + 3;
+  const subdirectory = withoutQuery.indexOf("//", schemeEnd);
+
+  return subdirectory === -1
+    ? withoutQuery
+    : withoutQuery.slice(0, subdirectory);
+}
+
+/**
  * Where a box on the diagram came from: which module declared it, and under
  * what address inside that module.
  *
@@ -128,20 +147,15 @@ interface ResolvedAddress {
   moduleSource?: string;
 }
 
-const OMISSION_LABELS: Record<string, string> = {
-  "data-source": "Data sources — lookups, not deployed infrastructure",
-  detail: "Supporting detail — routing, IAM, listeners, certificates, keys",
-  "unknown-type": "No architecture mapping yet",
-};
-
 export function ArchitectureTab({
   moduleId,
   resources,
   references,
   dependencies,
 }: ArchitectureTabProps) {
-  const [showOmissions, setShowOmissions] = useState(false);
   const [nested, setNested] = useState<NestedResponse | null>(null);
+  const [nestedReady, setNestedReady] = useState(false);
+  const [architectureReady, setArchitectureReady] = useState(false);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
@@ -150,16 +164,22 @@ export function ArchitectureTab({
   useEffect(() => {
     let current = true;
     setNested(null);
+    setNestedReady(false);
+    setArchitectureReady(false);
     autoExpandedFor.current = null;
 
     fetch(`/api/modules/${moduleId}/architecture`, { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
       .then((data: NestedResponse | null) => {
-        if (current && data) setNested(data);
+        if (!current) return;
+        setNested(data);
+        setNestedReady(true);
       })
       // A failure here only costs the ability to expand; the module's own
       // diagram still draws from the props it already has.
-      .catch(() => undefined);
+      .catch(() => {
+        if (current) setNestedReady(true);
+      });
 
     return () => {
       current = false;
@@ -221,7 +241,11 @@ export function ArchitectureTab({
   );
 
   useEffect(() => {
-    if (!nested || autoExpandedFor.current === moduleId) return;
+    if (!nestedReady) return;
+    if (!nested || autoExpandedFor.current === moduleId) {
+      setArchitectureReady(true);
+      return;
+    }
     autoExpandedFor.current = moduleId;
 
     // Greedy over the first level only: enough to give a wrapper a picture,
@@ -238,7 +262,8 @@ export function ArchitectureTab({
     }
 
     if (open.size > 0) setExpanded(open);
-  }, [nested, moduleId, graph]);
+    setArchitectureReady(true);
+  }, [nested, nestedReady, moduleId, graph]);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const clearSelection = useCallback(() => setSelectedId(null), []);
@@ -470,6 +495,7 @@ export function ArchitectureTab({
   const LAYOUT_URL = `/api/modules/${moduleId}/graph-layout?graph=architecture`;
 
   const [layout, setLayout] = useState<GraphLayout>({});
+  const [layoutReady, setLayoutReady] = useState(false);
   // Set once the user drags or resets, so a slow GET can never overwrite what
   // they just did. Deliberately *not* a "load finished" flag: React's strict
   // mode runs the effect twice, and the aborted first request would then
@@ -479,6 +505,7 @@ export function ArchitectureTab({
   useEffect(() => {
     userTouchedLayout.current = false;
     setLayout({});
+    setLayoutReady(false);
 
     const controller = new AbortController();
 
@@ -496,6 +523,8 @@ export function ArchitectureTab({
       } catch {
         // A missing layout is not an error worth interrupting the user for;
         // the diagram simply stays on its computed arrangement.
+      } finally {
+        if (!controller.signal.aborted) setLayoutReady(true);
       }
     })();
 
@@ -559,18 +588,9 @@ export function ArchitectureTab({
     [graph.nodes],
   );
 
-  const grouped = useMemo(() => {
-    const byReason = new Map<string, string[]>();
-    for (const omission of graph.omissions) {
-      const list = byReason.get(omission.reason);
-      if (list) list.push(omission.address);
-      else byReason.set(omission.reason, [omission.address]);
-    }
-    return [...byReason.entries()].map(([reason, addresses]) => ({
-      reason,
-      addresses: addresses.sort(),
-    }));
-  }, [graph.omissions]);
+  if (!architectureReady || !layoutReady) {
+    return <Skeleton className="h-[calc(100vh-25rem)] min-h-[24rem] w-full" />;
+  }
 
   if (graph.nodes.length === 0) {
     return (
@@ -589,25 +609,7 @@ export function ArchitectureTab({
 
   return (
     <div className="space-y-3">
-      <p className="text-muted-foreground text-xs">
-        A high-level view of what this module deploys. Modules it calls are
-        drawn as dashed boxes; supporting resources such as routing, IAM and
-        listener rules are left out on purpose — see Connections for the
-        complete graph.
-      </p>
-
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <Badge variant="secondary">{graph.nodes.length} drawn</Badge>
-        {graph.omissions.length > 0 ? (
-          <button
-            aria-expanded={showOmissions}
-            className="rounded-full border px-2.5 py-0.5 font-medium text-muted-foreground text-xs transition-colors hover:bg-secondary"
-            onClick={() => setShowOmissions((open) => !open)}
-            type="button"
-          >
-            {graph.omissions.length} not shown{showOmissions ? " ▴" : " ▾"}
-          </button>
-        ) : null}
         {expandableNow.length > 0 ? (
           <button
             className="rounded-full border px-2.5 py-0.5 font-medium text-muted-foreground text-xs transition-colors hover:bg-secondary"
@@ -630,33 +632,7 @@ export function ArchitectureTab({
             Collapse all ({expanded.size})
           </button>
         ) : null}
-        {graph.unmappedTypes.length > 0 ? (
-          <span
-            className="text-amber-600 dark:text-amber-500"
-            title="These have no architecture mapping yet, so they are missing from the diagram."
-          >
-            Unmapped: {graph.unmappedTypes.join(", ")}
-          </span>
-        ) : null}
       </div>
-
-      {showOmissions ? (
-        <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
-          {grouped.map(({ reason, addresses }) => (
-            <div key={reason}>
-              <p className="font-medium text-xs">
-                {OMISSION_LABELS[reason] ?? reason}{" "}
-                <span className="text-muted-foreground">
-                  ({addresses.length})
-                </span>
-              </p>
-              <p className="mt-1 font-mono text-[11px] text-muted-foreground leading-relaxed">
-                {addresses.join(" · ")}
-              </p>
-            </div>
-          ))}
-        </div>
-      ) : null}
 
       <div className="flex flex-col gap-4 lg:flex-row">
         <ArchitectureDiagram
@@ -675,26 +651,42 @@ export function ArchitectureTab({
         {selected && detail ? (
           <GraphDetailPanel
             badges={
-              <>
-                <Badge variant="outline">
-                  {selected.isModuleCall
-                    ? "Module call"
-                    : (KIND_LABELS[selected.type] ?? selected.type)}
-                </Badge>
-                {selected.expanded ? (
+              selected.isModuleCall ? (
+                selected.expanded ? (
                   <Badge variant="secondary">Expanded</Badge>
-                ) : null}
-              </>
+                ) : undefined
+              ) : (
+                <>
+                  <Badge variant="outline">
+                    {KIND_LABELS[selected.type] ?? selected.type}
+                  </Badge>
+                  {selected.expanded ? (
+                    <Badge variant="secondary">Expanded</Badge>
+                  ) : null}
+                </>
+              )
             }
             onClose={clearSelection}
-            subtitle={selected.sublabel}
+            subtitle={selected.isModuleCall ? undefined : selected.sublabel}
             title={selected.label}
           >
             <dl className="divide-y">
               {detail.call ? (
                 <>
-                  <DetailRow label="Call" value={detail.call.local} />
-                  <DetailRow label="Source" value={detail.call.moduleSource} />
+                  <DetailRow label="Module" value={detail.call.local} />
+                  <DetailRow
+                    href={repositoryUrl(detail.call.moduleSource)}
+                    label="Repository"
+                    mono={false}
+                    value={
+                      parseModuleSourceRef(detail.call.moduleSource)?.repo ??
+                      detail.call.moduleSource
+                    }
+                  />
+                  <DetailRow
+                    label="Version"
+                    value={parseModuleSourceRef(detail.call.moduleSource)?.ref}
+                  />
                 </>
               ) : null}
 
@@ -825,20 +817,24 @@ export function ArchitectureTab({
             ) : null}
 
             <div className="mt-6 space-y-5">
-              <ConnectionList
-                emptyText="Nothing on the diagram depends on this."
-                icon={<ArrowRight className="h-3.5 w-3.5" />}
-                items={connections.feeds}
-                onSelect={setSelectedId}
-                title="Feeds"
-              />
-              <ConnectionList
-                emptyText="Nothing on the diagram feeds this."
-                icon={<ArrowLeft className="h-3.5 w-3.5" />}
-                items={connections.fedBy}
-                onSelect={setSelectedId}
-                title="Fed by"
-              />
+              {connections.feeds.length > 0 ? (
+                <ConnectionList
+                  emptyText="Nothing on the diagram depends on this."
+                  icon={<ArrowRight className="h-3.5 w-3.5" />}
+                  items={connections.feeds}
+                  onSelect={setSelectedId}
+                  title="Feeds"
+                />
+              ) : null}
+              {connections.fedBy.length > 0 ? (
+                <ConnectionList
+                  emptyText="Nothing on the diagram feeds this."
+                  icon={<ArrowLeft className="h-3.5 w-3.5" />}
+                  items={connections.fedBy}
+                  onSelect={setSelectedId}
+                  title="Fed by"
+                />
+              ) : null}
             </div>
           </GraphDetailPanel>
         ) : null}

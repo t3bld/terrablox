@@ -2,7 +2,7 @@
  * Every file in `apps/dashboard/public/aws-icons`, without the extension.
  *
  * GENERATED — do not edit by hand. Regenerate after changing the icon folder:
- *   node scripts/generate-aws-icon-manifest.mjs
+ *   node scripts/aws-icons.mjs
  *
  * The icon resolver runs in the browser and cannot look at the filesystem, so
  * it checks this list instead. Without it a guessed name would render as a

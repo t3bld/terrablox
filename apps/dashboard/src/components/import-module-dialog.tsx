@@ -48,6 +48,33 @@ type RefChoice =
   | { type: "tag"; name: string }
   | { type: "branch"; name: string };
 
+type ImportedSource = {
+  name: string;
+  description: string | null;
+  tags: string[];
+  url: string;
+};
+
+type ImportedModule = {
+  id: string;
+  versionTag: string | null;
+  terraformRootFolder: string | null;
+  terraformSubmodulesFolders: string[];
+  url: string | null;
+};
+
+type ImportedVersionsResponse = {
+  repoImported?: boolean;
+  source?: ImportedSource;
+  importedVersions?: string[];
+};
+
+type LookupImportResponse = {
+  exists?: boolean;
+  source?: ImportedSource;
+  module?: ImportedModule;
+};
+
 function Stepper({ current }: { current: Step }) {
   const items: Array<{ step: Step; label: string }> = [
     { step: 1, label: "Repository" },
@@ -299,6 +326,11 @@ export function ImportModuleDialog({
     // lists and the current selection instead of refetching and resetting.
     if (loadedRefsForRepo.current === repoToLoad.full_name) return;
 
+    // Without this, a slow response for a previously selected repo would land
+    // after the user switched repos and mark its refs as loaded — offering
+    // versions that belong to a different repository.
+    const controller = new AbortController();
+
     async function fetchRefs() {
       setRefLoading(true);
       setRefError(null);
@@ -313,56 +345,32 @@ export function ImportModuleDialog({
           throw new Error("Invalid repository name.");
         }
 
-        const base = `/api/git-provider/${provider}/repos/${owner}/${repo}`;
+        const base = `/api/git-provider/${provider}/repos/${encodeURIComponent(
+          owner,
+        )}/${encodeURIComponent(repo)}`;
 
-        const [releasesRes, tagsRes, branchesRes] = await Promise.all([
-          fetch(`${base}/releases`),
-          fetch(`${base}/tags`),
-          fetch(`${base}/branches`),
-        ]);
+        const read = async (resource: string) => {
+          const res = await fetch(`${base}/${resource}`, {
+            signal: controller.signal,
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            throw new Error(body?.error ?? `Failed to fetch ${resource}.`);
+          }
+          return body;
+        };
 
         const [releasesBody, tagsBody, branchesBody] = await Promise.all([
-          releasesRes.json(),
-          tagsRes.json(),
-          branchesRes.json(),
+          read("releases"),
+          read("tags"),
+          read("branches"),
         ]);
-
-        if (!releasesRes.ok) {
-          const scopes = releasesBody?.scopes
-            ? ` (scopes: ${releasesBody.scopes})`
-            : "";
-          throw new Error(
-            releasesBody?.error
-              ? `${releasesBody.error}${scopes}`
-              : "Failed to fetch releases.",
-          );
-        }
-
-        if (!tagsRes.ok) {
-          const scopes = tagsBody?.scopes
-            ? ` (scopes: ${tagsBody.scopes})`
-            : "";
-          throw new Error(
-            tagsBody?.error
-              ? `${tagsBody.error}${scopes}`
-              : "Failed to fetch tags.",
-          );
-        }
-
-        if (!branchesRes.ok) {
-          const scopes = branchesBody?.scopes
-            ? ` (scopes: ${branchesBody.scopes})`
-            : "";
-          throw new Error(
-            branchesBody?.error
-              ? `${branchesBody.error}${scopes}`
-              : "Failed to fetch branches.",
-          );
-        }
 
         const rels = (releasesBody?.releases ?? []) as GitRelease[];
         const tgs = (tagsBody?.tags ?? []) as GitTag[];
         const brs = (branchesBody?.branches ?? []) as GitBranch[];
+
+        if (controller.signal.aborted) return;
 
         setReleases(rels);
         setGitTags(tgs);
@@ -381,16 +389,19 @@ export function ImportModuleDialog({
           setRefChoice({ type: "branch", name: brs[0].name });
         }
       } catch (err) {
+        if (controller.signal.aborted) return;
         loadedRefsForRepo.current = null;
         setRefError(
           err instanceof Error ? err.message : "Failed to load versions.",
         );
       } finally {
-        setRefLoading(false);
+        if (!controller.signal.aborted) setRefLoading(false);
       }
     }
 
     fetchRefs();
+
+    return () => controller.abort();
   }, [open, provider, selectedRepo, step]);
 
   const canContinue =
@@ -464,29 +475,13 @@ export function ImportModuleDialog({
   }
 
   const [existingImport, setExistingImport] = useState<{
-    source: {
-      name: string;
-      description: string | null;
-      tags: string[];
-      url: string;
-    };
-    module: {
-      id: string;
-      versionTag: string | null;
-      terraformRootFolder: string | null;
-      terraformSubmodulesFolders: string[];
-      url: string | null;
-    };
+    source: ImportedSource;
+    module: ImportedModule;
   } | null>(null);
   const [existingImportLoading, setExistingImportLoading] = useState(false);
 
   const [repoImportedInfo, setRepoImportedInfo] = useState<{
-    source: {
-      name: string;
-      description: string | null;
-      tags: string[];
-      url: string;
-    };
+    source: ImportedSource;
     importedVersions: string[];
   } | null>(null);
   const [repoImportedLoading, setRepoImportedLoading] = useState(false);
@@ -528,6 +523,9 @@ export function ImportModuleDialog({
   ]);
 
   // When repo is selected, check whether it was imported before and which versions exist.
+  // Only `full_name` identifies the repo for this lookup; the rest of the object
+  // changes identity on every list refresh and would refetch for nothing.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: narrowed on purpose
   useEffect(() => {
     if (!open) return;
     if (!user?.id) return;
@@ -536,41 +534,45 @@ export function ImportModuleDialog({
       return;
     }
 
+    const controller = new AbortController();
     setRepoImportedLoading(true);
     fetch(
-      `/api/modules/imported-versions?userId=${encodeURIComponent(
-        user.id,
-      )}&repoFullName=${encodeURIComponent(selectedRepo.full_name)}`,
+      `/api/modules/imported-versions?repoFullName=${encodeURIComponent(
+        selectedRepo.full_name,
+      )}`,
+      { signal: controller.signal },
     )
       .then(async (res) => {
-        const b = (await res.json().catch(() => null)) as any;
-        if (!res.ok) {
+        const body = (await res
+          .json()
+          .catch(() => null)) as ImportedVersionsResponse | null;
+        if (!res.ok || !body?.repoImported || !body.source) {
           setRepoImportedInfo(null);
           return;
         }
 
-        if (
-          b?.repoImported &&
-          b?.source &&
-          Array.isArray(b?.importedVersions)
-        ) {
-          setRepoImportedInfo({
-            source: b.source,
-            importedVersions: b.importedVersions,
-          });
-          // Populate fields from the source; these are stored on terraform_module_sources.
-          setModuleName(String(b.source?.name ?? moduleName));
-          setModuleDescription(String(b.source?.description ?? ""));
-          setTags(Array.isArray(b.source?.tags) ? b.source.tags : []);
-        } else {
-          setRepoImportedInfo(null);
-        }
+        setRepoImportedInfo({
+          source: body.source,
+          importedVersions: body.importedVersions ?? [],
+        });
+        // Populate fields from the source; these live on terraform_module_sources.
+        setModuleName((prev) => body.source?.name ?? prev);
+        setModuleDescription(body.source.description ?? "");
+        setTags(body.source.tags ?? []);
       })
-      .catch(() => setRepoImportedInfo(null))
-      .finally(() => setRepoImportedLoading(false));
+      .catch(() => {
+        if (!controller.signal.aborted) setRepoImportedInfo(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRepoImportedLoading(false);
+      });
+
+    return () => controller.abort();
   }, [open, user?.id, selectedRepo?.full_name]);
 
   // When repo + ref are chosen, check whether the root module is already imported.
+  // Narrowed to the identifying fields for the same reason as the lookup above.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: narrowed on purpose
   useEffect(() => {
     if (!open) return;
     if (!user?.id) return;
@@ -579,44 +581,47 @@ export function ImportModuleDialog({
       return;
     }
 
+    const controller = new AbortController();
     setExistingImportLoading(true);
 
     fetch(
-      `/api/modules/lookup-import?userId=${encodeURIComponent(
-        user.id,
-      )}&repoFullName=${encodeURIComponent(
+      `/api/modules/lookup-import?repoFullName=${encodeURIComponent(
         selectedRepo.full_name,
-      )}&refName=${encodeURIComponent(refChoice.name)}&terraformRootFolder=${encodeURIComponent(
-        terraformRootFolder || ".",
-      )}`,
+      )}&refName=${encodeURIComponent(
+        refChoice.name,
+      )}&terraformRootFolder=${encodeURIComponent(terraformRootFolder || ".")}`,
+      { signal: controller.signal },
     )
       .then(async (res) => {
-        const b = (await res.json().catch(() => null)) as any;
-        if (!res.ok) {
+        const body = (await res
+          .json()
+          .catch(() => null)) as LookupImportResponse | null;
+        if (!res.ok || !body?.exists || !body.source || !body.module) {
           setExistingImport(null);
           return;
         }
-        if (b?.exists && b?.source && b?.module) {
-          setExistingImport({ source: b.source, module: b.module });
-          // Populate existing values so the user sees what's in DB.
-          setModuleName(String(b.source?.name ?? moduleName));
-          setModuleDescription(String(b.source?.description ?? ""));
-          setTags(Array.isArray(b.source?.tags) ? b.source.tags : []);
-          setTerraformRootFolder(
-            String(b.module?.terraformRootFolder ?? terraformRootFolder ?? "."),
-          );
-          setTerraformSubmodulesFolders(
-            Array.isArray(b.module?.terraformSubmodulesFolders)
-              ? b.module.terraformSubmodulesFolders
-              : [],
-          );
-        } else {
-          setExistingImport(null);
-        }
+
+        setExistingImport({ source: body.source, module: body.module });
+        // Show what is actually stored rather than the freshly guessed values.
+        setModuleName((prev) => body.source?.name ?? prev);
+        setModuleDescription(body.source.description ?? "");
+        setTags(body.source.tags ?? []);
+        setTerraformRootFolder(
+          (prev) => body.module?.terraformRootFolder ?? prev ?? ".",
+        );
+        setTerraformSubmodulesFolders(
+          body.module.terraformSubmodulesFolders ?? [],
+        );
       })
-      .catch(() => setExistingImport(null))
-      .finally(() => setExistingImportLoading(false));
-    // We intentionally include terraformRootFolder: if the user changes it, we re-check.
+      .catch(() => {
+        if (!controller.signal.aborted) setExistingImport(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setExistingImportLoading(false);
+      });
+
+    return () => controller.abort();
+    // terraformRootFolder is a dependency on purpose: changing it re-checks.
   }, [
     open,
     user?.id,
@@ -724,13 +729,13 @@ export function ImportModuleDialog({
 
         {step === 1 ? (
           <>
-            <div className="relative">
+            <div className="relative rounded-md border border-input bg-background focus-within:border-primary">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="Search repositories…"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10"
+                className="border-0 pl-10 focus-visible:ring-0 focus-visible:ring-offset-0"
                 aria-label="Search repositories"
               />
             </div>

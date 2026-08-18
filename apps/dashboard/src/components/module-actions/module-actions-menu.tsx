@@ -44,6 +44,8 @@ interface ModuleActionsMenuProps {
   /** Stops the click bubbling into a surrounding link (overview cards). */
   stopPropagation?: boolean;
   align?: "start" | "end";
+  /** Detail pages expose deletion separately from repository navigation. */
+  deleteOnly?: boolean;
 }
 
 /**
@@ -78,6 +80,7 @@ export function ModuleActionsMenu({
   onDeleted,
   stopPropagation = false,
   align = "end",
+  deleteOnly = false,
 }: ModuleActionsMenuProps) {
   const [deleteScope, setDeleteScope] = useState<DeleteScope | null>(null);
   const [copied, setCopied] = useState(false);
@@ -104,7 +107,7 @@ export function ModuleActionsMenu({
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <Button
             aria-label={`Actions for ${module.name}`}
@@ -119,47 +122,53 @@ export function ModuleActionsMenu({
         </DropdownMenuTrigger>
 
         <DropdownMenuContent align={align} className="w-60" onClick={swallow}>
-          <DropdownMenuItem onSelect={handleCopySnippet}>
-            {copied ? (
-              <Check className="mr-2 h-4 w-4 text-emerald-600" />
-            ) : (
-              <Copy className="mr-2 h-4 w-4" />
-            )}
-            {copied ? "Copied!" : "Copy module source"}
-          </DropdownMenuItem>
+          {!deleteOnly ? (
+            <>
+              <DropdownMenuItem onSelect={handleCopySnippet}>
+                {copied ? (
+                  <Check className="mr-2 h-4 w-4 text-emerald-600" />
+                ) : (
+                  <Copy className="mr-2 h-4 w-4" />
+                )}
+                {copied ? "Copied!" : "Copy module source"}
+              </DropdownMenuItem>
 
-          {module.isSubmodule && module.parentModuleId ? (
-            <DropdownMenuItem asChild>
-              <Link
-                href={`/modules/${encodeURIComponent(module.parentModuleId)}`}
-              >
-                <CornerLeftUp className="mr-2 h-4 w-4" />
-                Go to parent module
-              </Link>
-            </DropdownMenuItem>
+              {module.isSubmodule && module.parentModuleId ? (
+                <DropdownMenuItem asChild>
+                  <Link
+                    href={`/modules/${encodeURIComponent(module.parentModuleId)}`}
+                  >
+                    <CornerLeftUp className="mr-2 h-4 w-4" />
+                    Go to parent module
+                  </Link>
+                </DropdownMenuItem>
+              ) : null}
+
+              {module.repoUrl || module.refUrl ? (
+                <DropdownMenuSeparator />
+              ) : null}
+
+              {module.repoUrl ? (
+                <DropdownMenuItem asChild>
+                  <a href={module.repoUrl} rel="noreferrer" target="_blank">
+                    <ExternalLink className="mr-2 h-4 w-4" />
+                    Open repository
+                  </a>
+                </DropdownMenuItem>
+              ) : null}
+
+              {module.refUrl && module.versionTag ? (
+                <DropdownMenuItem asChild>
+                  <a href={module.refUrl} rel="noreferrer" target="_blank">
+                    <ExternalLink className="mr-2 h-4 w-4" />
+                    Open at {module.versionTag}
+                  </a>
+                </DropdownMenuItem>
+              ) : null}
+
+              <DropdownMenuSeparator />
+            </>
           ) : null}
-
-          {module.repoUrl || module.refUrl ? <DropdownMenuSeparator /> : null}
-
-          {module.repoUrl ? (
-            <DropdownMenuItem asChild>
-              <a href={module.repoUrl} rel="noreferrer" target="_blank">
-                <ExternalLink className="mr-2 h-4 w-4" />
-                Open repository
-              </a>
-            </DropdownMenuItem>
-          ) : null}
-
-          {module.refUrl && module.versionTag ? (
-            <DropdownMenuItem asChild>
-              <a href={module.refUrl} rel="noreferrer" target="_blank">
-                <ExternalLink className="mr-2 h-4 w-4" />
-                Open at {module.versionTag}
-              </a>
-            </DropdownMenuItem>
-          ) : null}
-
-          <DropdownMenuSeparator />
 
           {hasMultipleVersions ? (
             <>

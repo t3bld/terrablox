@@ -25,7 +25,6 @@ import {
   useState,
 } from "react";
 
-import { ConnectionLegend } from "./connection-legend";
 import { KeepSelectionInView } from "./keep-selection-in-view";
 import { ResetLayoutButton } from "./reset-layout-button";
 
@@ -703,15 +702,6 @@ export function ArchitectureDiagram({
     });
   }, [flowNodes, highlight, highlightedId]);
 
-  const highlightedLabel = useMemo(
-    () =>
-      highlightedId
-        ? (nodes.find((node) => node.id === highlightedId)?.label ??
-          highlightedId)
-        : "",
-    [highlightedId, nodes],
-  );
-
   return (
     <ReactFlowProvider>
       <div
@@ -742,16 +732,6 @@ export function ArchitectureDiagram({
             nodeId={highlightedId}
             viewportMoved={viewportMoved}
           />
-          {highlight ? (
-            <Panel position="top-left">
-              <ConnectionLegend
-                hasIncoming={highlight.incoming > 0}
-                hasOutgoing={highlight.outgoing > 0}
-                label={highlightedLabel}
-                onClear={onPaneClick}
-              />
-            </Panel>
-          ) : null}
           <Background className="bg-background" gap={24} />
           <Controls showInteractive={false} />
           {hasMovedNodes || Object.keys(nodePositions ?? {}).length > 0 ? (

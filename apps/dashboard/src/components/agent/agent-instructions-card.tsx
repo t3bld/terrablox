@@ -11,18 +11,9 @@ import {
 } from "@terrablox/ui/card";
 import { Label } from "@terrablox/ui/label";
 import { Textarea } from "@terrablox/ui/textarea";
-import { Check, Loader2, Sparkles } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { readJson } from "@/lib/read-json";
-
-/**
- * What the agent is told before it sees a project.
- *
- * Instructions and skills sit in one card because they are the same mechanism
- * seen from two angles: both end up in the system prompt, and both are saved by
- * the same button. Splitting them would suggest they behave differently.
- */
 
 interface Skill {
   id: string;
@@ -34,7 +25,6 @@ interface Settings {
   instructions: string;
   skills: string[];
   catalogue: Skill[];
-  /** Present instead of the payload when the request failed. */
   error?: string;
 }
 
@@ -104,20 +94,16 @@ export function AgentInstructionsCard() {
   const overLimit = instructions.length > MAX_LENGTH;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Sparkles className="h-5 w-5" />
-          Instructions and skills
-        </CardTitle>
-        <CardDescription>
-          Added to the agent's system prompt on every turn, so it applies to all
-          of your projects.
-        </CardDescription>
-      </CardHeader>
-
-      <CardContent className="space-y-6">
-        <div className="space-y-2">
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle>Instructions</CardTitle>
+          <CardDescription>
+            Added to the agent&apos;s system prompt on every turn, so it applies
+            to all of your projects.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
           <Label htmlFor="agent-instructions">Your own instructions</Label>
           <Textarea
             id="agent-instructions"
@@ -134,16 +120,19 @@ export function AgentInstructionsCard() {
           >
             {instructions.length} of {MAX_LENGTH} characters
           </p>
-        </div>
+        </CardContent>
+      </Card>
 
-        <div className="space-y-2">
-          <Label>Skills</Label>
-          <p className="text-sm text-muted-foreground">
+      <Card>
+        <CardHeader>
+          <CardTitle>Skills</CardTitle>
+          <CardDescription>
             Ready-made rules we maintain. Enabled skills are added to the prompt
             in full.
-          </p>
-
-          <div className="grid gap-2 pt-1">
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-2">
             {settings?.catalogue.map((skill) => {
               const on = skills.includes(skill.id);
 
@@ -163,10 +152,7 @@ export function AgentInstructionsCard() {
                         ? "border-primary bg-primary text-primary-foreground"
                         : "border-input"
                     }`}
-                  >
-                    {on ? <Check className="size-3" /> : null}
-                  </span>
-
+                  />
                   <span className="grid gap-0.5">
                     <span className="text-sm font-medium">{skill.name}</span>
                     <span className="text-xs text-muted-foreground">
@@ -177,27 +163,21 @@ export function AgentInstructionsCard() {
               );
             })}
           </div>
-        </div>
 
-        {error ? (
-          <p className="text-sm text-destructive" role="alert">
-            {error}
-          </p>
-        ) : null}
+          {error ? (
+            <p className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          ) : null}
 
-        <div className="flex items-center gap-3">
-          <Button onClick={save} disabled={saving || overLimit || !settings}>
-            {saving ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Check className="mr-2 h-4 w-4" />
-            )}
-            Save
-          </Button>
-
-          {saved ? <Badge variant="success">Saved</Badge> : null}
-        </div>
-      </CardContent>
-    </Card>
+          <div className="flex items-center gap-3">
+            <Button onClick={save} disabled={saving || overLimit || !settings}>
+              {saving ? "Saving..." : "Save"}
+            </Button>
+            {saved ? <Badge variant="success">Saved</Badge> : null}
+          </div>
+        </CardContent>
+      </Card>
+    </>
   );
 }

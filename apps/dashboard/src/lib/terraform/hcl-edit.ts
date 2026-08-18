@@ -249,9 +249,7 @@ export function renderModuleBlock(input: ModuleBlockInput): string {
 /** Pads names to a common width, the way `terraform fmt` does. */
 function alignAssignments(entries: Array<[string, string]>): string[] {
   const width = entries.reduce((max, [name]) => Math.max(max, name.length), 0);
-  return entries.map(
-    ([name, value]) => `  ${name.padEnd(width)} = ${value}`,
-  );
+  return entries.map(([name, value]) => `  ${name.padEnd(width)} = ${value}`);
 }
 
 export function appendBlock(source: string, block: string): string {
@@ -362,14 +360,20 @@ function findAttribute(
   block: HclBlock,
   name: string,
 ): AttributeSpan | null {
-  return listBlockAttributes(source, block).find((a) => a.name === name) ?? null;
+  return (
+    listBlockAttributes(source, block).find((a) => a.name === name) ?? null
+  );
 }
 
 /**
  * A value ends at the first newline that is not inside a bracketed expression,
  * which is how HCL itself delimits attributes.
  */
-function findValueEnd(source: string, valueStart: number, limit: number): number {
+function findValueEnd(
+  source: string,
+  valueStart: number,
+  limit: number,
+): number {
   let i = valueStart;
   let depth = 0;
 

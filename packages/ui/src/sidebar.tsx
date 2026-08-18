@@ -70,6 +70,20 @@ const SidebarProvider = React.forwardRef<
     const [openMobile, setOpenMobile] = React.useState(false);
     const [_open, _setOpen] = React.useState(defaultOpen);
     const open = openProp ?? _open;
+
+    React.useEffect(() => {
+      if (openProp !== undefined) return;
+
+      const savedState = document.cookie
+        .split("; ")
+        .find((cookie) => cookie.startsWith(`${SIDEBAR_COOKIE_NAME}=`))
+        ?.split("=")[1];
+
+      if (savedState === "true" || savedState === "false") {
+        _setOpen(savedState === "true");
+      }
+    }, [openProp]);
+
     const setOpen = React.useCallback(
       (value: boolean | ((value: boolean) => boolean)) => {
         const openState = typeof value === "function" ? value(open) : value;
@@ -79,7 +93,10 @@ const SidebarProvider = React.forwardRef<
           _setOpen(openState);
         }
 
-        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+        // CookieStore is not available in Safari yet, and this only persists a
+        // UI preference. SameSite=Lax keeps it off cross-site requests.
+        // biome-ignore lint/suspicious/noDocumentCookie: CookieStore lacks Safari support
+        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}; SameSite=Lax`;
       },
       [setOpenProp, open],
     );

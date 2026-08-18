@@ -11,9 +11,11 @@ import {
   AlertCircle,
   ExternalLink,
   GitCommit,
+  History,
   Layers,
   PanelRightOpen,
   Rocket,
+  Wallet,
   Workflow,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -26,10 +28,14 @@ import {
   tabPanelProps,
 } from "@/components/layout/tabs-nav";
 import { ChatPanel } from "@/components/project-detail/chat-panel";
+import { CostPanel } from "@/components/project-detail/cost-panel";
 import { DeployPanel } from "@/components/project-detail/deploy-panel";
+import { HistoryPanel } from "@/components/project-detail/history-panel";
+import { IntegrationGate } from "@/components/project-detail/integration-gate";
 import { ModuleInspector } from "@/components/project-detail/module-inspector";
 import { ModuleLibrary } from "@/components/project-detail/module-library";
 import { StatePanel } from "@/components/project-detail/state-panel";
+import { useIntegrationStatus } from "@/lib/integrations/use-integration-status";
 import type {
   ProjectDto,
   ProjectGraph,
@@ -37,13 +43,11 @@ import type {
   ProjectMutationResult,
 } from "@/lib/projects/types";
 
-type ProjectTab = "code" | "deploy" | "state";
+type ProjectTab = "code" | "deploy" | "state" | "costs" | "history";
 
-const TABS: TabDefinition<ProjectTab>[] = [
-  { value: "code", label: "Code", icon: Workflow },
-  { value: "deploy", label: "Deploy", icon: Rocket },
-  { value: "state", label: "State", icon: Layers },
-];
+const AWS_REASON = "Connect an AWS account in Account settings to use this tab";
+const INFRACOST_REASON =
+  "Connect Infracost in Account settings to use this tab";
 
 export default function ProjectDetailPage({
   params,
@@ -61,6 +65,45 @@ export default function ProjectDetailPage({
   const [lastCommit, setLastCommit] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  const {
+    status: integrations,
+    loading: integrationsLoading,
+    refresh: refreshIntegrations,
+  } = useIntegrationStatus();
+
+  const awsReady = integrations?.aws.connected ?? false;
+  const infracostReady = integrations?.infracost.connected ?? false;
+
+  // Locks are only shown once the answer is known, so a slow request cannot
+  // make a connected account look missing.
+  const tabs = useMemo<TabDefinition<ProjectTab>[]>(
+    () => [
+      { value: "code", label: "Code", icon: Workflow },
+      {
+        value: "deploy",
+        label: "Deploy",
+        icon: Rocket,
+        locked: !integrationsLoading && !awsReady,
+        lockedReason: AWS_REASON,
+      },
+      {
+        value: "state",
+        label: "State",
+        icon: Layers,
+        locked: !integrationsLoading && !awsReady,
+        lockedReason: AWS_REASON,
+      },
+      {
+        value: "costs",
+        label: "Costs",
+        icon: Wallet,
+        locked: !integrationsLoading && !infracostReady,
+        lockedReason: INFRACOST_REASON,
+      },
+      { value: "history", label: "History", icon: History },
+    ],
+    [awsReady, infracostReady, integrationsLoading],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -222,25 +265,8 @@ export default function ProjectDetailPage({
             { label: "Projects", href: "/projects" },
             { label: project?.name ?? "Project" },
           ]}
-          meta={
-            project ? (
-              <a
-                href={
-                  project.repoUrl ??
-                  `https://github.com/${project.repoFullName}`
-                }
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-1 hover:text-foreground"
-              >
-                {project.repoFullName}
-                <span className="opacity-60">@{project.repoBranch}</span>
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            ) : null
-          }
           actions={
-            <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
               {busy ? "Committing…" : null}
               {lastCommit && !busy ? (
                 <>
@@ -248,12 +274,28 @@ export default function ProjectDetailPage({
                   {lastCommit}
                 </>
               ) : null}
-            </span>
+              {project ? (
+                <a
+                  href={
+                    project.repoUrl ??
+                    `https://github.com/${project.repoFullName}`
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex max-w-[min(42vw,28rem)] items-center gap-1 truncate hover:text-foreground"
+                >
+                  <span className="truncate">
+                    {project.repoFullName}@{project.repoBranch}
+                  </span>
+                  <ExternalLink className="h-3 w-3 shrink-0" />
+                </a>
+              ) : null}
+            </div>
           }
         />
 
         <TabsNav
-          tabs={TABS}
+          tabs={tabs}
           value={tab}
           onChange={setTab}
           idPrefix="project"
@@ -272,14 +314,73 @@ export default function ProjectDetailPage({
             {...tabPanelProps("project", "deploy")}
             className="min-h-0 flex-1 overflow-y-auto"
           >
-            <DeployPanel projectId={projectId} project={project} />
+            {integrationsLoading ? (
+              <Skeleton className="m-6 h-64" />
+            ) : awsReady ? (
+              <DeployPanel projectId={projectId} project={project} />
+            ) : (
+              <IntegrationGate
+                blocked={[
+                  "Generating the GitHub Actions pipeline for this project",
+                  "Starting a plan or an apply from here",
+                  "Reading which role and state bucket the pipeline should use",
+                ]}
+                explanation="Deployments run in your own AWS account. TerraBlox never holds AWS keys, so it needs the account you connected to know where to deploy."
+                onRecheck={() => void refreshIntegrations()}
+                provider="AWS"
+              />
+            )}
           </div>
         ) : tab === "state" ? (
           <div
             {...tabPanelProps("project", "state")}
             className="min-h-0 flex-1 overflow-y-auto"
           >
-            <StatePanel projectId={projectId} />
+            {integrationsLoading ? (
+              <Skeleton className="m-6 h-64" />
+            ) : awsReady ? (
+              <StatePanel projectId={projectId} />
+            ) : (
+              <IntegrationGate
+                blocked={[
+                  "The inventory of what is really running",
+                  "Links into the AWS console for each resource",
+                  "Refreshing the snapshot after an apply",
+                ]}
+                explanation="This tab shows what exists in your AWS account, which only means something once an account is connected."
+                onRecheck={() => void refreshIntegrations()}
+                provider="AWS"
+              />
+            )}
+          </div>
+        ) : tab === "costs" ? (
+          <div
+            {...tabPanelProps("project", "costs")}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            {integrationsLoading ? (
+              <Skeleton className="m-6 h-64" />
+            ) : infracostReady ? (
+              <CostPanel projectId={projectId} />
+            ) : (
+              <IntegrationGate
+                blocked={[
+                  "The monthly estimate for what this project would run",
+                  "Per-module and per-resource pricing",
+                  "Re-pricing the plan after a change",
+                ]}
+                explanation="Estimates are priced through Infracost with your own API key. TerraBlox keeps no shared key, so nothing can be priced until you add one."
+                onRecheck={() => void refreshIntegrations()}
+                provider="Infracost"
+              />
+            )}
+          </div>
+        ) : tab === "history" ? (
+          <div
+            {...tabPanelProps("project", "history")}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <HistoryPanel projectId={projectId} />
           </div>
         ) : (
           <div

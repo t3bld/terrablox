@@ -1,42 +1,18 @@
 "use client";
 
 import { Badge } from "@terrablox/ui/badge";
-import { Button } from "@terrablox/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@terrablox/ui/card";
-import { AlertTriangle, Bot, Check, Loader2, PlayCircle } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
 import { useEffect, useState } from "react";
 
 import type { CopilotPlan } from "@/lib/agent/copilot-plan";
-import { readJson } from "@/lib/read-json";
-
-/**
- * Copilot is the model behind the project agent, on the user's own licence.
- *
- * Per user rather than per company: the subscription belongs to the person, so
- * two colleagues on the same instance can genuinely differ here.
- */
 
 interface CopilotStatus {
   githubLinked: boolean;
   plan: CopilotPlan | null;
 }
 
-interface TestResult {
-  ok: boolean;
-  reply?: string;
-  error?: string;
-}
-
 export function CopilotCard() {
   const [status, setStatus] = useState<CopilotStatus | null>(null);
-  const [testing, setTesting] = useState(false);
-  const [result, setResult] = useState<TestResult | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,46 +22,17 @@ export function CopilotCard() {
       .then((body) => {
         if (!cancelled && body) setStatus(body as CopilotStatus);
       })
-      .catch(() => {
-        // Leave the card in its loading state; the test button still works.
-      });
+      .catch(() => undefined);
 
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const runTest = async () => {
-    setTesting(true);
-    setResult(null);
-
-    try {
-      const res = await fetch("/api/copilot/status", { method: "POST" });
-      setResult(await readJson<TestResult>(res));
-    } catch (e) {
-      setResult({
-        ok: false,
-        error: e instanceof Error ? e.message : "The check failed",
-      });
-    } finally {
-      setTesting(false);
-    }
-  };
-
-  const ready = status?.githubLinked ?? false;
-
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Bot className="h-5 w-5" />
-          GitHub Copilot
-        </CardTitle>
-        <CardDescription>
-          The project agent runs on your own Copilot subscription. TerraBlox
-          stores no model keys and pays for no tokens, so your organisation's
-          Copilot policies apply unchanged.
-        </CardDescription>
+        <CardTitle>GitHub Copilot</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {status ? (
@@ -97,59 +44,43 @@ export function CopilotCard() {
             />
           </ul>
         ) : (
-          <div className="flex items-center gap-2 text-muted-foreground text-sm">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Checking…
-          </div>
+          <p className="text-muted-foreground text-sm">Checking...</p>
         )}
 
         {status?.plan ? <PlanSummary plan={status.plan} /> : null}
 
-        <p className="text-muted-foreground text-xs">
-          A seat can only be confirmed by using it — the check below sends one
-          short prompt through your licence.
-        </p>
-
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={runTest}
-          disabled={testing || !ready}
-        >
-          {testing ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <PlayCircle className="mr-2 h-4 w-4" />
-          )}
-          Test my Copilot access
-        </Button>
-
-        {result ? (
-          <div
-            className={`flex gap-2 rounded-md border p-3 text-sm ${
-              result.ok
-                ? "border-emerald-500/40 bg-emerald-500/5"
-                : "border-destructive/40 bg-destructive/5 text-destructive"
-            }`}
-          >
-            {result.ok ? (
-              <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-            ) : (
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            )}
-            <span>
-              {result.ok
-                ? "Copilot answered. The agent is ready to use."
-                : result.error}
-            </span>
-          </div>
+        {status?.plan?.organizations.length ? (
+          <p className="text-sm">
+            Organisation settings:{" "}
+            {status.plan.organizations.map((org, index) => (
+              <span key={org}>
+                {index > 0 ? ", " : null}
+                <a
+                  className="text-primary underline underline-offset-4 hover:text-primary/80"
+                  href={`https://github.com/orgs/${encodeURIComponent(org)}/settings/copilot`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {org}
+                </a>
+              </span>
+            ))}
+          </p>
         ) : null}
+
+        <a
+          className="block text-sm text-primary underline underline-offset-4 hover:text-primary/80"
+          href="https://github.com/settings/copilot/features"
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open your Copilot settings on GitHub
+        </a>
       </CardContent>
     </Card>
   );
 }
 
-/** Everything here is GitHub's own accounting, so it counts what you spend elsewhere too. */
 function PlanSummary({ plan }: { plan: CopilotPlan }) {
   const premium = plan.premium;
   const used = premium ? Math.min(100, 100 - premium.percentRemaining) : 0;
@@ -175,7 +106,7 @@ function PlanSummary({ plan }: { plan: CopilotPlan }) {
             <span className="text-muted-foreground">
               {premium.unlimited
                 ? "Unlimited"
-                : `${formatCount(premium.used)} of ${formatCount(premium.entitlement)} used`}
+                : `${formatCount(premium.used)} of ${formatCount(premium.entitlement)} used (${formatPercent(used)})`}
             </span>
           </div>
 
@@ -188,7 +119,8 @@ function PlanSummary({ plan }: { plan: CopilotPlan }) {
                 />
               </div>
               <p className="text-muted-foreground text-xs">
-                {formatCount(premium.remaining)} left
+                {formatCount(premium.remaining)} left (
+                {formatPercent(premium.percentRemaining)} remaining)
                 {plan.resetsOn
                   ? `, resets on ${formatDate(plan.resetsOn)}`
                   : ""}
@@ -213,6 +145,10 @@ function formatCount(value: number): string {
   return value.toLocaleString();
 }
 
+function formatPercent(value: number): string {
+  return `${Math.round(value)}%`;
+}
+
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
@@ -234,13 +170,9 @@ function StatusLine({
   hint: string;
 }) {
   return (
-    <li className="flex items-start gap-2">
-      {ok ? (
-        <Check className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-      ) : (
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-      )}
-      <span>
+    <li>
+      <span className={ok ? "text-emerald-600" : "text-amber-600"}>
+        {ok ? "Connected: " : "Not connected: "}
         {label}
         {ok ? null : (
           <span className="block text-muted-foreground text-xs">{hint}</span>

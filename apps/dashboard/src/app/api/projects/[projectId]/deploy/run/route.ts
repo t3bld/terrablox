@@ -11,6 +11,7 @@ import {
 } from "@/lib/github/repo-files";
 import {
   APPLY_WORKFLOW_PATH,
+  COST_WORKFLOW_PATH,
   missingDeploySettings,
   PLAN_WORKFLOW_PATH,
   STATE_WORKFLOW_PATH,
@@ -22,10 +23,14 @@ const WORKFLOW_BY_KIND: Record<DeployRunKind, string> = {
   plan: PLAN_WORKFLOW_PATH,
   apply: APPLY_WORKFLOW_PATH,
   state: STATE_WORKFLOW_PATH,
+  cost: COST_WORKFLOW_PATH,
 };
 
 function parseKind(value: unknown): DeployRunKind | null {
-  return value === "plan" || value === "apply" || value === "state"
+  return value === "plan" ||
+    value === "apply" ||
+    value === "state" ||
+    value === "cost"
     ? value
     : null;
 }

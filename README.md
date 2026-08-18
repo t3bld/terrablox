@@ -8,7 +8,7 @@
     ·
     <a href="https://github.com/t3bld/terrablox/issues">Issues</a>
     ·
-    <a href="https://github.com/ttt/issues">Documentation</a>
+   <a href="https://github.com/t3bld/terrablox/tree/main/docs">Documentation</a>
     ·
     <a href="https://github.com/t3bld/terrablox?tab=AGPL-3.0-1-ov-file">License</a>
     ·
@@ -18,24 +18,36 @@
 
 ## ✨ Key Features
 
-- **Terraform Analyzer**: Get a clear understanding of the cloud infrastructure and its dependencies 
+- **Terraform Analyzer**: Get a clear understanding of cloud infrastructure and its dependencies
+- **Architecture Graphs**: Explore resources, modules and connections visually
+- **Module Browser**: Read Terraform modules from GitHub without copying their source into the database
+- **AWS Integration**: Inspect AWS accounts through short-lived, read-only connections
+- **AI Assistant**: Use the GitHub Copilot SDK to work with infrastructure context
+- **Cost Structure**: See which resources are recurring, usage-based or free, and which inputs drive their cost
 
 ## ⚙️ Tech Stack
 
 - [Turborepo](https://turborepo.com/) – Monorepo
 - [pnpm](https://pnpm.io/) – Package Manager
 - [Next.js](https://nextjs.org/) – React Framework
+- [React](https://react.dev/) – UI library
 - [TypeScript](https://www.typescriptlang.org/) – Language
 - [TailwindCSS](https://tailwindcss.com/) – Styling
-- [shadcn/ui](https://ui.shadcn.com/) - UI Components
-- [Prisma](https://prisma.io/) - ORM
+- [shadcn/ui](https://ui.shadcn.com/) – UI components
+- [React Flow](https://reactflow.dev/) and [Dagre](https://github.com/dagrejs/dagre) – Graph rendering and layout
+- [Prisma](https://prisma.io/) – ORM
 - [PostgreSQL](https://www.postgresql.org/) – Database (runs locally via Docker)
 - [Better Auth](https://better-auth.com/) – Authentication (self-hosted, same database)
+- [CDKTF HCL2JSON](https://github.com/hashicorp/terraform-cdk/tree/main/packages/@cdktf/hcl2json) – Terraform HCL parsing
+- [AWS SDK for JavaScript](https://github.com/aws/aws-sdk-js-v3) – AWS account and CloudFormation access
+- [GitHub Copilot SDK](https://github.com/github/copilot-sdk) – AI assistant integration
+- [Zod](https://zod.dev/) – Runtime validation
+- [Biome](https://biomejs.dev/) – Formatting and linting
 
-TerraBlox runs **entirely on your own machine** — there is no hosting provider, no managed
-database and no external auth service. Everything (app, database, authentication) runs
-locally via `pnpm dev` and Docker. For all service integrations you can implement your own
-adapters or use the provided default ones.
+TerraBlox is designed to be **self-hosted** — there is no required hosted control plane,
+managed database or external auth service. For local development, the app, database and
+authentication run via `pnpm dev` and Docker. For all service integrations you can implement
+your own adapters or use the provided default ones.
 
 ## 🚀 Quick Start
 
@@ -60,7 +72,7 @@ server. On Windows, run it from WSL or Git Bash.
 
 ```bash
 # 1. Start the local PostgreSQL database (host port 5433)
-docker compose up -d
+docker compose -f docker-compose.local.yml up -d
 
 # 2. Install dependencies
 pnpm install
@@ -102,14 +114,14 @@ a single repo-root `.env` is explicitly discouraged.
 
 ### Database
 
-Postgres runs in Docker (see `docker-compose.yml`) and is published on host port
+Postgres runs in Docker (see `docker-compose.local.yml`) and is published on host port
 **5433** so it does not clash with a system-wide Postgres on 5432. Data lives in the
 named volume `terrablox-pgdata`.
 
 ```bash
-pnpm db:up                  # start   (alias for docker compose up -d)
-pnpm db:down                # stop, keeps data (alias for docker compose down)
-docker compose down -v      # stop and wipe all data
+pnpm db:up                  # start   (alias for docker compose -f docker-compose.local.yml up -d)
+pnpm db:down                # stop, keeps data (alias for docker compose -f docker-compose.local.yml down)
+docker compose -f docker-compose.local.yml down -v   # stop and wipe all data
 pnpm db:migrate             # apply migrations
 pnpm db:push                # sync the Prisma schema without a migration (prototyping)
 pnpm db:reset               # drop everything and re-apply migrations

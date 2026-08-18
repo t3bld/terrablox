@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import "../styles/globals.css";
 // React Flow ships its own stylesheet; without it the graph renders unstyled.
 import "@terrablox/graph/styles.css";
+import { NavigationProgress } from "@/components/layout/navigation-progress";
 import { Providers } from "./providers";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -20,7 +21,10 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
-        <Providers>{children}</Providers>
+        <Providers>
+          <NavigationProgress />
+          {children}
+        </Providers>
       </body>
     </html>
   );

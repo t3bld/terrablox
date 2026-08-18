@@ -1,4 +1,4 @@
-import { type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 export interface UserIdentity {
   /** Provider id as configured on the server, e.g. "github". */

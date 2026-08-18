@@ -2,20 +2,18 @@
 
 import { useAuth } from "@terrablox/auth/hooks";
 import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@terrablox/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
-import { User2 } from "lucide-react";
 import { useEffect } from "react";
 import { AwsAccountsCard } from "@/components/account/aws-accounts-card";
+import { InfracostCard } from "@/components/account/infracost-card";
 import { AppSidebar } from "@/components/app-sidebar";
 import { GithubAccountCard } from "@/components/github-account-card";
 import { PageHeader } from "@/components/layout/page-header";
+import {
+  PageSkeleton,
+  SettingsSkeleton,
+} from "@/components/layout/page-skeleton";
 
 export default function AccountPage() {
   const { user, isAuthenticated, refreshSession } = useAuth();
@@ -38,7 +36,11 @@ export default function AccountPage() {
   }, [isAuthenticated, refreshSession]);
 
   if (!isAuthenticated || !user) {
-    return null;
+    return (
+      <PageSkeleton breadcrumbs={[{ label: "Account Settings" }]}>
+        <SettingsSkeleton count={3} />
+      </PageSkeleton>
+    );
   }
 
   const metadata = (user.metadata ?? {}) as Record<string, unknown>;
@@ -49,19 +51,13 @@ export default function AccountPage() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <PageHeader breadcrumbs={[{ label: "Account" }]} />
+        <PageHeader breadcrumbs={[{ label: "Account Settings" }]} />
 
         <main className="flex-1 p-6">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <Card className="lg:col-span-2">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <Card>
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <User2 className="h-5 w-5" />
-                  Your profile
-                </CardTitle>
-                <CardDescription>
-                  Basic information from your authenticated session.
-                </CardDescription>
+                <CardTitle>Your profile</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="flex items-start gap-4">
@@ -84,9 +80,6 @@ export default function AccountPage() {
                     <div className="text-sm text-muted-foreground">
                       {user.email}
                     </div>
-                    <div className="text-xs text-muted-foreground mt-2">
-                      User ID: <span className="font-mono">{user.id}</span>
-                    </div>
                     {user.createdAt ? (
                       <div className="text-xs text-muted-foreground">
                         Created: {user.createdAt.toLocaleString()}
@@ -98,7 +91,7 @@ export default function AccountPage() {
             </Card>
 
             <GithubAccountCard />
-
+            <InfracostCard />
             <div className="lg:col-span-3">
               <AwsAccountsCard />
             </div>

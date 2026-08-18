@@ -112,15 +112,15 @@ export default function CompanyPage() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <PageHeader breadcrumbs={[{ label: "Company" }]} />
+        <PageHeader breadcrumbs={[{ label: "Company Settings" }]} />
 
         <main className="flex-1 p-6">
-          <div className="mx-auto max-w-3xl space-y-6">
+          <div className="w-full space-y-6">
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Building2 className="h-5 w-5" />
-                  Company settings
+                  Company Settings
                 </CardTitle>
                 <CardDescription>
                   Repository conventions shared by everything you import. The

@@ -25,6 +25,35 @@ sidebar toggle, the breadcrumb trail and the tab styling are decided once, here.
 7. **Use design tokens** (`text-muted-foreground`, `border`, `bg-primary/5`,
    `@terrablox/ui` components), never raw hex colours or one-off pixel values.
 
+## Loading strategy
+
+A navigation has three phases. Each one needs its own answer, and all three are
+built the same way on every screen.
+
+| Phase | What the user waits for | What covers it |
+| --- | --- | --- |
+| Click → route commits | The router resolving and fetching the segment | `NavigationProgress` |
+| Segment renders | The `loading.tsx` boundary | `PageSkeleton` |
+| Page fetches its data | The page's own `fetch` | The same skeleton, in the page |
+
+Rules:
+
+1. **Every route gets a `loading.tsx`.** Without it the previous page stays
+   frozen on screen for the whole navigation.
+2. **Build it from `PageSkeleton`**, so the sidebar and header stay put and only
+   the body swaps. A skeleton that re-renders the shell reads as a second page
+   load.
+3. **The route skeleton and the in-page loading state must be the same
+   component.** They run back to back; differing layouts read as a flicker.
+   `ModuleDetailSkeleton` is the reference case.
+4. **Never `return null` while something loads.** A blank screen is the one
+   state that looks broken rather than busy. Render the skeleton instead.
+5. **Skeletons, not spinners**, wherever the final layout is known — they show
+   what is coming and avoid the layout shift a spinner leaves behind.
+6. `NavigationProgress` waits ~120ms before appearing, so navigations that are
+   already instant do not flash a bar.
+
+
 ## Usage
 
 ```tsx

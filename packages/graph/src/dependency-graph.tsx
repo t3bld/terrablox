@@ -28,7 +28,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { ConnectionLegend } from "./connection-legend";
 import { KeepSelectionInView } from "./keep-selection-in-view";
 import {
   type DependencyGraphLayoutDirection,
@@ -371,15 +370,6 @@ export function DependencyGraph({
     });
   }, [flowNodes, highlight, highlightedNodeId]);
 
-  const highlightedLabel = useMemo(
-    () =>
-      highlightedNodeId
-        ? (nodes.find((node) => node.id === highlightedNodeId)?.label ??
-          highlightedNodeId)
-        : "",
-    [highlightedNodeId, nodes],
-  );
-
   const handleNodeClick = useCallback<NodeMouseHandler<DependencyFlowNode>>(
     (_event, node) => {
       onNodeClick?.(node.data.dependencyNode);
@@ -464,16 +454,6 @@ export function DependencyGraph({
                 fitViewOptions={fitViewOptions}
                 onReset={resetLayout}
                 refit={fitView}
-              />
-            </Panel>
-          ) : null}
-          {highlight && onPaneClick ? (
-            <Panel position="top-left">
-              <ConnectionLegend
-                hasIncoming={highlight.incoming > 0}
-                hasOutgoing={highlight.outgoing > 0}
-                label={highlightedLabel}
-                onClear={onPaneClick}
               />
             </Panel>
           ) : null}

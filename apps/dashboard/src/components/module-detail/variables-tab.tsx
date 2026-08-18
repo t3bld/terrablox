@@ -3,16 +3,10 @@
 import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
 import { cn } from "@terrablox/ui/lib/utils";
-import {
-  ArrowDownToLine,
-  ArrowUpFromLine,
-  EyeOff,
-  SlidersHorizontal,
-} from "lucide-react";
+import { EyeOff } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import {
-  CopyButton,
   EmptyMessage,
   FieldList,
   formatDefault,
@@ -38,7 +32,6 @@ function InputRow({ variable }: { variable: ModuleVariableDto }) {
     <div className="group border-b px-4 py-3 last:border-b-0 hover:bg-muted/40">
       <div className="flex flex-wrap items-center gap-2">
         <code className="font-medium font-mono text-sm">{variable.name}</code>
-        <CopyButton label={`variable ${variable.name}`} value={variable.name} />
 
         {variable.required ? (
           <Badge variant="destructive">required</Badge>
@@ -53,7 +46,7 @@ function InputRow({ variable }: { variable: ModuleVariableDto }) {
           </Badge>
         ) : null}
 
-        <span className="ml-auto">
+        <span className="ml-auto min-w-0 max-w-full sm:max-w-[60%]">
           <TypeBadge type={variable.type} />
         </span>
       </div>
@@ -76,7 +69,7 @@ function InputRow({ variable }: { variable: ModuleVariableDto }) {
           <span className="shrink-0 pt-0.5 text-muted-foreground">Default</span>
           <code
             className={cn(
-              "min-w-0 rounded bg-muted px-1.5 py-0.5 font-mono text-foreground",
+              "min-w-0 rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground",
               isMultilineDefault &&
                 "block max-h-40 w-full overflow-auto whitespace-pre",
             )}
@@ -94,7 +87,6 @@ function OutputRow({ output }: { output: ModuleOutputDto }) {
     <div className="group border-b px-4 py-3 last:border-b-0 hover:bg-muted/40">
       <div className="flex flex-wrap items-center gap-2">
         <code className="font-medium font-mono text-sm">{output.name}</code>
-        <CopyButton label={`output ${output.name}`} value={output.name} />
         {output.sensitive ? (
           <Badge variant="warning">
             <EyeOff className="h-3 w-3" />
@@ -134,6 +126,7 @@ function HiddenMatches({ count }: { count: number }) {
 export function VariablesTab({ variables, outputs }: VariablesTabProps) {
   const [query, setQuery] = useState("");
   const [requirement, setRequirement] = useState<RequirementFilter>("all");
+  const [showFilterSettings, setShowFilterSettings] = useState(false);
   const [showInputs, setShowInputs] = useState(true);
   const [showOutputs, setShowOutputs] = useState(true);
 
@@ -193,37 +186,47 @@ export function VariablesTab({ variables, outputs }: VariablesTabProps) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+      <div className="space-y-2">
         <SearchField
           onChange={setQuery}
           placeholder="Filter inputs and outputs…"
           value={query}
         />
 
-        <fieldset
-          aria-label="Filter inputs by requirement"
-          className="flex items-center gap-1 rounded-md border p-1"
+        <button
+          aria-expanded={showFilterSettings}
+          className="text-left text-muted-foreground text-sm hover:text-foreground"
+          onClick={() => setShowFilterSettings((open) => !open)}
+          type="button"
         >
-          <SlidersHorizontal className="mx-1.5 h-3.5 w-3.5 text-muted-foreground" />
-          {(
-            [
-              ["all", `All ${variables.length}`],
-              ["required", `Required ${requiredCount}`],
-              ["optional", `Optional ${variables.length - requiredCount}`],
-            ] as const
-          ).map(([value, label]) => (
-            <Button
-              className="h-7 px-2.5 text-xs"
-              key={value}
-              onClick={() => setRequirement(value)}
-              size="sm"
-              type="button"
-              variant={requirement === value ? "secondary" : "ghost"}
-            >
-              {label}
-            </Button>
-          ))}
-        </fieldset>
+          Filter settings
+        </button>
+
+        {showFilterSettings ? (
+          <fieldset
+            aria-label="Filter inputs by requirement"
+            className="flex flex-wrap gap-1 rounded-md border p-1"
+          >
+            {(
+              [
+                ["all", `All ${variables.length}`],
+                ["required", `Required ${requiredCount}`],
+                ["optional", `Optional ${variables.length - requiredCount}`],
+              ] as const
+            ).map(([value, label]) => (
+              <Button
+                className="h-7 px-2.5 text-xs"
+                key={value}
+                onClick={() => setRequirement(value)}
+                size="sm"
+                type="button"
+                variant={requirement === value ? "secondary" : "ghost"}
+              >
+                {label}
+              </Button>
+            ))}
+          </fieldset>
+        ) : null}
       </div>
 
       {isSearching &&
@@ -241,9 +244,8 @@ export function VariablesTab({ variables, outputs }: VariablesTabProps) {
             <HiddenMatches count={filteredInputs.length} />
           ) : null
         }
-        icon={<ArrowDownToLine className="h-4 w-4" />}
         onToggle={() => setShowInputs((open) => !open)}
-        open={showInputs}
+        open={variables.length > 0 && showInputs}
         shown={filteredInputs.length}
         title="Inputs"
         total={variables.length}
@@ -268,9 +270,8 @@ export function VariablesTab({ variables, outputs }: VariablesTabProps) {
             <HiddenMatches count={filteredOutputs.length} />
           ) : null
         }
-        icon={<ArrowUpFromLine className="h-4 w-4" />}
         onToggle={() => setShowOutputs((open) => !open)}
-        open={showOutputs}
+        open={outputs.length > 0 && showOutputs}
         shown={filteredOutputs.length}
         title="Outputs"
         total={outputs.length}

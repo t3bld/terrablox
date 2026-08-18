@@ -7,6 +7,7 @@ import type {
 import { DependencyGraph } from "@terrablox/graph/dependency-graph";
 import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
+import { Skeleton } from "@terrablox/ui/skeleton";
 import {
   ArrowLeft,
   ArrowRight,
@@ -226,6 +227,7 @@ function LegendToggle({
   );
 }
 
+/** One label/value line; omitted entirely when there is nothing to show. */
 const kindLabels: Record<string, string> = {
   resource: "Resource",
   data: "Data source",
@@ -233,7 +235,6 @@ const kindLabels: Record<string, string> = {
   module: "This module",
 };
 
-/** One label/value line; omitted entirely when there is nothing to show. */
 export function ConnectionsTab({
   moduleId,
   references,
@@ -340,6 +341,7 @@ export function ConnectionsTab({
   };
 
   const [layout, setLayout] = useState<GraphLayout>({});
+  const [layoutReady, setLayoutReady] = useState(false);
   // Set once the user drags or resets, so a slow GET can never overwrite what
   // they just did. Deliberately *not* a "load finished" flag: React's strict
   // mode runs the effect twice, and the aborted first request would then
@@ -349,6 +351,7 @@ export function ConnectionsTab({
   useEffect(() => {
     userTouchedLayout.current = false;
     setLayout({});
+    setLayoutReady(false);
 
     const controller = new AbortController();
 
@@ -366,6 +369,8 @@ export function ConnectionsTab({
       } catch {
         // A missing layout is not an error worth interrupting the user for;
         // the graph simply stays on its computed arrangement.
+      } finally {
+        if (!controller.signal.aborted) setLayoutReady(true);
       }
     })();
 
@@ -509,6 +514,10 @@ export function ConnectionsTab({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selected]);
+
+  if (!layoutReady) {
+    return <Skeleton className="h-[calc(100vh-25rem)] min-h-[24rem] w-full" />;
+  }
 
   return (
     <div className="space-y-4">

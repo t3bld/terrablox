@@ -14,14 +14,10 @@ import {
 import { Boxes, ChevronDown, GitBranch, Layers } from "lucide-react";
 import Link from "next/link";
 
-import { ModuleActionsMenu } from "@/components/module-actions/module-actions-menu";
-import type { DeleteScope } from "@/lib/terraform/delete-scope";
-
 import type { RepositoryDto } from "./types";
 
 interface RepositoryCardProps {
   repository: RepositoryDto;
-  onDeleted: (moduleId: string, scope: DeleteScope) => void;
 }
 
 /** Strips the `.git` suffix and scheme so the repo reads as `owner/name`. */
@@ -35,7 +31,7 @@ function shortRepoLabel(url: string | null): string | null {
   );
 }
 
-export function RepositoryCard({ repository, onDeleted }: RepositoryCardProps) {
+export function RepositoryCard({ repository }: RepositoryCardProps) {
   const latest = repository.latestVersion;
   if (!latest) return null;
 
@@ -60,24 +56,6 @@ export function RepositoryCard({ repository, onDeleted }: RepositoryCardProps) {
                 {repoLabel}
               </div>
             ) : null}
-          </div>
-
-          <div className="relative z-10">
-            <ModuleActionsMenu
-              module={{
-                id: latest.id,
-                name: repository.name,
-                versionTag: latest.versionTag,
-                repoUrl: repository.url,
-                refUrl: latest.url,
-                terraformRootFolder: latest.terraformRootFolder,
-                isSubmodule: false,
-                parentModuleId: null,
-                versionCount: repository.versionCount,
-              }}
-              onDeleted={onDeleted}
-              stopPropagation
-            />
           </div>
         </div>
 

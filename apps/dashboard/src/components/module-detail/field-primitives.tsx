@@ -4,7 +4,8 @@ import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
 import { Input } from "@terrablox/ui/input";
 import { cn } from "@terrablox/ui/lib/utils";
-import { Check, ChevronDown, Copy, Search } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, Copy, Search } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 
 /**
@@ -56,7 +57,7 @@ export function TypeBadge({ type }: { type: string | null }) {
     <code
       className={cn(
         "rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground",
-        isComplex && "block max-w-full overflow-x-auto whitespace-pre",
+        isComplex && "block max-w-full truncate whitespace-nowrap",
       )}
       title={type}
     >
@@ -75,10 +76,10 @@ export function SearchField({
   placeholder: string;
 }) {
   return (
-    <div className="relative flex-1">
+    <div className="relative flex-1 rounded-md border border-input bg-background focus-within:border-primary">
       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       <Input
-        className="pl-9"
+        className="border-0 pl-9 focus-visible:ring-0 focus-visible:ring-offset-0"
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         type="search"
@@ -96,17 +97,19 @@ export function FieldList({
   collapsible,
   open = true,
   onToggle,
+  showToggleIcon = true,
   hint,
   children,
 }: {
   title: string;
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   total: number;
   shown: number;
   /** Turns the header into a button that folds the list away. */
   collapsible?: boolean;
   open?: boolean;
   onToggle?: () => void;
+  showToggleIcon?: boolean;
   /** Shown beside the count, e.g. why a collapsed section is worth opening. */
   hint?: React.ReactNode;
   children: React.ReactNode;
@@ -115,7 +118,7 @@ export function FieldList({
 
   const header = (
     <>
-      <span className="text-muted-foreground">{icon}</span>
+      {icon ? <span className="text-muted-foreground">{icon}</span> : null}
       <h3 className="font-semibold text-sm">{title}</h3>
       <Badge variant="secondary">
         {isFiltered ? `${shown} / ${total}` : total}
@@ -125,29 +128,25 @@ export function FieldList({
   );
 
   return (
-    // `overflow-hidden` would trap the sticky header inside the section, so the
-    // rounded corners are clipped per-child instead.
     <section className="rounded-lg border bg-card">
       {collapsible ? (
         <button
           aria-expanded={open}
-          // Sticky so that after scrolling through a long list the control that
-          // folds it away is still on screen.
           className={cn(
-            "sticky top-0 z-10 flex w-full items-center gap-2 rounded-t-lg bg-muted/95 px-4 py-2.5 text-left backdrop-blur transition-colors hover:bg-muted",
-            // A closed section is nothing but its header, so the separator
-            // would read as a second bottom edge next to the section border.
-            open ? "border-b" : "rounded-b-lg",
+            "flex w-full items-center gap-2 rounded-t-lg border-b bg-muted/30 px-4 py-2.5 text-left transition-colors hover:bg-muted/50",
+            open ? "" : "rounded-b-lg",
           )}
           onClick={onToggle}
           type="button"
         >
-          <ChevronDown
-            className={cn(
-              "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
-              !open && "-rotate-90",
-            )}
-          />
+          {showToggleIcon ? (
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                !open && "-rotate-90",
+              )}
+            />
+          ) : null}
           {header}
         </button>
       ) : (
@@ -165,5 +164,55 @@ export function EmptyMessage({ children }: { children: React.ReactNode }) {
     <p className="px-4 py-8 text-center text-sm text-muted-foreground">
       {children}
     </p>
+  );
+}
+
+/**
+ * A list row whose whole surface leads somewhere.
+ *
+ * The destination is named by the same trailing arrow used by "Used by".
+ * Rows without a destination stay plain, so a list can mix the two cleanly.
+ */
+export function LinkRow({
+  href,
+  external = false,
+  label,
+  children,
+}: {
+  href?: string | null;
+  /** Opens in a new tab and swaps the arrow for the external-link icon. */
+  external?: boolean;
+  /** Names the destination for screen readers, e.g. "Open aws provider docs". */
+  label?: string;
+  children: React.ReactNode;
+}) {
+  const row =
+    "group relative flex items-center gap-3 border-b px-4 py-3 last:border-b-0";
+
+  if (!href) return <div className={row}>{children}</div>;
+
+  // Stretched over the row rather than wrapping it, so the row stays valid HTML.
+  const stretched =
+    "shrink-0 text-muted-foreground after:absolute after:inset-0 group-hover:text-foreground";
+
+  return (
+    <div className={cn(row, "hover:bg-muted/40")}>
+      <div className="min-w-0 flex-1">{children}</div>
+      {external ? (
+        <a
+          aria-label={label}
+          className={stretched}
+          href={href}
+          rel="noreferrer"
+          target="_blank"
+        >
+          <ArrowUpRight className="h-3.5 w-3.5" />
+        </a>
+      ) : (
+        <Link aria-label={label} className={stretched} href={href}>
+          <ArrowUpRight className="h-3.5 w-3.5" />
+        </Link>
+      )}
+    </div>
   );
 }

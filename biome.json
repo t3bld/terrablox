@@ -3,15 +3,17 @@
   "files": {
     "includes": [
       "**",
-      "!!**/node_modules/**",
-      "!!**/dist/**",
-      "!!**/build/**",
-      "!!**/.next/**",
-      "!!**/.turbo/**",
-      "!!**/coverage/**",
-      "!!**/.git/**",
-      "!!**/.idea/**",
-      "!!**/*.log"
+      "!!**/node_modules",
+      "!!**/dist",
+      "!!**/build",
+      "!!**/.next",
+      "!!**/.turbo",
+      "!!**/coverage",
+      "!!**/.git",
+      "!!**/.idea",
+      "!!**/*.log",
+      "!!seed",
+      "!!**/.terraform"
     ],
     "ignoreUnknown": true
   },
@@ -27,6 +29,9 @@
     "enabled": true,
     "rules": {
       "recommended": true,
+      "complexity": {
+        "useLiteralKeys": "off"
+      },
       "suspicious": {
         "noExplicitAny": "warn"
       },
@@ -52,7 +57,9 @@
     "parser": {
       "tailwindDirectives": true
     },
-    "linter": {}
+    "linter": {
+      "enabled": false
+    }
   },
   "json": {
     "formatter": {

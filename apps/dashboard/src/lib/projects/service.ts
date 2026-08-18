@@ -31,6 +31,7 @@ import {
   usedModuleLabels,
 } from "./graph";
 import type {
+  OperationOrigin,
   ProjectGraph,
   ProjectGraphMutation,
   ProjectMutationResult,
@@ -351,8 +352,9 @@ export async function applyProjectMutation(
   token: string,
   project: Project,
   mutation: ProjectGraphMutation,
+  origin: OperationOrigin = "canvas",
 ): Promise<ProjectMutationResult> {
-  const { files } = await readProjectFiles(token, project);
+  const { files, sha: parentSha } = await readProjectFiles(token, project);
   const next = new Map(files);
 
   const { message, addedLabel } = await mutate(next, project, mutation);
@@ -368,7 +370,7 @@ export async function applyProjectMutation(
   const commit = await commitFiles(token, {
     repoFullName: project.repoFullName,
     branch: project.repoBranch,
-    message,
+    message: commitMessage(message, mutation.action, origin),
     changes,
   });
 
@@ -386,6 +388,20 @@ export async function applyProjectMutation(
     },
   });
 
+  // After the commit, so nothing is recorded that did not reach the repository.
+  await database.projectOperation.create({
+    data: {
+      projectId: project.id,
+      origin,
+      mutation: JSON.parse(JSON.stringify(mutation)),
+      summary: message,
+      commitSha: commit?.sha ?? null,
+      // The branch head the edit was computed against, not the last sha we
+      // happened to sync: a push made outside the app moves one but not the other.
+      parentSha,
+    },
+  });
+
   const graph = await loadProjectGraph(token, updated);
 
   return {
@@ -400,6 +416,25 @@ interface MutationOutcome {
   message: string;
   /** Label of a block the mutation created, so its position can be stored. */
   addedLabel?: string;
+}
+
+/** Trailer names, in the `Key: value` convention `git interpret-trailers` reads. */
+export const OPERATION_TRAILER = "TerraBlox-Operation";
+export const ORIGIN_TRAILER = "TerraBlox-Origin";
+
+/**
+ * The commit message, with the operation attached as trailers.
+ *
+ * Puts the structured form of the edit in the repository rather than only in
+ * our database, so a commit still says which operation produced it — and can be
+ * told apart from a hand-written push — if the history table is ever lost.
+ */
+function commitMessage(
+  summary: string,
+  action: string,
+  origin: OperationOrigin,
+): string {
+  return `${summary}\n\n${OPERATION_TRAILER}: ${action}\n${ORIGIN_TRAILER}: ${origin}\n`;
 }
 
 async function mutate(

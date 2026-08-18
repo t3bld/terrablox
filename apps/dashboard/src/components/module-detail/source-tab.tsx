@@ -394,10 +394,10 @@ export function SourceTab({
     <div className="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)]">
       <aside className="flex h-[640px] flex-col overflow-hidden rounded-lg border bg-card">
         <div className="border-b p-2">
-          <div className="relative">
+          <div className="relative rounded-md border border-input bg-background focus-within:border-primary">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
-              className="h-8 pl-8 text-xs"
+              className="h-8 border-0 pl-8 text-xs focus-visible:ring-0 focus-visible:ring-offset-0"
               onChange={(e) => setFilter(e.target.value)}
               placeholder="Find file…"
               type="search"

@@ -16,7 +16,7 @@ export function ModuleImportActions({
 
   return (
     <>
-      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+      <Button size="sm" onClick={() => setOpen(true)}>
         <GitBranch className="mr-2 h-4 w-4" />
         Import from GitHub
       </Button>

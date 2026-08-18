@@ -1,5 +1,8 @@
+import type { GitTreeEntry } from "@terrablox/git-import";
+import { githubProvider } from "@terrablox/git-import/github";
 import { NextResponse } from "next/server";
 
+import { routeError } from "@/lib/api/route-error";
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { analyzeTerraformFiles } from "@/lib/terraform/analyze";
 
@@ -95,25 +98,16 @@ export async function POST(req: Request) {
     );
   }
 
-  // 1) List tree (already supported by provider implementation).
-  const treeRes = await fetch(
-    `${new URL(req.url).origin}/api/git-provider/github/repos/${repoFullName}/tree?ref=${encodeURIComponent(refName)}`,
-    { headers: req.headers, cache: "no-store" },
-  );
-
-  const treeBody = (await treeRes.json().catch(() => null)) as {
-    entries?: Array<{ path: string; type: "tree" | "blob" }>;
-    error?: string;
-  } | null;
-
-  if (!treeRes.ok) {
-    return NextResponse.json(
-      { error: treeBody?.error ?? "Failed to fetch repo tree" },
-      { status: treeRes.status },
-    );
+  // Calling our own HTTP route here would forward the session cookie to an
+  // origin taken from the client-controlled Host header. We already hold the
+  // provider token, so talk to GitHub directly.
+  let entries: GitTreeEntry[];
+  try {
+    entries = await githubProvider.getTree(token, repoFullName, refName);
+  } catch (error) {
+    return routeError("modules/analyze-git", error);
   }
 
-  const entries = treeBody?.entries ?? [];
   const rootPrefix =
     terraformRootFolder === "." ? "" : `${terraformRootFolder}/`;
 

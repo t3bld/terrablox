@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 
+import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
+import { getEffectiveAgentSettings } from "@/lib/agent/effective-settings";
 import { runProjectAgent } from "@/lib/agent/project-agent";
 import {
-  getAgentSettings,
   mcpServersForSession,
+  REASONING_EFFORTS,
+  type ReasoningEffortValue,
 } from "@/lib/agent/settings-service";
 import { resolveSkills } from "@/lib/agent/skills";
 import {
@@ -21,9 +24,26 @@ import {
   MutationError,
   readModuleLibrary,
 } from "@/lib/projects/service";
-import type { ProjectGraph } from "@/lib/projects/types";
+import type { AgentStep, ProjectGraph } from "@/lib/projects/types";
 
 const HISTORY_LIMIT = 50;
+
+/**
+ * The composer sends the model and effort with every turn, so nothing here is
+ * trusted: an unknown id would fail the session with a runtime error instead of
+ * a message the user can act on.
+ */
+function resolveModel(value: unknown): string {
+  return typeof value === "string" && /^[\w.:-]{1,100}$/.test(value)
+    ? value
+    : COPILOT_MODEL;
+}
+
+function resolveEffort(value: unknown): ReasoningEffortValue {
+  return REASONING_EFFORTS.includes(value as ReasoningEffortValue)
+    ? (value as ReasoningEffortValue)
+    : (COPILOT_REASONING_EFFORT as ReasoningEffortValue);
+}
 
 export async function GET(
   _req: Request,
@@ -73,6 +93,8 @@ export async function POST(
 
   const body = (await req.json().catch(() => null)) as {
     message?: string;
+    model?: unknown;
+    reasoningEffort?: unknown;
   } | null;
   const message = body?.message?.trim();
   if (!message) {
@@ -110,7 +132,7 @@ export async function POST(
         orderBy: { createdAt: "asc" },
         take: HISTORY_LIMIT,
       }),
-      getAgentSettings(userId),
+      getEffectiveAgentSettings(userId, project.id),
       mcpServersForSession(userId),
     ]);
 
@@ -125,6 +147,9 @@ export async function POST(
       instructions: settings.instructions,
       skills: resolveSkills(settings.skills),
       mcpServers,
+      model: resolveModel(body?.model),
+      reasoningEffort: resolveEffort(body?.reasoningEffort),
+      disabledTools: settings.disabledTools,
       library: library.map((mod) => ({
         id: mod.id,
         name: mod.sourceName ?? mod.id,
@@ -140,17 +165,36 @@ export async function POST(
     const commits: string[] = [];
 
     for (const mutation of turn.mutations) {
-      const result = await applyProjectMutation(token, project, mutation);
+      const result = await applyProjectMutation(
+        token,
+        project,
+        mutation,
+        "agent",
+      );
       currentGraph = result.graph;
       if (result.commit) commits.push(result.commit.sha);
     }
+
+    // The commit closes the trail: the reasoning above explains the intent, this
+    // is the proof it reached the repository the graph is rebuilt from.
+    const steps: AgentStep[] = commits.length
+      ? [
+          ...turn.steps,
+          {
+            kind: "tool",
+            tool: "commit",
+            summary: `Pushed ${commits.length} commit${commits.length === 1 ? "" : "s"} to ${project.repoFullName}@${project.repoBranch}`,
+            ok: true,
+          },
+        ]
+      : turn.steps;
 
     const assistantMessage = await database.projectChatMessage.create({
       data: {
         projectId: project.id,
         role: "assistant",
         content: turn.reply,
-        metadata: { commits, mutations: turn.mutations.length },
+        metadata: { commits, mutations: turn.mutations.length, steps },
       },
     });
 

@@ -1,162 +1,165 @@
 "use client";
 
 import { Badge } from "@terrablox/ui/badge";
-import { Input } from "@terrablox/ui/input";
-import { cn } from "@terrablox/ui/lib/utils";
-import { Boxes, Database, ExternalLink, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { serviceOfResource } from "@/lib/terraform/aws-services";
+import {
+  EmptyMessage,
+  FieldList,
+  LinkRow,
+  SearchField,
+} from "./field-primitives";
 import type { ModuleResourceDto } from "./types";
 
 interface ResourcesTabProps {
   resources: ModuleResourceDto[];
 }
 
-interface ProviderGroup {
-  provider: string;
-  providerUrl: string | null;
-  resources: ModuleResourceDto[];
+/**
+ * One row per resource *type*, not per block.
+ *
+ * `aws_appautoscaling_policy.cpu_scaling` and `.memory_scaling` are two
+ * distinct Terraform blocks, but as two rows they read as two unrelated things
+ * when they are one decision: this module scales on CPU and on memory. Folding
+ * them keeps that fact and moves the block names to where they belong — detail
+ * under the type, not a headline of their own.
+ */
+interface TypeRow {
+  key: string;
+  resourceType: string;
+  /** Block names, e.g. `cpu_scaling`. Empty when a block carries no name. */
+  names: string[];
+  count: number;
+  docsUrl: string | null;
+  description: string | null;
 }
 
-function groupByProvider(resources: ModuleResourceDto[]): ProviderGroup[] {
-  const groups = new Map<string, ProviderGroup>();
+interface ServiceGroup {
+  service: string;
+  rows: TypeRow[];
+  count: number;
+  isData: boolean;
+}
+
+const DATA_GROUP = "Data sources";
+
+function foldByType(resources: ModuleResourceDto[]): TypeRow[] {
+  const rows = new Map<string, TypeRow>();
 
   for (const resource of resources) {
-    const existing = groups.get(resource.providerName);
+    const isData = resource.kind === "data";
+    const key = `${isData ? "data." : ""}${resource.resourceType}`;
+    const existing = rows.get(key);
 
     if (existing) {
-      existing.resources.push(resource);
-      // The first entry may not carry a docs URL; take the first one that does.
-      existing.providerUrl ??= resource.providerUrl;
-    } else {
-      groups.set(resource.providerName, {
-        provider: resource.providerName,
-        providerUrl: resource.providerUrl,
-        resources: [resource],
-      });
+      existing.count += 1;
+      if (resource.resourceName) existing.names.push(resource.resourceName);
+      // The first block of a type may carry neither, so take the first that does.
+      existing.docsUrl ??= resource.resourceUrl;
+      existing.description ??= resource.resourceDescription;
+      continue;
     }
+
+    rows.set(key, {
+      key,
+      resourceType: resource.resourceType,
+      names: resource.resourceName ? [resource.resourceName] : [],
+      count: 1,
+      docsUrl: resource.resourceUrl,
+      description: resource.resourceDescription,
+    });
   }
 
-  return [...groups.values()]
-    .map((group) => ({
-      ...group,
-      resources: [...group.resources].sort((a, b) =>
-        `${a.resourceType}.${a.resourceName ?? ""}`.localeCompare(
-          `${b.resourceType}.${b.resourceName ?? ""}`,
-        ),
-      ),
-    }))
-    .sort((a, b) => a.provider.localeCompare(b.provider));
+  for (const row of rows.values()) {
+    row.names.sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+  }
+
+  return [...rows.values()].sort(
+    (a, b) => b.count - a.count || a.resourceType.localeCompare(b.resourceType),
+  );
 }
 
-function ResourceCard({ resource }: { resource: ModuleResourceDto }) {
-  const isData = resource.kind === "data";
+function groupByService(resources: ModuleResourceDto[]): ServiceGroup[] {
+  const byService = new Map<string, ModuleResourceDto[]>();
 
-  return (
-    <li className="group flex items-start gap-3 border-b px-4 py-3 last:border-b-0 hover:bg-muted/40">
-      <span
-        className={cn(
-          // Fixed square that matches the min-height of the title row below, so
-          // the icon stays optically centred against the first line of text.
-          "flex h-7 w-7 shrink-0 items-center justify-center rounded-md",
-          isData
-            ? "bg-muted text-muted-foreground"
-            : "bg-primary/10 text-primary",
-        )}
-      >
-        {isData ? (
-          <Database className="h-3.5 w-3.5" />
-        ) : (
-          <Boxes className="h-3.5 w-3.5" />
-        )}
-      </span>
+  for (const resource of resources) {
+    // Data sources are read, not created. Mixing them into the service groups
+    // overstates what the module builds, which is what this tab is asked.
+    const service =
+      resource.kind === "data"
+        ? DATA_GROUP
+        : serviceOfResource(resource.resourceType, resource.providerName);
 
-      <div className="min-w-0 flex-1">
-        <div className="flex min-h-7 flex-wrap items-center gap-2">
-          <code className="font-mono text-sm font-medium">
-            {resource.resourceType}
-            {resource.resourceName ? (
-              <span className="text-muted-foreground">
-                .{resource.resourceName}
-              </span>
-            ) : null}
-          </code>
+    const existing = byService.get(service);
+    if (existing) existing.push(resource);
+    else byService.set(service, [resource]);
+  }
 
-          {isData ? <Badge variant="secondary">data source</Badge> : null}
-
-          {resource.resourceUrl ? (
-            <a
-              className="flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 opacity-0 transition-opacity hover:underline group-hover:opacity-100 focus-visible:opacity-100"
-              href={resource.resourceUrl}
-              rel="noreferrer"
-              target="_blank"
-            >
-              Docs
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          ) : null}
-        </div>
-
-        {resource.resourceDescription ? (
-          <p className="mt-1 text-sm text-muted-foreground">
-            {resource.resourceDescription}
-          </p>
-        ) : null}
-      </div>
-    </li>
-  );
+  return [...byService.entries()]
+    .map(([service, entries]) => ({
+      service,
+      isData: service === DATA_GROUP,
+      count: entries.length,
+      rows: foldByType(entries),
+    }))
+    .sort((a, b) => {
+      // Read-only inputs belong after everything the module creates.
+      if (a.isData !== b.isData) return a.isData ? 1 : -1;
+      return b.count - a.count || a.service.localeCompare(b.service);
+    });
 }
 
 export function ResourcesTab({ resources }: ResourcesTabProps) {
   const [query, setQuery] = useState("");
+  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
 
   const needle = query.trim().toLowerCase();
 
-  const groups = useMemo(() => {
-    const filtered = needle
-      ? resources.filter(
-          (r) =>
-            r.resourceType.toLowerCase().includes(needle) ||
-            (r.resourceName?.toLowerCase().includes(needle) ?? false) ||
-            r.providerName.toLowerCase().includes(needle),
-        )
-      : resources;
+  const filtered = useMemo(() => {
+    if (!needle) return resources;
 
-    return groupByProvider(filtered);
+    return resources.filter(
+      (resource) =>
+        resource.resourceType.toLowerCase().includes(needle) ||
+        (resource.resourceName?.toLowerCase().includes(needle) ?? false) ||
+        serviceOfResource(resource.resourceType, resource.providerName)
+          .toLowerCase()
+          .includes(needle),
+    );
   }, [resources, needle]);
 
-  const shown = groups.reduce((sum, g) => sum + g.resources.length, 0);
+  const groups = useMemo(() => groupByService(filtered), [filtered]);
+  const allGroups = useMemo(() => groupByService(resources), [resources]);
+
+  const totalsByService = useMemo(
+    () => new Map(allGroups.map((group) => [group.service, group.count])),
+    [allGroups],
+  );
 
   if (resources.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-12 text-center">
-        <Boxes className="h-8 w-8 text-muted-foreground" />
-        <p className="text-sm text-muted-foreground">
-          No resources or data sources were found in this module.
-        </p>
-      </div>
+      <p className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+        No resources or data sources were found in this module.
+      </p>
     );
+  }
+
+  function toggle(service: string) {
+    setClosed((current) => {
+      const next = new Set(current);
+      if (!next.delete(service)) next.add(service);
+      return next;
+    });
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            className="pl-9"
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter resources…"
-            type="search"
-            value={query}
-          />
-        </div>
-        <Badge variant="secondary">
-          {shown === resources.length
-            ? `${resources.length} resources`
-            : `${shown} / ${resources.length} resources`}
-        </Badge>
-      </div>
+      <SearchField
+        onChange={setQuery}
+        placeholder="Filter resources..."
+        value={query}
+      />
 
       {groups.length === 0 ? (
         <p className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
@@ -164,32 +167,52 @@ export function ResourcesTab({ resources }: ResourcesTabProps) {
         </p>
       ) : (
         groups.map((group) => (
-          <section
-            className="overflow-hidden rounded-lg border bg-card"
-            key={group.provider}
+          <FieldList
+            collapsible
+            key={group.service}
+            onToggle={() => toggle(group.service)}
+            open={!closed.has(group.service)}
+            shown={group.count}
+            title={group.service}
+            total={totalsByService.get(group.service) ?? group.count}
           >
-            <header className="flex items-center gap-2 border-b bg-muted/30 px-4 py-2.5">
-              <h3 className="text-sm font-semibold">{group.provider}</h3>
-              <Badge variant="secondary">{group.resources.length}</Badge>
-              {group.providerUrl ? (
-                <a
-                  className="ml-auto flex items-center gap-1 text-xs font-medium text-primary underline-offset-4 hover:underline"
-                  href={group.providerUrl}
-                  rel="noreferrer"
-                  target="_blank"
+            {group.rows.length === 0 ? (
+              <EmptyMessage>
+                No resources match the current filter.
+              </EmptyMessage>
+            ) : (
+              group.rows.map((row) => (
+                <LinkRow
+                  external
+                  href={row.docsUrl}
+                  key={row.key}
+                  label={`Open the ${row.resourceType} documentation`}
                 >
-                  Provider docs
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              ) : null}
-            </header>
+                  <div className="flex items-center gap-2">
+                    <code className="font-mono text-sm font-medium">
+                      {row.resourceType}
+                    </code>
 
-            <ul>
-              {group.resources.map((resource) => (
-                <ResourceCard key={resource.id} resource={resource} />
-              ))}
-            </ul>
-          </section>
+                    {row.count > 1 ? (
+                      <Badge variant="secondary">{row.count}</Badge>
+                    ) : null}
+                  </div>
+
+                  {row.names.length > 0 ? (
+                    <p className="mt-1 break-words font-mono text-xs text-muted-foreground">
+                      {row.names.join(", ")}
+                    </p>
+                  ) : null}
+
+                  {row.description ? (
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {row.description}
+                    </p>
+                  ) : null}
+                </LinkRow>
+              ))
+            )}
+          </FieldList>
         ))
       )}
     </div>

@@ -15,6 +15,7 @@ import {
   APPLY_WORKFLOW_PATH,
   BACKEND_FILE,
   bootstrapStackName,
+  COST_WORKFLOW_PATH,
   missingDeploySettings,
   type PipelineContext,
   PLAN_WORKFLOW_PATH,
@@ -22,6 +23,7 @@ import {
   renderBackendFile,
   renderBootstrapCommand,
   renderBootstrapTemplate,
+  renderCostWorkflow,
   renderPlanWorkflow,
   renderStateWorkflow,
   renderTrustPolicy,
@@ -60,6 +62,7 @@ export function pipelineFiles(
     { path: PLAN_WORKFLOW_PATH, content: renderPlanWorkflow(context) },
     { path: APPLY_WORKFLOW_PATH, content: renderApplyWorkflow(context) },
     { path: STATE_WORKFLOW_PATH, content: renderStateWorkflow(context) },
+    { path: COST_WORKFLOW_PATH, content: renderCostWorkflow(context) },
   ];
 
   const backend = renderBackendFile(context);

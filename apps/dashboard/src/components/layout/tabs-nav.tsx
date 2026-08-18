@@ -1,6 +1,7 @@
 "use client";
 
 import type { LucideIcon } from "lucide-react";
+import { Lock } from "lucide-react";
 import { useRef } from "react";
 
 export interface TabDefinition<T extends string> {
@@ -9,6 +10,13 @@ export interface TabDefinition<T extends string> {
   icon?: LucideIcon;
   /** Rendered as a pill; omit or pass 0 to hide it. */
   count?: number;
+  /**
+   * Marks a tab whose prerequisite is missing. It stays selectable on purpose:
+   * only the panel behind it can explain what to connect and where.
+   */
+  locked?: boolean;
+  /** Why it is locked, as a tooltip on the tab. */
+  lockedReason?: string;
 }
 
 interface TabsNavProps<T extends string> {
@@ -49,7 +57,7 @@ export function TabsNav<T extends string>({
     <div
       role="tablist"
       aria-label={label}
-      className="flex shrink-0 items-stretch gap-1 overflow-x-auto border-b px-4"
+      className="scrollbar-none flex shrink-0 items-stretch gap-1 overflow-x-auto border-b px-4"
     >
       {tabs.map((tab, index) => {
         const active = tab.value === value;
@@ -67,6 +75,7 @@ export function TabsNav<T extends string>({
             aria-selected={active}
             aria-controls={`${idPrefix}-panel-${tab.value}`}
             tabIndex={active ? 0 : -1}
+            title={tab.locked ? tab.lockedReason : undefined}
             onClick={() => onChange(tab.value)}
             onKeyDown={(event) => {
               if (event.key === "ArrowRight") move(index, 1);
@@ -76,10 +85,16 @@ export function TabsNav<T extends string>({
               active
                 ? "border-foreground font-medium text-foreground"
                 : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
+            } ${tab.locked && !active ? "opacity-60" : ""}`}
           >
             {Icon ? <Icon className="h-4 w-4" /> : null}
             {tab.label}
+            {tab.locked ? (
+              <Lock
+                aria-label={tab.lockedReason ?? "Not connected yet"}
+                className="h-3 w-3"
+              />
+            ) : null}
             {tab.count ? (
               <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
                 {tab.count}

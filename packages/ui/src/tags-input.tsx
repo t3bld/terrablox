@@ -15,6 +15,8 @@ export interface TagsInputProps {
   suggestions?: string[];
   placeholder?: string;
   disabled?: boolean;
+  /** Only allow selecting from suggestions; useful for filters. */
+  suggestionsOnly?: boolean;
 }
 
 function normalizeTag(input: string) {
@@ -29,6 +31,7 @@ export function TagsInput({
   suggestions,
   placeholder = "Add a tag…",
   disabled,
+  suggestionsOnly = false,
 }: TagsInputProps) {
   const [draft, setDraft] = useState("");
 
@@ -87,30 +90,32 @@ export function TagsInput({
         <div className="text-xs text-muted-foreground">{description}</div>
       ) : null}
 
-      <div className="flex items-center gap-2">
-        <Input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === ",") {
-              e.preventDefault();
-              commitDraft();
-            }
-          }}
-          placeholder={placeholder}
-          disabled={disabled}
-        />
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={commitDraft}
-          disabled={disabled || !draft.trim()}
-          className="shrink-0"
-        >
-          Add
-        </Button>
-      </div>
+      {suggestionsOnly ? null : (
+        <div className="flex items-center gap-2">
+          <Input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === ",") {
+                e.preventDefault();
+                commitDraft();
+              }
+            }}
+            placeholder={placeholder}
+            disabled={disabled}
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={commitDraft}
+            disabled={disabled || !draft.trim()}
+            className="shrink-0"
+          >
+            Add
+          </Button>
+        </div>
+      )}
 
       {tags.length > 0 ? (
         <div className="flex flex-wrap gap-2">
@@ -118,7 +123,7 @@ export function TagsInput({
             <button
               key={t}
               type="button"
-              className="inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs"
+              className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-xs hover:bg-primary/10"
               onClick={() => removeTag(t)}
               disabled={disabled}
               title="Remove tag"
@@ -137,10 +142,10 @@ export function TagsInput({
               key={s}
               type="button"
               size="sm"
-              variant="ghost"
+              variant={suggestionsOnly ? "outline" : "ghost"}
               onClick={() => addTag(s)}
               disabled={disabled}
-              className="h-7 px-2 text-xs"
+              className="h-7 cursor-pointer px-2 text-xs"
             >
               {s}
             </Button>

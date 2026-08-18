@@ -4,8 +4,11 @@ import {
   AgentSettingsError,
   getAgentSettings,
   saveAgentSettings,
+  setAgentDisabledTools,
+  setAgentSkills,
 } from "@/lib/agent/settings-service";
 import { AGENT_SKILLS } from "@/lib/agent/skills";
+import { PROJECT_AGENT_TOOLS } from "@/lib/agent/tool-catalogue";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 
 /**
@@ -31,6 +34,11 @@ export async function GET() {
       id,
       name,
       description,
+    })),
+    toolCatalogue: PROJECT_AGENT_TOOLS.map(({ name, label, summary }) => ({
+      name,
+      label,
+      summary,
     })),
   });
 }
@@ -68,6 +76,49 @@ export async function PUT(request: Request) {
     console.error("[agent] failed to save settings", error);
     return NextResponse.json(
       { error: "Could not save your settings. Check the server log." },
+      { status: 500 },
+    );
+  }
+}
+
+/** Skills or tools only, for views that never hold the instruction text. */
+export async function PATCH(request: Request) {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let body: { skills?: unknown; disabledTools?: unknown };
+
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Expected JSON." }, { status: 400 });
+  }
+
+  const strings = (value: unknown) =>
+    Array.isArray(value)
+      ? value.filter((entry): entry is string => typeof entry === "string")
+      : null;
+
+  const skills = strings(body.skills);
+  const disabledTools = strings(body.disabledTools);
+
+  if (!skills && !disabledTools) {
+    return NextResponse.json(
+      { error: "Send `skills` or `disabledTools` as an array." },
+      { status: 400 },
+    );
+  }
+
+  try {
+    if (skills) await setAgentSkills(userId, skills);
+    if (disabledTools) await setAgentDisabledTools(userId, disabledTools);
+    return NextResponse.json(await getAgentSettings(userId));
+  } catch (error) {
+    console.error("[agent] failed to toggle setting", error);
+    return NextResponse.json(
+      { error: "Could not change that. Check the server log." },
       { status: 500 },
     );
   }

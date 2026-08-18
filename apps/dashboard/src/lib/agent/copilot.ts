@@ -19,8 +19,13 @@ import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
  * surface to protect and nothing to start or configure separately.
  */
 
-/** Model to use. Copilot resolves "auto" to whatever the user is entitled to. */
-export const COPILOT_MODEL = process.env.COPILOT_MODEL?.trim() || "auto";
+/** Model a turn runs on unless the chat picker says otherwise. */
+export const COPILOT_MODEL =
+  process.env.COPILOT_MODEL?.trim() || "claude-opus-5";
+
+/** How hard that model thinks unless the chat picker says otherwise. */
+export const COPILOT_REASONING_EFFORT =
+  process.env.COPILOT_REASONING_EFFORT?.trim() || "high";
 
 let client: CopilotClient | null = null;
 

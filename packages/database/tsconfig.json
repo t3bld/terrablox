@@ -2,7 +2,6 @@
   "extends": "@terrablox/tsconfig/base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "baseUrl": ".",
     "typeRoots": ["../../node_modules/@types"],
     "paths": {
       "@/*": ["./src/*"]

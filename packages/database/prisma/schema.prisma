@@ -29,6 +29,7 @@ model User {
   awsSsoLogins    AwsSsoLogin[]
   agentSettings   AgentSettings?
   agentMcpServers AgentMcpServer[]
+  infracost       InfracostSettings?
 
   @@map("user")
   @@schema("public")
@@ -130,6 +131,12 @@ model Project {
   /// not configuration, so it stays out of the repository.
   graphPositions Json @default("{}") @map("graph_positions") @db.JsonB
 
+  /// Agent settings this project overrides, as `{ model?, reasoningEffort?,
+  /// skills?, disabledTools? }`. A key that is absent inherits the user's
+  /// global setting, which is why this is JSON: Prisma cannot express a
+  /// nullable `String[]`, and "inherit" has to be distinguishable from "empty".
+  agentOverrides Json? @map("agent_overrides") @db.JsonB
+
   /// Commit the graph was last built from, used to detect outside changes.
   lastSyncedSha String?   @map("last_synced_sha") @db.Text
   lastSyncedAt  DateTime? @map("last_synced_at") @db.Timestamptz(6)
@@ -151,9 +158,42 @@ model Project {
   canvasNodes  CanvasNode[]
   connections  Connection[]
   chatMessages ProjectChatMessage[]
+  operations   ProjectOperation[]
 
   @@index([userId])
   @@map("projects")
+  @@schema("public")
+}
+
+/// One applied graph edit.
+///
+/// The repository is still the source of truth; this is the index into it. Each
+/// row keeps the commit the edit produced and the commit it replaced, so a
+/// later "jump to this point" can restore a state without replaying anything or
+/// trusting that the rows in between are complete.
+model ProjectOperation {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+
+  /// Who made the edit: `canvas` or `agent`.
+  origin String @db.Text
+  /// The mutation exactly as applied. Kept verbatim so an entry stays readable
+  /// even after the mutation format grows a field.
+  mutation Json @db.JsonB
+  /// The commit message, which already describes the edit in the user's terms.
+  summary String @db.Text
+
+  /// Commit this edit produced, and the branch head it was applied on top of.
+  /// Null when GitHub reported no commit, e.g. an edit that changed nothing.
+  commitSha String? @map("commit_sha") @db.Text
+  parentSha String? @map("parent_sha") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@map("project_operations")
   @@schema("public")
 }
 
@@ -472,12 +512,45 @@ model AgentSettings {
   /// improves it for everyone without a migration.
   skills       String[] @default([])
 
+  /// Copilot model id for this user's turns. Null means "auto", which lets
+  /// Copilot pick whatever the person is actually entitled to.
+  model           String? @db.Text
+  /// How hard the model should think, for models that support it. Null leaves
+  /// the model's own default alone.
+  reasoningEffort String? @map("reasoning_effort") @db.Text
+
+  /// Tools the agent may not call, by name. A deny list rather than an allow
+  /// list, so a tool we add later works without every user re-saving.
+  disabledTools String[] @default([]) @map("disabled_tools")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("agent_settings")
+  @@schema("public")
+}
+
+/// The user's own Infracost credential.
+///
+/// Deliberately per user and never a single shared key: pricing runs against
+/// that person's Infracost account, so one central key would put every user's
+/// estimates on one quota and one invoice, and would make TerraBlox the party
+/// responsible for a credential it has no business owning.
+model InfracostSettings {
+  userId String @id @map("user_id") @db.Uuid
+
+  /// Encrypted with secret-box. Never sent to the browser; the UI only ever
+  /// learns whether a key exists and the last few characters of it.
+  apiKey String @map("api_key") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("infracost_settings")
   @@schema("public")
 }
 

@@ -62,7 +62,7 @@ export function SubmoduleSwitcher({
 
   return (
     <div className={className}>
-      <DropdownMenu onOpenChange={onOpenChange} open={open}>
+      <DropdownMenu modal={false} onOpenChange={onOpenChange} open={open}>
         <DropdownMenuTrigger asChild>
           <Button className="h-8 gap-1.5 text-xs" variant="outline">
             <FolderTree className="h-3.5 w-3.5" />
@@ -88,7 +88,10 @@ export function SubmoduleSwitcher({
 
             return (
               <DropdownMenuItem asChild key={submodule.id}>
-                <Link href={`/modules/${encodeURIComponent(submodule.id)}`}>
+                <Link
+                  className="cursor-pointer"
+                  href={`/modules/${encodeURIComponent(submodule.id)}`}
+                >
                   <span className="flex min-w-0 items-start gap-2">
                     {isSwitching ? (
                       isActive ? (

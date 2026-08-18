@@ -1,7 +1,6 @@
 {
   "extends": "@terrablox/tsconfig/react.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]
     }

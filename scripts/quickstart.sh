@@ -19,6 +19,8 @@ APP_ENV_EXAMPLE="apps/dashboard/.env.example"
 DB_ENV="packages/database/.env"
 DB_ENV_EXAMPLE="packages/database/.env.example"
 DB_SERVICE="postgres"
+# Not the default filename, so every compose call must pass it explicitly.
+COMPOSE_FILE="docker-compose.local.yml"
 DB_USER="terrablox"
 DB_NAME="terrablox"
 DASHBOARD_PORT=3001
@@ -188,9 +190,9 @@ fi
 
 step "Starting PostgreSQL"
 
-docker compose up -d "$DB_SERVICE"
+docker compose -f "$COMPOSE_FILE" up -d "$DB_SERVICE"
 
-container_id="$(docker compose ps -q "$DB_SERVICE")"
+container_id="$(docker compose -f "$COMPOSE_FILE" ps -q "$DB_SERVICE")"
 [ -n "$container_id" ] || die "Could not determine the '$DB_SERVICE' container id."
 
 db_ready() {
@@ -205,7 +207,7 @@ for _ in $(seq 1 60); do
 	db_ready && break
 	sleep 2
 done
-db_ready || die "PostgreSQL did not become ready. Check: docker compose logs $DB_SERVICE"
+db_ready || die "PostgreSQL did not become ready. Check: docker compose -f $COMPOSE_FILE logs $DB_SERVICE"
 ok "postgres is ready on localhost:5433"
 
 # --- 5. migrations ----------------------------------------------------------
@@ -232,7 +234,7 @@ fi
 
 step "Starting the development servers"
 info "Dashboard: $DASHBOARD_URL"
-muted "Press Ctrl+C to stop. Postgres keeps running ('docker compose down' stops it)."
+muted "Press Ctrl+C to stop. Postgres keeps running ('pnpm db:down' stops it)."
 printf '\n'
 
 exec pnpm dev

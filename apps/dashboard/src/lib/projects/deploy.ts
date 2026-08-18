@@ -12,6 +12,7 @@ export const WORKFLOW_DIR = ".github/workflows";
 export const PLAN_WORKFLOW_PATH = `${WORKFLOW_DIR}/terraform-plan.yml`;
 export const APPLY_WORKFLOW_PATH = `${WORKFLOW_DIR}/terraform-apply.yml`;
 export const STATE_WORKFLOW_PATH = `${WORKFLOW_DIR}/terraform-state.yml`;
+export const COST_WORKFLOW_PATH = `${WORKFLOW_DIR}/terraform-cost.yml`;
 export const BACKEND_FILE = "backend.tf";
 
 /**
@@ -23,6 +24,20 @@ export const BACKEND_FILE = "backend.tf";
  * that it never needs access to the account it deploys into.
  */
 export const STATE_SNAPSHOT_PATH = ".terrablox/state.json";
+
+/**
+ * Where the pipeline publishes its cost estimate.
+ *
+ * Priced in the pipeline for the same reason the state is read there: the
+ * estimate is only meaningful against a real `terraform plan`, and only the
+ * pipeline can produce one. A plan resolves what the module view cannot —
+ * variables, `count`, instance sizes — so the figures here are grounded in what
+ * would actually be created rather than in assumptions.
+ */
+export const COST_SNAPSHOT_PATH = ".terrablox/cost.json";
+
+/** The repository secret Infracost needs to price a plan. */
+export const INFRACOST_API_KEY_SECRET = "INFRACOST_API_KEY";
 
 export const DEFAULT_TERRAFORM_VERSION = "1.9.8";
 
@@ -298,6 +313,129 @@ jobs:
           git commit -m "chore(terrablox): update state snapshot [skip ci]"
           # The apply that triggered this run may have been overtaken by another
           # push, and a rejected push would silently lose the snapshot.
+          git pull --rebase --autostash origin ${context.branch}
+          git push origin HEAD:${context.branch}
+`;
+}
+
+/**
+ * Prices the plan and publishes the result beside the state snapshot.
+ *
+ * Infracost is given a plan rather than the sources, which is the whole point:
+ * every variable is resolved, `count` has a number, and an instance has a real
+ * size. What it still cannot know is traffic, so usage-driven components come
+ * back without a figure and are reported as such instead of being quietly
+ * counted as zero.
+ *
+ * Prices change without the code changing, so this also runs on a schedule.
+ */
+export function renderCostWorkflow(context: PipelineContext): string {
+  const dir = workingDirectory(context.rootFolder);
+  const version = context.terraformVersion ?? DEFAULT_TERRAFORM_VERSION;
+
+  return `${GENERATED_HEADER}
+name: Terraform Cost
+
+on:
+  # After an apply so the estimate follows what was actually deployed, and
+  # monthly because AWS prices move on their own.
+  workflow_run:
+    workflows: ["Terraform Apply"]
+    types: [completed]
+  schedule:
+    - cron: "0 7 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: terrablox-cost
+  cancel-in-progress: true
+
+jobs:
+  estimate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${context.branch}
+
+      - name: Check for the Infracost API key
+        run: |
+          if [ -z "\${{ secrets.${INFRACOST_API_KEY_SECRET} }}" ]; then
+            echo "::error::${INFRACOST_API_KEY_SECRET} is not set. Add it as a repository secret; a free key is available at infracost.io."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${context.awsRoleArn ?? "<set the IAM role in TerraBlox>"}
+          aws-region: ${context.awsRegion}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${version}
+          # The wrapper prefixes the output with its own logging, which would
+          # end up in the JSON.
+          terraform_wrapper: false
+
+      - uses: infracost/actions/setup@v3
+        with:
+          api-key: \${{ secrets.${INFRACOST_API_KEY_SECRET} }}
+
+      - name: Plan
+        working-directory: ${dir}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -out=tfplan
+          terraform show -json tfplan > "$RUNNER_TEMP/plan.json"
+
+      - name: Price the plan
+        run: |
+          infracost breakdown \\
+            --path "$RUNNER_TEMP/plan.json" \\
+            --format json \\
+            --out-file "$RUNNER_TEMP/infracost.json"
+
+      - name: Summarise the estimate
+        run: |
+          mkdir -p .terrablox
+          jq 'def components($prefix):
+              ( .costComponents[]? | {
+                  name: ($prefix + .name),
+                  unit: .unit,
+                  monthlyQuantity: (.monthlyQuantity // null),
+                  monthlyCost: (.monthlyCost // null)
+                } ),
+              ( .subresources[]? | components($prefix + .name + " · ") );
+            {
+              version: 1,
+              generatedAt: (now | todate),
+              currency: (.currency // "USD"),
+              totalMonthlyCost: (.totalMonthlyCost // null),
+              detectedResources: (.summary.totalDetectedResources // null),
+              supportedResources: (.summary.totalSupportedResources // null),
+              unsupportedResources: (.summary.totalUnsupportedResources // null),
+              noPriceResources: (.summary.totalNoPriceResources // null),
+              resources: [
+                .projects[]? | .breakdown.resources[]? | {
+                  name: .name,
+                  monthlyCost: (.monthlyCost // null),
+                  components: [ components("") ]
+                }
+              ]
+            }' "$RUNNER_TEMP/infracost.json" > ${COST_SNAPSHOT_PATH}
+
+      - name: Publish the estimate
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ${COST_SNAPSHOT_PATH}
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(terrablox): update cost estimate [skip ci]"
           git pull --rebase --autostash origin ${context.branch}
           git push origin HEAD:${context.branch}
 `;

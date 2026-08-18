@@ -5,6 +5,7 @@ import { prisma } from "@terrablox/database";
 
 import { decryptSecret, encryptSecret } from "@/lib/crypto/secret-box";
 import { isKnownSkill } from "./skills";
+import { isKnownTool } from "./tool-catalogue";
 
 /**
  * Per-user agent settings: what to tell the agent, and what it may reach.
@@ -16,6 +17,17 @@ import { isKnownSkill } from "./skills";
 
 /** Long enough for real house rules, short enough not to crowd out the graph. */
 export const MAX_INSTRUCTIONS_LENGTH = 4000;
+
+/** The levels the Copilot SDK defines. Which of them a model accepts varies. */
+export const REASONING_EFFORTS = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
+
+export type ReasoningEffortValue = (typeof REASONING_EFFORTS)[number];
 
 export class AgentSettingsError extends Error {}
 
@@ -33,6 +45,12 @@ export interface AgentSettingsView {
   instructions: string;
   skills: string[];
   mcpServers: McpServerView[];
+  /** Null means "auto": Copilot picks what the user is entitled to. */
+  model: string | null;
+  /** Null leaves the model's own default in place. */
+  reasoningEffort: ReasoningEffortValue | null;
+  /** Tool names the agent may not call. */
+  disabledTools: string[];
 }
 
 export async function getAgentSettings(
@@ -52,7 +70,32 @@ export async function getAgentSettings(
     // applying immediately, not once someone next saves their settings.
     skills: (settings?.skills ?? []).filter(isKnownSkill),
     mcpServers: servers.map(toServerView),
+    model: settings?.model ?? null,
+    reasoningEffort: asReasoningEffort(settings?.reasoningEffort),
+    disabledTools: settings?.disabledTools ?? [],
   };
+}
+
+/** Replaces the deny list, leaving every other setting untouched. */
+export async function setAgentDisabledTools(
+  userId: string,
+  tools: string[],
+): Promise<void> {
+  const disabledTools = [...new Set(tools)].filter(isKnownTool);
+
+  await prisma.agentSettings.upsert({
+    where: { userId },
+    create: { userId, instructions: "", disabledTools },
+    update: { disabledTools },
+  });
+}
+
+function asReasoningEffort(
+  value: string | null | undefined,
+): ReasoningEffortValue | null {
+  return REASONING_EFFORTS.includes(value as ReasoningEffortValue)
+    ? (value as ReasoningEffortValue)
+    : null;
 }
 
 export async function saveAgentSettings(
@@ -73,6 +116,26 @@ export async function saveAgentSettings(
     where: { userId },
     create: { userId, instructions, skills },
     update: { instructions, skills },
+  });
+}
+
+/**
+ * Switches skills without touching the instructions.
+ *
+ * The context view toggles one skill at a time and never loads the instruction
+ * text, so it must not be able to send an empty one and wipe what the user
+ * wrote on the settings tab.
+ */
+export async function setAgentSkills(
+  userId: string,
+  skills: string[],
+): Promise<void> {
+  const selected = [...new Set(skills)].filter(isKnownSkill);
+
+  await prisma.agentSettings.upsert({
+    where: { userId },
+    create: { userId, instructions: "", skills: selected },
+    update: { skills: selected },
   });
 }
 
