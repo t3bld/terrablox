@@ -26,12 +26,12 @@ import {
 import {
   Bot,
   Boxes,
-  Building2,
   ChevronUp,
   FolderKanban,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  SlidersHorizontal,
   User2,
 } from "lucide-react";
 import Link from "next/link";
@@ -199,9 +199,9 @@ export function AppSidebar() {
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link href="/company" className="cursor-pointer">
-                    <Building2 className="mr-2 h-4 w-4" />
-                    Company
+                  <Link href="/admin" className="cursor-pointer">
+                    <SlidersHorizontal className="mr-2 h-4 w-4" />
+                    Curation
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />

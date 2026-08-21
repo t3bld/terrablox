@@ -8,6 +8,12 @@ export interface GitRepo {
   html_url: string;
   description: string | null;
   updated_at: string;
+  /**
+   * The branch a repository-level question should be answered against — its icon,
+   * for one, which belongs to the repository rather than to whichever ref is being
+   * imported.
+   */
+  default_branch: string | null;
 }
 
 export interface GitBranch {

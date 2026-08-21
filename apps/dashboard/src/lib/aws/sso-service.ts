@@ -10,6 +10,7 @@ import {
   resolveTerraBloxPrincipal,
 } from "./connection";
 import type { AwsConnectionView } from "./connection-service";
+import { toView } from "./connection-service";
 import {
   bootstrapRoleArn,
   createBootstrapStack,
@@ -111,7 +112,12 @@ export async function checkSsoLogin(
 
       await database.awsSsoLogin.update({
         where: { id: record.id },
-        data: { accessToken: result.accessToken },
+        data: {
+          accessToken: result.accessToken,
+          // The device code is spent; from here the token's own life is what
+          // decides whether this login is still worth anything.
+          expiresAt: result.tokenExpiresAt,
+        },
       });
 
       return result.accessToken;
@@ -167,12 +173,47 @@ export async function completeSsoLogin(
     );
   }
 
-  const roleArn = bootstrapRoleArn(input.accountId);
   const label = input.label.trim().slice(0, 120);
+  const principalArn = await resolveTerraBloxPrincipal();
+
+  // With an identity of its own the app can be named in a trust policy, so it
+  // creates a role and needs nobody present afterwards. Without one it keeps
+  // the sign-in and spends it per request, the way the AWS CLI does — the same
+  // access, but the user has to sign in again when the session runs out.
+  const useSsoSession = principalArn === null;
+
+  const roleArn = useSsoSession
+    ? `arn:aws:iam::${input.accountId}:role/${input.roleName}`
+    : bootstrapRoleArn(input.accountId);
 
   const existing = await database.awsConnection.findFirst({
     where: { userId, roleArn },
   });
+
+  // Signing in again is the documented cure for an expired SSO session, so it
+  // cannot be an error. The row is refreshed rather than duplicated: the account
+  // and the role are the same, only the token and its expiry moved on.
+  if (existing && useSsoSession) {
+    const refreshed = await database.awsConnection.update({
+      where: { id: existing.id },
+      data: {
+        label: label || existing.label,
+        accountId: input.accountId,
+        region: input.region.trim(),
+        credentialMode: "sso",
+        ssoStartUrl: record.startUrl,
+        ssoRegion: record.ssoRegion,
+        ssoRoleName: input.roleName,
+        ssoAccessToken: record.accessToken,
+        ssoExpiresAt: record.expiresAt,
+        verifiedAt: new Date(),
+        lastError: null,
+      },
+    });
+
+    await database.awsSsoLogin.delete({ where: { id: record.id } });
+    return toView(refreshed, principalArn);
+  }
 
   if (existing) {
     throw new AwsConnectionError(
@@ -181,28 +222,22 @@ export async function completeSsoLogin(
     );
   }
 
-  const principalArn = await resolveTerraBloxPrincipal();
-  if (!principalArn) {
-    throw new AwsConnectionError(
-      "This TerraBlox instance has no AWS credentials yet, so the role it creates could never be assumed. Give the app an AWS identity first.",
-      "not-configured",
-    );
-  }
-
   const externalId = generateExternalId();
 
-  await createBootstrapStack({
-    ssoRegion: record.ssoRegion,
-    accessToken: record.accessToken,
-    accountId: input.accountId,
-    roleName: input.roleName,
-    region: input.region,
-    template: renderConnectionTemplate({
-      externalId,
-      principalArn,
-      label,
-    }),
-  });
+  if (principalArn) {
+    await createBootstrapStack({
+      ssoRegion: record.ssoRegion,
+      accessToken: record.accessToken,
+      accountId: input.accountId,
+      roleName: input.roleName,
+      region: input.region,
+      template: renderConnectionTemplate({
+        externalId,
+        principalArn,
+        label,
+      }),
+    });
+  }
 
   const connection = await database.awsConnection.create({
     data: {
@@ -212,29 +247,26 @@ export async function completeSsoLogin(
       roleArn,
       region: input.region.trim(),
       externalId,
+      ...(useSsoSession
+        ? {
+            credentialMode: "sso",
+            ssoStartUrl: record.startUrl,
+            ssoRegion: record.ssoRegion,
+            ssoRoleName: input.roleName,
+            ssoAccessToken: record.accessToken,
+            ssoExpiresAt: record.expiresAt,
+            // Signing in *was* the proof; there is no trust policy to wait for.
+            verifiedAt: new Date(),
+          }
+        : {}),
     },
   });
 
-  // The SSO session has done its job; keeping it would mean holding a live
-  // credential for the customer's account with nothing to spend it on.
+  // The login row has done its job: in role mode the session is spent, and in
+  // SSO mode the token now lives on the connection that uses it.
   await database.awsSsoLogin.delete({ where: { id: record.id } });
 
-  return {
-    id: connection.id,
-    label: connection.label,
-    accountId: connection.accountId,
-    roleArn: connection.roleArn,
-    region: connection.region,
-    externalId: connection.externalId,
-    verifiedAt: null,
-    lastError: null,
-    template: renderConnectionTemplate({
-      externalId,
-      principalArn,
-      label,
-    }),
-    createdAt: connection.createdAt.toISOString(),
-  };
+  return toView(connection, principalArn);
 }
 
 export async function cancelSsoLogin(

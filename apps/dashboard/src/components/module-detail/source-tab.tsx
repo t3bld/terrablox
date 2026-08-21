@@ -399,7 +399,7 @@ export function SourceTab({
             <Input
               className="h-8 border-0 pl-8 text-xs focus-visible:ring-0 focus-visible:ring-offset-0"
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Find file…"
+              placeholder="Find file"
               type="search"
               value={filter}
             />

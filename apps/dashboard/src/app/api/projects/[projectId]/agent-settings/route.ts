@@ -6,8 +6,8 @@ import {
   parseOverrides,
   saveAgentOverrides,
 } from "@/lib/agent/effective-settings";
+import { AGENT_KNOWLEDGE } from "@/lib/agent/knowledge";
 import { getAgentSettings } from "@/lib/agent/settings-service";
-import { AGENT_SKILLS } from "@/lib/agent/skills";
 import { PROJECT_AGENT_TOOLS } from "@/lib/agent/tool-catalogue";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
@@ -48,17 +48,18 @@ export async function GET(
     global: {
       model: global.model,
       reasoningEffort: global.reasoningEffort,
-      skills: global.skills,
+      disabledKnowledge: global.disabledKnowledge,
       disabledTools: global.disabledTools,
     },
     catalogue: {
-      skills: AGENT_SKILLS.map(({ id, name, description }) => ({
+      knowledge: AGENT_KNOWLEDGE.map(({ id, name, description }) => ({
         id,
         name,
         description,
       })),
-      tools: PROJECT_AGENT_TOOLS.map(({ name, label, summary }) => ({
+      tools: PROJECT_AGENT_TOOLS.map(({ name, group, label, summary }) => ({
         name,
+        group,
         label,
         summary,
       })),
@@ -91,8 +92,11 @@ export async function PUT(
     });
   } catch (error) {
     console.error("[agent] failed to save project overrides", error);
+
+    const reason = error instanceof Error ? error.message : String(error);
+
     return NextResponse.json(
-      { error: "Could not save that." },
+      { error: `Could not save that: ${reason}` },
       { status: 400 },
     );
   }

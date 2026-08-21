@@ -151,7 +151,7 @@ export default function ModulesPage() {
                   aria-label="Search modules"
                   className="h-8 min-w-0 flex-1 border-0 px-0 focus-visible:ring-0 focus-visible:ring-offset-0"
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search modules..."
+                  placeholder="Search modules"
                   value={searchQuery}
                 />
 

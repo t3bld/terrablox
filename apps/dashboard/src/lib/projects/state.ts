@@ -1,8 +1,8 @@
 /**
  * Reading the Terraform state inventory the pipeline publishes.
  *
- * The snapshot is deliberately thin — identifiers only, see
- * `renderStateWorkflow` — so everything a person wants to see beyond a resource
+ * The snapshot is deliberately thin — identifiers only, see `parseTerraformState`
+ * — so everything a person wants to see beyond a resource
  * address is reconstructed here: a readable name, the AWS service it belongs
  * to, and a link into the console. That reconstruction is a lookup table rather
  * than cleverness, for the same reason `aws-architecture.ts` is: Terraform
@@ -46,11 +46,14 @@ export interface ProjectStateDto {
   snapshot: StateSnapshot | null;
   /** The region the console links are built for. */
   region: string;
-  /** Where the snapshot lives, so the user can inspect it in Git. */
-  fileUrl: string;
-  /** False when the pipeline that writes the snapshot has not been generated. */
-  hasWorkflow: boolean;
-  /** Set when the snapshot could not be read or parsed. */
+  /** Where the state is read from, so the user can find it themselves. */
+  bucket: string | null;
+  key: string;
+  /** False before the deploy setup has created a state backend. */
+  configured: boolean;
+  /** True once the bucket could actually be reached. */
+  connected: boolean;
+  /** Why there is no inventory, phrased for the reader. */
   problem: string | null;
 }
 
@@ -74,85 +77,6 @@ export interface StateModuleGroup {
   path: string;
   label: string;
   resources: StateResourceView[];
-}
-
-/**
- * Parses the snapshot, tolerating anything that is not one.
- *
- * The file is written by a workflow that may be older than this code, or may
- * have been edited by hand, so a malformed snapshot has to read as "no data"
- * rather than crash the tab.
- */
-export function parseStateSnapshot(raw: string): StateSnapshot | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-
-  if (!parsed || typeof parsed !== "object") return null;
-  const record = parsed as Record<string, unknown>;
-
-  const resources = Array.isArray(record.resources)
-    ? record.resources.flatMap((entry) => {
-        const resource = toResource(entry);
-        return resource ? [resource] : [];
-      })
-    : [];
-
-  const outputs = Array.isArray(record.outputs)
-    ? record.outputs.flatMap((entry) => {
-        const output = toOutput(entry);
-        return output ? [output] : [];
-      })
-    : [];
-
-  return {
-    version: typeof record.version === "number" ? record.version : 1,
-    generatedAt:
-      typeof record.generatedAt === "string" ? record.generatedAt : "",
-    terraformVersion:
-      typeof record.terraformVersion === "string"
-        ? record.terraformVersion
-        : null,
-    resources,
-    outputs,
-  };
-}
-
-function toResource(entry: unknown): StateResource | null {
-  if (!entry || typeof entry !== "object") return null;
-  const record = entry as Record<string, unknown>;
-  if (typeof record.address !== "string" || typeof record.type !== "string") {
-    return null;
-  }
-
-  return {
-    address: record.address,
-    type: record.type,
-    name: typeof record.name === "string" ? record.name : record.address,
-    mode: typeof record.mode === "string" ? record.mode : "managed",
-    provider: typeof record.provider === "string" ? record.provider : null,
-    index:
-      typeof record.index === "string" || typeof record.index === "number"
-        ? record.index
-        : null,
-    id: typeof record.id === "string" ? record.id : null,
-    arn: typeof record.arn === "string" ? record.arn : null,
-  };
-}
-
-function toOutput(entry: unknown): StateOutput | null {
-  if (!entry || typeof entry !== "object") return null;
-  const record = entry as Record<string, unknown>;
-  if (typeof record.name !== "string") return null;
-
-  return {
-    name: record.name,
-    sensitive: record.sensitive === true,
-    value: typeof record.value === "string" ? record.value : null,
-  };
 }
 
 /** `module.network.module.vpc.aws_vpc.this` -> `module.network.module.vpc`. */

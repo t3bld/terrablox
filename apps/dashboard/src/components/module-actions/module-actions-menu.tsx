@@ -46,6 +46,12 @@ interface ModuleActionsMenuProps {
   align?: "start" | "end";
   /** Detail pages expose deletion separately from repository navigation. */
   deleteOnly?: boolean;
+  /**
+   * False for modules that ship with TerraBlox, which no user owns. Offering the
+   * entry and letting the request come back 403 would be worse than not offering
+   * it: the dialog names projects it would break, and none of that is true here.
+   */
+  canDelete?: boolean;
 }
 
 /**
@@ -81,6 +87,7 @@ export function ModuleActionsMenu({
   stopPropagation = false,
   align = "end",
   deleteOnly = false,
+  canDelete = true,
 }: ModuleActionsMenuProps) {
   const [deleteScope, setDeleteScope] = useState<DeleteScope | null>(null);
   const [copied, setCopied] = useState(false);
@@ -104,6 +111,10 @@ export function ModuleActionsMenu({
   // With a single version the distinction is noise, so the menu collapses to
   // one unambiguous entry that still deletes the repository entry as a whole.
   const hasMultipleVersions = !module.isSubmodule && module.versionCount > 1;
+
+  // A delete-only menu for something that cannot be deleted is an empty menu,
+  // and an empty menu is worse than no button at all.
+  if (deleteOnly && !canDelete) return null;
 
   return (
     <>
@@ -166,11 +177,12 @@ export function ModuleActionsMenu({
                 </DropdownMenuItem>
               ) : null}
 
-              <DropdownMenuSeparator />
+              {/* Only earns its keep when something follows it. */}
+              {canDelete ? <DropdownMenuSeparator /> : null}
             </>
           ) : null}
 
-          {hasMultipleVersions ? (
+          {!canDelete ? null : hasMultipleVersions ? (
             <>
               <DropdownMenuItem
                 className="text-destructive focus:bg-destructive/10 focus:text-destructive"

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { database } from "@/lib/database";
+import { isBuiltin, visibleToUser } from "@/lib/modules/ownership";
 import {
   resolveDependents,
   resolveModuleLinks,
@@ -15,7 +16,7 @@ import { sortVersionsDesc } from "@/lib/terraform/versions";
  */
 export async function loadModuleDetail(userId: string, moduleId: string) {
   const mod = await database.terraformModule.findFirst({
-    where: { id: moduleId, userId },
+    where: { id: moduleId, ...visibleToUser(userId) },
     include: {
       source: true,
       resources: {
@@ -45,15 +46,20 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
     // its parent, not on its own.
     mod.sourceId
       ? database.terraformModule.findMany({
-          where: { userId, sourceId: mod.sourceId, isSubmodule: false },
+          where: {
+            ...visibleToUser(userId),
+            sourceId: mod.sourceId,
+            isSubmodule: false,
+          },
           select: { id: true, versionTag: true, createdAt: true },
         })
       : Promise.resolve([]),
 
-    // Every module the user owns is a candidate target for a `module` block, so
-    // dependencies resolve regardless of the order things were imported in.
+    // Every module the user can see is a candidate target for a `module` block,
+    // so dependencies resolve regardless of the order things were imported in —
+    // and so a shipped module calling another shipped module links up.
     database.terraformModule.findMany({
-      where: { userId },
+      where: visibleToUser(userId),
       select: {
         id: true,
         versionTag: true,
@@ -64,10 +70,10 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
       },
     }),
 
-    // The reverse direction. Loading every dependency the user owns keeps this
-    // a single query; resolution then decides which land on this module.
+    // The reverse direction. Loading every dependency the user can see keeps
+    // this a single query; resolution then decides which land on this module.
     database.moduleDependency.findMany({
-      where: { module: { userId } },
+      where: { module: visibleToUser(userId) },
       select: { name: true, source: true, sourceKind: true, moduleId: true },
     }),
   ]);
@@ -97,6 +103,8 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
     dependents: resolveDependents(mod.id, allDependencies, linkCandidates),
     effectiveName: mod.submoduleName ?? mod.source?.name ?? "(unnamed)",
     effectiveDescription: mod.source?.description ?? null,
+    // Lets the detail view drop the actions that the server would refuse anyway.
+    isBuiltin: isBuiltin(mod),
     versions: sortVersionsDesc(siblingVersions).map((version) => ({
       id: version.id,
       versionTag: version.versionTag,
@@ -114,7 +122,7 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
  */
 export async function loadModuleParent(userId: string, parentId: string) {
   const parent = await database.terraformModule.findFirst({
-    where: { id: parentId, userId },
+    where: { id: parentId, ...visibleToUser(userId) },
     select: {
       id: true,
       submoduleName: true,

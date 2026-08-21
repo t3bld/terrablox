@@ -9,17 +9,25 @@ import {
   listRepoTree,
   readRepoFile,
 } from "@/lib/github/repo-files";
+import { visibleToUser } from "@/lib/modules/ownership";
 import { analyzeTerraformFiles } from "@/lib/terraform/analyze";
 import {
   appendBlock,
   findBlock,
+  findLocalsBlockDeclaring,
+  findLocalsBlocks,
   listBlockAttributes,
   listBlocks,
+  listLocalsEntries,
   removeBlock,
   removeBlockAttribute,
+  removeLocalsEntry,
   renameBlockLabel,
+  renameLocalsEntry,
+  renderLocalsBlock,
   renderModuleBlock,
   setBlockAttribute,
+  setLocalsEntry,
   uniqueBlockLabel,
 } from "@/lib/terraform/hcl-edit";
 import { resolveModuleLink } from "@/lib/terraform/module-link";
@@ -30,6 +38,7 @@ import {
   libraryModuleName,
   usedModuleLabels,
 } from "./graph";
+import { isValidLocalName, localNodeId, localReference } from "./locals";
 import type {
   OperationOrigin,
   ProjectGraph,
@@ -40,6 +49,15 @@ import { coerceHclValue, unambiguousSource, wiringScore } from "./wiring";
 
 /** Root configurations are rarely huge; the cap only bounds a runaway repo. */
 const MAX_ROOT_FILES = 60;
+
+/**
+ * Where a project's first `locals` block is written.
+ *
+ * Its own file rather than the entry file: locals are the values a reader looks
+ * up, and burying the first one under a hundred lines of module calls is how
+ * they stop being findable. Later locals join whichever block already exists.
+ */
+const LOCALS_FILE = "locals.tf";
 
 export function normalizeFolder(input: string | null | undefined): string {
   const raw = (input ?? "").trim();
@@ -120,12 +138,20 @@ export async function readProjectFiles(
   };
 }
 
-/** The user's imported modules, in the shape the graph builder expects. */
+/**
+ * The modules a project may draw on, in the shape the graph builder expects.
+ *
+ * The user's own imports plus the catalogue TerraBlox ships with. Both have to be
+ * here rather than only the former: `buildProjectGraph` resolves every `module`
+ * block in the repository against this list, and a block whose module is missing
+ * becomes a node with no inputs or outputs. A project built on a shipped module
+ * would otherwise render as an unwirable box.
+ */
 export async function readModuleLibrary(
   userId: string,
 ): Promise<LibraryModule[]> {
   const modules = await database.terraformModule.findMany({
-    where: { userId },
+    where: visibleToUser(userId),
     include: { source: true },
   });
 
@@ -375,8 +401,38 @@ export async function applyProjectMutation(
   });
 
   const positions = readPositions(project);
-  if (addedLabel && mutation.action === "add-module" && mutation.position) {
+
+  if (
+    addedLabel &&
+    (mutation.action === "add-module" || mutation.action === "add-local") &&
+    mutation.position
+  ) {
     positions[addedLabel] = mutation.position;
+  }
+
+  // Layout follows the node it belongs to. Without this a renamed local reappears
+  // wherever the layout engine puts an unplaced node, which reads as the canvas
+  // having lost it.
+  if (mutation.action === "rename-local") {
+    const from = localNodeId(mutation.name);
+    const to = localNodeId(mutation.newName);
+    if (positions[from]) {
+      positions[to] = positions[from] as { x: number; y: number };
+      delete positions[from];
+    }
+  }
+  if (mutation.action === "rename-module" && positions[mutation.name]) {
+    positions[mutation.newName] = positions[mutation.name] as {
+      x: number;
+      y: number;
+    };
+    delete positions[mutation.name];
+  }
+  if (mutation.action === "remove-local") {
+    delete positions[localNodeId(mutation.name)];
+  }
+  if (mutation.action === "remove-module") {
+    delete positions[mutation.name];
   }
 
   const updated = await database.project.update({
@@ -457,7 +513,207 @@ async function mutate(
       return { message: setArgument(files, mutation) };
     case "auto-connect":
       return autoConnect(files, project, mutation.name);
+    case "add-local":
+      return addLocal(files, project, mutation);
+    case "set-local":
+      return { message: setLocal(files, mutation.name, mutation.value) };
+    case "rename-local":
+      return { message: renameLocal(files, mutation.name, mutation.newName) };
+    case "remove-local":
+      return { message: removeLocal(files, mutation.name) };
+    case "connect-local":
+      return { message: connectLocal(files, mutation) };
   }
+}
+
+/** File declaring a local, or null when no `locals` block does. */
+function fileOfLocal(files: Map<string, string>, name: string): string | null {
+  for (const [path, content] of files) {
+    if (findLocalsBlockDeclaring(content, name)) return path;
+  }
+  return null;
+}
+
+/** Every local name in the project, for collision checks. */
+function usedLocalNames(files: Map<string, string>): Set<string> {
+  const names = new Set<string>();
+  for (const content of files.values()) {
+    for (const entry of listLocalsEntries(content)) names.add(entry.name);
+  }
+  return names;
+}
+
+/**
+ * Declares a local, and optionally wires it into the input that asked for it.
+ *
+ * The wiring is part of this mutation rather than a second one because on the
+ * canvas it is one gesture: dragging out of an unfilled input and letting go.
+ * Splitting it would put two commits and two history rows behind one action, and
+ * leave a dangling local behind if the second half failed.
+ */
+function addLocal(
+  files: Map<string, string>,
+  project: Project,
+  mutation: Extract<ProjectGraphMutation, { action: "add-local" }>,
+): MutationOutcome {
+  const name = mutation.name.trim();
+  if (!isValidLocalName(name)) {
+    throw new MutationError(
+      `"${name}" is not a valid local name. Use letters, digits and underscores, starting with a letter.`,
+    );
+  }
+  if (usedLocalNames(files).has(name)) {
+    throw new MutationError(`A local called "${name}" already exists`);
+  }
+
+  const value = coerceHclValue(mutation.value);
+
+  // Prefer an existing `locals` block over creating a second one: Terraform
+  // merges them, but a file per local is not how anyone writes this by hand.
+  const existingPath = [...files.keys()]
+    .sort()
+    .find((path) => findLocalsBlocks(files.get(path) ?? "").length > 0);
+
+  if (existingPath) {
+    const updated = setLocalsEntry(files.get(existingPath) ?? "", name, value);
+    if (updated === null) {
+      throw new MutationError("Could not write the locals block");
+    }
+    files.set(existingPath, updated);
+  } else {
+    const path = repoPath(project, LOCALS_FILE);
+    const current = files.get(path) ?? "";
+    files.set(path, appendBlock(current, renderLocalsBlock([{ name, value }])));
+  }
+
+  if (!mutation.connectTo) {
+    return { message: `Add local ${name}`, addedLabel: localNodeId(name) };
+  }
+
+  const { target, targetInput } = mutation.connectTo;
+  wireLocal(files, name, target, targetInput);
+
+  return {
+    message: `Add local ${name} and wire it to ${target}.${targetInput}`,
+    addedLabel: localNodeId(name),
+  };
+}
+
+function setLocal(
+  files: Map<string, string>,
+  name: string,
+  value: string,
+): string {
+  const path = fileOfLocal(files, name);
+  if (!path) throw new MutationError(`No local "${name}" in this project`);
+
+  const updated = setLocalsEntry(
+    files.get(path) ?? "",
+    name,
+    coerceHclValue(value),
+  );
+  if (updated === null) {
+    throw new MutationError(`No local "${name}" in this project`);
+  }
+  files.set(path, updated);
+
+  return `Set local ${name}`;
+}
+
+/**
+ * Renames a local and every `local.<name>` that read it.
+ *
+ * Word-boundary matched so `local.env` does not rewrite `local.environment`,
+ * and applied across all files because a local is module-wide.
+ */
+function renameLocal(
+  files: Map<string, string>,
+  name: string,
+  newName: string,
+): string {
+  const trimmed = newName.trim();
+  if (!isValidLocalName(trimmed)) {
+    throw new MutationError(`"${trimmed}" is not a valid local name`);
+  }
+  if (trimmed !== name && usedLocalNames(files).has(trimmed)) {
+    throw new MutationError(`A local called "${trimmed}" already exists`);
+  }
+
+  const path = fileOfLocal(files, name);
+  if (!path) throw new MutationError(`No local "${name}" in this project`);
+
+  const renamed = renameLocalsEntry(files.get(path) ?? "", name, trimmed);
+  if (renamed === null) {
+    throw new MutationError(`No local "${name}" in this project`);
+  }
+  files.set(path, renamed);
+
+  const pattern = new RegExp(`\\blocal\\.${escapeRegExp(name)}\\b`, "g");
+  for (const [otherPath, content] of files) {
+    files.set(otherPath, content.replace(pattern, `local.${trimmed}`));
+  }
+
+  return `Rename local ${name} to ${trimmed}`;
+}
+
+/**
+ * Removes a local and every argument that read it.
+ *
+ * Same reasoning as removing a module: an argument left pointing at a local that
+ * no longer exists is a configuration that does not plan.
+ */
+function removeLocal(files: Map<string, string>, name: string): string {
+  const path = fileOfLocal(files, name);
+  if (!path) throw new MutationError(`No local "${name}" in this project`);
+
+  const without = removeLocalsEntry(files.get(path) ?? "", name);
+  if (without === null) {
+    throw new MutationError(`No local "${name}" in this project`);
+  }
+  files.set(path, without);
+
+  const pattern = new RegExp(`\\blocal\\.${escapeRegExp(name)}\\b`);
+  for (const [otherPath, content] of files) {
+    files.set(otherPath, dropAttributesMatching(content, pattern));
+  }
+
+  return `Remove local ${name}`;
+}
+
+function connectLocal(
+  files: Map<string, string>,
+  mutation: Extract<ProjectGraphMutation, { action: "connect-local" }>,
+): string {
+  if (!fileOfLocal(files, mutation.local)) {
+    throw new MutationError(`No local "${mutation.local}" in this project`);
+  }
+
+  wireLocal(files, mutation.local, mutation.target, mutation.targetInput);
+
+  return `Wire ${mutation.target}.${mutation.targetInput} to local.${mutation.local}`;
+}
+
+/** Points one module argument at a local. */
+function wireLocal(
+  files: Map<string, string>,
+  local: string,
+  target: string,
+  targetInput: string,
+): void {
+  const path = fileOfModule(files, target);
+  if (!path) throw new MutationError(`No module "${target}" in this project`);
+
+  const updated = setBlockAttribute(files.get(path) ?? "", {
+    type: "module",
+    label: target,
+    name: targetInput,
+    value: localReference(local),
+  });
+
+  if (updated === null) {
+    throw new MutationError(`No module "${target}" in this project`);
+  }
+  files.set(path, updated);
 }
 
 function setArgument(
@@ -577,7 +833,19 @@ function removeModule(files: Map<string, string>, name: string): string {
  * from the rewritten text rather than reusing the spans it just invalidated.
  */
 function dropReferencesTo(content: string, name: string): string {
-  const pattern = new RegExp(`\\bmodule\\.${name}\\b`);
+  return dropAttributesMatching(
+    content,
+    new RegExp(`\\bmodule\\.${escapeRegExp(name)}\\b`),
+  );
+}
+
+/**
+ * Drops every module argument whose value matches `pattern`.
+ *
+ * Shared by module and local removal: both leave arguments pointing at
+ * something that is gone, and the repair is identical.
+ */
+function dropAttributesMatching(content: string, pattern: RegExp): string {
   let result = content;
 
   for (;;) {
@@ -592,6 +860,10 @@ function dropReferencesTo(content: string, name: string): string {
     if (stripped === null || stripped === result) return result;
     result = stripped;
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function findReferencingAttribute(

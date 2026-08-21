@@ -47,6 +47,320 @@ export interface CostDriverEntry {
 }
 
 export const COST_DRIVER_MAP: Record<string, CostDriverEntry> = {
+  // ---- Added after measuring the gap against a real catalogue -----------
+  //
+  // Every one of these appeared in imported modules with no entry. Only the ones
+  // whose pricing shape is unambiguous are here; where the answer depended on a
+  // tier or an option I could not read from the source, the type is left out on
+  // purpose so the UI keeps saying "check the pricing page" instead of stating a
+  // number nobody verified.
+  aws_apprunner_service: {
+    costClass: "recurring",
+    driver:
+      "Provisioned container memory per hour whether or not a request arrives, plus vCPU only while requests are being served.",
+    sizedBy: ["cpu", "memory", "min_size", "max_size"],
+  },
+  aws_appsync_graphql_api: {
+    costClass: "usage",
+    driver:
+      "Per query and per real-time message delivered. Nothing while the API is idle.",
+  },
+  aws_appsync_api_cache: {
+    costClass: "recurring",
+    driver:
+      "A cache instance billed per hour for as long as it exists, by instance size.",
+    sizedBy: ["cache_instance_type", "type"],
+  },
+  aws_memorydb_cluster: {
+    costClass: "recurring",
+    driver:
+      "Node hours per node, plus the data written to the durable transaction log.",
+    sizedBy: ["node_type", "num_shards", "num_replicas_per_shard"],
+  },
+  aws_emr_cluster: {
+    costClass: "recurring",
+    driver:
+      "Instance hours for every node plus an EMR surcharge per instance. A cluster left running bills whether a job is on it or not.",
+    sizedBy: ["instance_type", "instance_count", "core_instance_count"],
+  },
+  aws_emr_instance_fleet: {
+    costClass: "recurring",
+    driver: "Instance hours for the fleet's nodes, plus the EMR surcharge.",
+    sizedBy: ["target_on_demand_capacity", "target_spot_capacity"],
+  },
+  aws_emr_instance_group: {
+    costClass: "recurring",
+    driver: "Instance hours for the group's nodes, plus the EMR surcharge.",
+    sizedBy: ["instance_type", "instance_count"],
+  },
+  aws_grafana_workspace: {
+    costClass: "recurring",
+    driver:
+      "Per active user per month, by licence type. An editor costs several times a viewer.",
+  },
+  aws_dms_replication_config: {
+    costClass: "recurring",
+    driver:
+      "Serverless DMS capacity units per hour between the configured minimum and maximum, plus log storage.",
+    sizedBy: ["min_capacity_units", "max_capacity_units"],
+  },
+  aws_s3_directory_bucket: {
+    costClass: "usage",
+    driver:
+      "S3 Express One Zone: stored GB at a higher rate than standard S3, plus requests and per-GB request charges.",
+  },
+  aws_s3_object: {
+    costClass: "usage",
+    driver:
+      "Stored GB per month at the bucket's storage class, plus the request that put it there.",
+  },
+  aws_fsx_openzfs_snapshot: {
+    costClass: "recurring",
+    driver:
+      "Snapshot storage per GB month for as long as the snapshot is kept.",
+  },
+  aws_cloudwatch_composite_alarm: {
+    costClass: "recurring",
+    driver:
+      "A flat charge per composite alarm per month, independent of how often it changes state.",
+  },
+  aws_cloudwatch_event_archive: {
+    costClass: "usage",
+    driver: "Stored GB of archived events per month.",
+    sizedBy: ["retention_days"],
+  },
+  aws_kms_replica_key: {
+    costClass: "recurring",
+    driver:
+      "A replica is a billable key: a flat monthly charge per key version, plus requests made against it.",
+  },
+  aws_kms_replica_external_key: {
+    costClass: "recurring",
+    driver:
+      "A replica is a billable key: a flat monthly charge per key version, plus requests made against it.",
+  },
+  aws_s3_bucket_accelerate_configuration: {
+    costClass: "usage",
+    driver:
+      "Transfer Acceleration adds a per-GB premium on top of normal transfer, charged only for uploads that were actually accelerated.",
+  },
+
+  aws_lambda_provisioned_concurrency_config: {
+    costClass: "recurring",
+    driver:
+      "Provisioned concurrency is billed per GB-second for as long as it is configured, whether the function is invoked or not — the one Lambda charge that does not go to zero when idle.",
+    sizedBy: ["provisioned_concurrent_executions", "memory_size"],
+  },
+  aws_db_proxy: {
+    costClass: "recurring",
+    driver:
+      "An hourly charge per vCPU of the database instances behind the proxy, for as long as the proxy exists.",
+  },
+  aws_elasticache_serverless_cache: {
+    costClass: "usage",
+    driver:
+      "Per GB-hour of data stored plus ElastiCache Processing Units for the requests served.",
+    sizedBy: ["max_data_storage", "max_ecpu_per_second"],
+  },
+  aws_fsx_ontap_file_system: {
+    costClass: "recurring",
+    driver:
+      "Provisioned SSD capacity and throughput per hour, plus capacity pool storage for cold data.",
+    sizedBy: ["storage_capacity", "throughput_capacity", "deployment_type"],
+  },
+  aws_fsx_file_cache: {
+    costClass: "recurring",
+    driver: "Provisioned cache storage and throughput per hour.",
+    sizedBy: ["storage_capacity", "throughput_capacity"],
+  },
+  aws_fsx_backup: {
+    costClass: "recurring",
+    driver: "Backup storage per GB month for as long as the backup is kept.",
+  },
+  aws_emrserverless_application: {
+    costClass: "usage",
+    driver:
+      "Per vCPU-hour and GB-hour while jobs run. Pre-initialised capacity, if configured, bills whether jobs run or not.",
+    sizedBy: ["initial_capacity", "maximum_capacity"],
+  },
+  aws_dsql_cluster: {
+    costClass: "usage",
+    driver:
+      "Per request unit plus stored GB; nothing while the cluster is idle.",
+  },
+  aws_cloudwatch_metric_stream: {
+    costClass: "usage",
+    driver:
+      "Per metric update streamed, plus whatever the destination firehose or bucket charges to receive it.",
+  },
+  aws_cloudwatch_log_anomaly_detector: {
+    costClass: "usage",
+    driver: "Per GB of log data scanned for anomalies.",
+  },
+  aws_cloudfront_monitoring_subscription: {
+    costClass: "recurring",
+    driver:
+      "Additional CloudFront metrics, billed per distribution per month for as long as the subscription exists.",
+  },
+  aws_db_instance_automated_backups_replication: {
+    costClass: "recurring",
+    driver:
+      "Cross-region backup storage per GB month, plus the transfer that copies each backup out.",
+  },
+  aws_globalaccelerator_custom_routing_accelerator: {
+    costClass: "recurring",
+    driver:
+      "A fixed hourly charge per accelerator plus a per-GB premium on the traffic it carries.",
+  },
+  aws_ecrpublic_repository: {
+    costClass: "usage",
+    driver:
+      "Storage beyond the public free allowance, plus data transfer out to anonymous pullers.",
+  },
+
+  aws_msk_serverless_cluster: {
+    costClass: "usage",
+    driver:
+      "Per partition-hour plus the data written and read, and storage for what is retained.",
+  },
+  aws_prometheus_workspace: {
+    costClass: "usage",
+    driver:
+      "Per metric sample ingested, per GB of metrics stored, and per query processed.",
+  },
+  aws_opensearchserverless_collection: {
+    costClass: "recurring",
+    driver:
+      "OpenSearch Compute Units per hour with a minimum that is charged whether or not anything is indexed, plus stored GB.",
+  },
+  aws_pipes_pipe: {
+    costClass: "usage",
+    driver: "Per request processed through the pipe, by payload size.",
+  },
+  aws_rds_cluster_activity_stream: {
+    costClass: "usage",
+    driver:
+      "Free itself, but every event is written to Kinesis and to KMS, both of which bill for what arrives.",
+  },
+
+  // Free, and each one worth stating rather than leaving to a rule: these are
+  // the resources people most often expect to cost something.
+  aws_fsx_ontap_volume: {
+    costClass: "free",
+    driver:
+      "A volume draws on the file system's provisioned capacity rather than carrying a charge of its own.",
+  },
+  aws_db_proxy_endpoint: { costClass: "free" },
+  aws_lb_trust_store_revocation: { costClass: "free" },
+  aws_msk_topic: { costClass: "free" },
+  aws_mskconnect_custom_plugin: { costClass: "free" },
+  aws_opensearch_domain_saml_options: { costClass: "free" },
+  aws_opensearch_outbound_connection: { costClass: "free" },
+  aws_dsql_cluster_peering: { costClass: "free" },
+  aws_lambda_function_url: { costClass: "free" },
+  aws_lambda_function_recursion_config: { costClass: "free" },
+  aws_db_proxy_default_target_group: { costClass: "free" },
+  aws_elasticache_global_replication_group: {
+    costClass: "free",
+    driver:
+      "Free itself; the regional clusters it joins each bill for their own nodes, and cross-region replication traffic is charged as transfer.",
+  },
+  aws_fsx_ontap_storage_virtual_machine: { costClass: "free" },
+  aws_fsx_openzfs_volume: {
+    costClass: "free",
+    driver:
+      "A volume draws on the file system's provisioned capacity rather than carrying a charge of its own.",
+  },
+  aws_emrcontainers_virtual_cluster: {
+    costClass: "free",
+    driver: "Free itself; the EKS pods that run the jobs are what bill.",
+  },
+  aws_emr_studio: { costClass: "free" },
+  aws_emr_studio_session_mapping: { costClass: "free" },
+  aws_codedeploy_app: { costClass: "free" },
+  aws_codedeploy_deployment_group: {
+    costClass: "free",
+    driver:
+      "Free for deployments to EC2, Lambda and ECS. Only on-premises instances carry a per-deployment charge.",
+  },
+  aws_cloudwatch_query_definition: { costClass: "free" },
+  aws_cloudwatch_event_connection: { costClass: "free" },
+  aws_cloudwatch_log_delivery: { costClass: "free" },
+  aws_cloudwatch_log_delivery_source: { costClass: "free" },
+  aws_cloudwatch_log_delivery_destination: {
+    costClass: "free",
+    driver:
+      "Free itself; whatever it delivers to — a log group, a bucket, a firehose — bills for what arrives.",
+  },
+  aws_ecr_repository_creation_template: { costClass: "free" },
+  aws_ecr_replication_configuration: {
+    costClass: "free",
+    driver:
+      "Free itself; the copies it creates are billed as ECR storage in each destination region.",
+  },
+  aws_ecs_cluster_capacity_providers: { costClass: "free" },
+  aws_globalaccelerator_custom_routing_listener: { costClass: "free" },
+  aws_globalaccelerator_custom_routing_endpoint_group: { costClass: "free" },
+  aws_lb_trust_store: { costClass: "free" },
+  aws_cloudfront_trust_store: { costClass: "free" },
+  aws_appconfig_deployment: { costClass: "free" },
+  aws_apprunner_connection: { costClass: "free" },
+  aws_apprunner_observability_configuration: { costClass: "free" },
+  aws_apprunner_auto_scaling_configuration_version: { costClass: "free" },
+  aws_appsync_api_key: { costClass: "free" },
+  aws_eks_access_entry: { costClass: "free" },
+  aws_eks_addon: {
+    costClass: "free",
+    driver:
+      "Free itself, and most add-ons are free — but a few from the Marketplace carry their own charge, and the nodes an add-on runs on always do.",
+  },
+  aws_batch_job_definition: { costClass: "free" },
+  aws_batch_job_queue: {
+    costClass: "free",
+    driver:
+      "Free itself. What runs the jobs is the compute environment behind it, which bills for its instances.",
+  },
+  aws_ecs_task_set: { costClass: "free" },
+  aws_placement_group: { costClass: "free" },
+  aws_ecr_pull_through_cache_rule: {
+    costClass: "free",
+    driver:
+      "Free itself; the images it copies in are billed as ordinary ECR storage.",
+  },
+  aws_lambda_function_event_invoke_config: { costClass: "free" },
+  aws_vpc_security_group_rules_exclusive: { costClass: "free" },
+  aws_vpc_security_group_vpc_association: { costClass: "free" },
+  aws_memorydb_acl: { costClass: "free" },
+  aws_memorydb_user: { costClass: "free" },
+  aws_dms_endpoint: { costClass: "free" },
+  aws_dms_s3_endpoint: { costClass: "free" },
+  aws_dms_certificate: { costClass: "free" },
+  aws_dms_event_subscription: { costClass: "free" },
+  aws_appsync_datasource: { costClass: "free" },
+  aws_appsync_resolver: { costClass: "free" },
+  aws_appsync_function: { costClass: "free" },
+  aws_appsync_domain_name: { costClass: "free" },
+  aws_grafana_workspace_api_key: { costClass: "free" },
+  aws_grafana_workspace_service_account: { costClass: "free" },
+  aws_grafana_workspace_service_account_token: { costClass: "free" },
+  aws_grafana_workspace_saml_configuration: { costClass: "free" },
+  aws_appconfig_application: { costClass: "free" },
+  aws_appconfig_environment: { costClass: "free" },
+  aws_appconfig_configuration_profile: { costClass: "free" },
+  aws_appconfig_deployment_strategy: { costClass: "free" },
+  aws_apprunner_vpc_connector: { costClass: "free" },
+  aws_globalaccelerator_listener: {
+    costClass: "free",
+    driver:
+      "Free itself. The accelerator in front of it carries the fixed hourly charge and the data transfer premium.",
+  },
+  aws_cloudwatch_event_api_destination: { costClass: "free" },
+  aws_cloudwatch_log_metric_filter: { costClass: "free" },
+  aws_ec2_tag: { costClass: "free" },
+  aws_vpn_gateway_attachment: { costClass: "free" },
+  aws_elasticache_user: { costClass: "free" },
+  aws_redshift_subnet_group: { costClass: "free" },
+
   // ---- Compute ----------------------------------------------------------
   aws_ec2_host: {
     costClass: "recurring",
@@ -713,7 +1027,7 @@ export const COST_DRIVER_MAP: Record<string, CostDriverEntry> = {
  *
  * @see https://www.infracost.io/docs/supported_resources/aws/
  */
-const FREE_RESOURCE_TYPES: ReadonlySet<string> = new Set([
+export const FREE_RESOURCE_TYPES: ReadonlySet<string> = new Set([
   "aws_accessanalyzer_analyzer",
   "aws_accessanalyzer_archive_rule",
   "aws_acmpca_permission",
@@ -920,6 +1234,10 @@ const FREE_RESOURCE_TYPES: ReadonlySet<string> = new Set([
   "aws_ram_resource_share",
   "aws_ram_resource_share_accepter",
   "aws_rds_cluster_endpoint",
+  // Names the subnets a Redshift cluster may launch into. It is VPC plumbing
+  // that happens to be typed `aws_redshift_*`, so it appears under Redshift
+  // while costing nothing on its own — the cluster is what bills.
+  "aws_redshift_subnet_group",
   "aws_resourcegroups_group",
   "aws_route53_resolver_dnssec_config",
   "aws_route53_resolver_query_log_config",
@@ -960,6 +1278,10 @@ const FREE_RESOURCE_TYPES: ReadonlySet<string> = new Set([
   "aws_transfer_ssh_key",
   "aws_transfer_user",
   "aws_volume_attachment",
+  // Block Public Access is a VPC setting rather than a thing with a meter: the
+  // options block turns it on for the VPC, an exclusion exempts one subnet.
+  "aws_vpc_block_public_access_exclusion",
+  "aws_vpc_block_public_access_options",
   "aws_vpc_dhcp_options",
   "aws_vpc_dhcp_options_association",
   "aws_vpc_endpoint_connection_notification",
@@ -991,13 +1313,70 @@ const FREE_RESOURCE_TYPES: ReadonlySet<string> = new Set([
 
 const FREE_ENTRY: CostDriverEntry = { costClass: "free" };
 
-/** `null` means "not in the table", which is reported rather than assumed free. */
+/**
+ * Name endings that mean "a setting on something else", not a thing of its own.
+ *
+ * A rule rather than more table rows, because this is where the volume is. The
+ * AWS provider carries roughly 1,500 resource types and gains more every week, so
+ * a table that aims at completeness is stale the day it is finished — but two
+ * thirds of what it was missing here are policies, attachments, associations,
+ * tags and aliases. AWS bills for the queue, not for its redrive policy; for the
+ * role, not for the policy attached to it.
+ *
+ * Deliberately conservative. Three families that *look* like configuration are
+ * left out because they bill, and a rule that swept them up would understate a
+ * real charge:
+ *
+ *   `_configuration`  `aws_s3_bucket_accelerate_configuration` turns on Transfer
+ *                     Acceleration, which carries a per-GB premium
+ *   `_key`            a KMS replica key is a billable key, while a Grafana
+ *                     workspace API key is not
+ *   `_cache`          `aws_appsync_api_cache` is a cache instance per hour
+ *
+ * Those stay unclassified unless somebody writes them down by hand, which is the
+ * right outcome: "check the pricing page" is more useful than a confident zero.
+ */
+export const NO_CHARGE_SUFFIXES: readonly string[] = [
+  "_policy",
+  "_policy_attachment",
+  "_attachment",
+  "_association",
+  "_membership",
+  "_permission",
+  "_parameter_group",
+  "_subnet_group",
+  "_option_group",
+  "_alias",
+  "_tag",
+  "_target",
+  "_rotation",
+  "_metric_filter",
+  "_route_propagation",
+];
+
+const STRUCTURAL_FREE_ENTRY: CostDriverEntry = {
+  costClass: "free",
+  driver:
+    "A setting on another resource rather than a resource that bills. Whatever it governs is where the charge lands.",
+};
+
+/**
+ * `null` means "not in the table", which is reported rather than assumed free.
+ *
+ * Three layers, weakest claim last: the curated table, the explicit free list,
+ * then the structural rule above. Anything the rule does not recognise is still
+ * reported as unclassified.
+ */
 export function resolveCostDriver(
   resourceType: string,
 ): CostDriverEntry | null {
   const curated = COST_DRIVER_MAP[resourceType];
   if (curated) return curated;
-  return FREE_RESOURCE_TYPES.has(resourceType) ? FREE_ENTRY : null;
+  if (FREE_RESOURCE_TYPES.has(resourceType)) return FREE_ENTRY;
+
+  return NO_CHARGE_SUFFIXES.some((suffix) => resourceType.endsWith(suffix))
+    ? STRUCTURAL_FREE_ENTRY
+    : null;
 }
 
 export const COST_CLASS_LABELS: Record<CostClass, string> = {

@@ -40,6 +40,15 @@ export interface TerraformOutput {
   name: string;
   description: string | null;
   sensitive: boolean;
+  /**
+   * The `value` expression, as written.
+   *
+   * Terraform outputs declare no type, so this is the only evidence of what one
+   * hands back. Stored raw rather than as a derived type: the expression is the
+   * durable fact, and improving the inference should not require re-importing
+   * every module.
+   */
+  valueExpression: string | null;
   file: string | null;
 }
 
@@ -61,6 +70,19 @@ export interface TerraformResource {
   /** Provider local name derived from the type prefix. */
   provider: string;
   file: string | null;
+  /**
+   * The `count` or `for_each` expression, when the block may produce nothing.
+   *
+   * Null means the block is always created. This exists because reading HCL is
+   * not the same as reading a plan: `count = var.create_x ? 1 : 0` is a resource
+   * that is *in the code* and usually not deployed, and a diagram that cannot
+   * tell the two apart states as fact something that depends on a variable
+   * nobody has set yet.
+   *
+   * A literal `count = 2` is not a condition and is recorded as null: it says how
+   * many, not whether.
+   */
+  conditionalOn: string | null;
 }
 
 export interface TerraformModuleCall {
@@ -71,12 +93,33 @@ export interface TerraformModuleCall {
   file: string | null;
 }
 
+/**
+ * A named value from a `locals` block.
+ *
+ * Reported as its own entity rather than only merged into the reference
+ * resolver, because the project canvas draws locals: a user placing one needs
+ * to see where it lives and what it says, not just that something resolved
+ * through it.
+ */
+export interface TerraformLocal {
+  name: string;
+  /**
+   * The expression as the parser returned it, with `${…}` already unwrapped.
+   * Kept as text because a local can be any HCL expression, and evaluating it
+   * is Terraform's job rather than ours.
+   */
+  expression: string | null;
+  file: string | null;
+}
+
 export interface TerraformAnalysis {
   variables: TerraformVariable[];
   outputs: TerraformOutput[];
   providers: TerraformProvider[];
   resources: TerraformResource[];
   moduleCalls: TerraformModuleCall[];
+  /** Named values from `locals` blocks, merged across files. */
+  locals: TerraformLocal[];
   /**
    * Edges between the blocks above, i.e. which resource consumes which. Drives
    * the connection graph.
@@ -109,6 +152,7 @@ export function emptyAnalysis(): TerraformAnalysis {
     providers: [],
     resources: [],
     moduleCalls: [],
+    locals: [],
     references: [],
     requiredVersion: null,
     errors: [],

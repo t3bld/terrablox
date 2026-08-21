@@ -23,7 +23,8 @@ export class GithubRequestError extends Error {
   }
 }
 
-async function githubFetch(
+/** Exported so sibling GitHub modules share one place for auth and error shape. */
+export async function githubFetch(
   token: string,
   path: string,
   init?: RequestInit,
@@ -82,6 +83,51 @@ export async function getRepository(
 ): Promise<RepoSummary> {
   const res = await githubFetch(token, `/repos/${repoFullName}`);
   return toSummary((await res.json()) as RepoResponse);
+}
+
+/**
+ * Where a new repository can be created: the signed-in person, plus their orgs.
+ *
+ * `login` is the account name and `personal` marks the user's own namespace,
+ * which matters because {@link createRepository} distinguishes them by *absence*
+ * of an owner — posting a personal login to `/orgs/{login}/repos` is a 404.
+ */
+export interface RepoOwner {
+  login: string;
+  personal: boolean;
+}
+
+/**
+ * The owners this token may create a repository under.
+ *
+ * The personal account comes first because it is the default: it always exists
+ * and needs no permission from anybody.
+ *
+ * Organisations the user belongs to are listed even though creating a repository
+ * in one may still be refused — GitHub decides that per org, and asking here would
+ * cost a request per organisation to learn something the create call reports
+ * anyway. An org missing from this list, on the other hand, is usually the App's
+ * installation scope rather than a mistake.
+ */
+export async function listRepoOwners(token: string): Promise<RepoOwner[]> {
+  const [user, orgs] = await Promise.all([
+    githubFetch(token, "/user")
+      .then((res) => res.json() as Promise<{ login?: string }>)
+      .catch(() => null),
+    githubFetch(token, "/user/orgs?per_page=100")
+      .then((res) => res.json() as Promise<Array<{ login?: string }>>)
+      .catch(() => []),
+  ]);
+
+  const owners: RepoOwner[] = [];
+
+  if (user?.login) owners.push({ login: user.login, personal: true });
+
+  for (const org of orgs) {
+    if (org.login) owners.push({ login: org.login, personal: false });
+  }
+
+  return owners;
 }
 
 /**

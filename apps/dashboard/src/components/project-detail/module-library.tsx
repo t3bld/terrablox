@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { ModuleIcon } from "@/components/module-icon";
+
 interface LibraryVersion {
   id: string;
   versionTag: string | null;
@@ -19,16 +21,23 @@ interface LibraryVersion {
 
 interface LibraryRepository {
   key: string;
+  sourceId: string | null;
   name: string;
   description: string | null;
   provider: string | null;
-  latestVersion: LibraryVersion | null;
+  iconMode: string;
+  hasIcon: boolean;
+  iconName: string | null;
+  defaultVersion: LibraryVersion | null;
   versions: LibraryVersion[];
 }
 
 interface ModuleLibraryProps {
-  /** Adds a module at a default position, for users who would rather click. */
-  onAdd: (moduleId: string) => void;
+  /**
+   * Adds a module at a default position, for users who would rather click.
+   * `name` is passed for the same reason as on a drag: to label the placeholder.
+   */
+  onAdd: (moduleId: string, name: string) => void;
   disabled?: boolean;
   /**
    * Module id → why the canvas needs it, from the graph's open requirements.
@@ -107,16 +116,16 @@ export function ModuleLibrary({
     );
   }, [repositories, search, suggestions]);
 
-  // The newest version is what a new module should be pinned to; older ones are
-  // changed in the inspector, where the version is actually visible.
+  // The repository's default version — its tracked branch — is what a new module
+  // is pinned to; another version is chosen in the inspector, where the version
+  // is actually visible.
   function moduleIdFor(repo: LibraryRepository): string | null {
-    return repo.latestVersion?.id ?? null;
+    return repo.defaultVersion?.id ?? null;
   }
 
   return (
     <div className="flex h-full flex-col">
       <div className="border-b p-3">
-        <h2 className="mb-2 text-sm font-semibold">Module library</h2>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -158,9 +167,11 @@ export function ModuleLibrary({
                   draggable={!disabled && Boolean(moduleId)}
                   onDragStart={(event) => {
                     if (!moduleId) return;
+                    // The name travels with the id so the canvas can label the
+                    // placeholder it draws before the commit returns.
                     event.dataTransfer.setData(
                       PROJECT_MODULE_DRAG_TYPE,
-                      moduleId,
+                      JSON.stringify({ moduleId, name: repo.name }),
                     );
                     event.dataTransfer.effectAllowed = "copy";
                   }}
@@ -181,6 +192,15 @@ export function ModuleLibrary({
 
                   <div className="flex items-center gap-1.5">
                     <GripVertical className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <ModuleIcon
+                      className="h-6 w-6"
+                      icon={{
+                        sourceId: repo.sourceId,
+                        iconMode: repo.iconMode,
+                        hasIcon: repo.hasIcon,
+                        iconName: repo.iconName,
+                      }}
+                    />
                     <p
                       className="min-w-0 flex-1 truncate text-sm font-medium"
                       title={repo.description ?? repo.name}
@@ -190,7 +210,7 @@ export function ModuleLibrary({
                     <button
                       type="button"
                       disabled={disabled || !moduleId}
-                      onClick={() => moduleId && onAdd(moduleId)}
+                      onClick={() => moduleId && onAdd(moduleId, repo.name)}
                       title="Add to canvas"
                       className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
                     >

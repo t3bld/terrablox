@@ -15,12 +15,34 @@ import {
   moduleArchitectureEntry,
   resolveServiceIcon,
 } from "./aws-architecture";
+import { iconOfService, serviceOfResource } from "./aws-services";
 import { parseModuleSourceRef } from "./module-link";
+import { meaningfulResourceName } from "./resource-label";
 
 export interface ArchitectureResource {
   resourceType: string;
   resourceName: string | null;
   kind: string;
+  /**
+   * Only read to name the service a supporting resource belongs to, and only
+   * consulted for types that are not `aws_*`. Optional so a caller with less
+   * than the full DTO — the nested architecture endpoint, a test — still fits.
+   */
+  providerName?: string | null;
+  /**
+   * The `count`/`for_each` expression guarding the block, when there is one.
+   *
+   * Optional, and null on anything imported before it was recorded — which is
+   * why its absence has to mean "unconditional", the behaviour those modules
+   * were already drawn with.
+   */
+  conditionalOn?: string | null;
+}
+
+/** How a subnet reaches an internet gateway, and whether that is guaranteed. */
+interface PublicRoute {
+  /** The expression the path depends on, or null when it always exists. */
+  conditionalOn: string | null;
 }
 
 /**
@@ -30,6 +52,16 @@ export interface ArchitectureResource {
 export interface ArchitectureModuleCall {
   name: string;
   source: string;
+  /**
+   * `registry`, `git` or `local`, as recorded at import.
+   *
+   * Needed because a registry address means something different from a Git URL:
+   * `terraform-aws-modules/kms/aws` names the *provider* last, not the module,
+   * so reading its final segment as the repository produced a box labelled
+   * "aws" with no icon. {@link parseModuleSourceRef} can only tell the two
+   * apart when it is told which it is looking at.
+   */
+  sourceKind?: string | null;
   /** Set when the call resolves to a module the user has imported. */
   moduleId?: string | null;
   /**
@@ -73,6 +105,33 @@ export interface ArchitectureReference {
 
 export type ArchitectureNodeType = "vpc" | "subnet" | "service" | "module";
 
+/**
+ * Resources that serve a drawn box without being one themselves, gathered under
+ * the service they belong to.
+ *
+ * This is the answer to the question the diagram otherwise leaves hanging. A
+ * Step Functions module declares fifteen resources and draws two; thirteen of
+ * them are one IAM role with five policies and their attachments. Those thirteen
+ * are not thirteen things on an architecture diagram — an IAM role is a property
+ * of the state machine, not a component traffic flows through, and giving it a
+ * box of its own would put the same box in every module, wired to everything and
+ * explaining nothing.
+ *
+ * So they are attributed instead of drawn: the state machine carries them, says
+ * how many there are, and lists them when asked.
+ */
+export interface ArchitectureAttachment {
+  /** As a person names it — "IAM", "KMS" — from `serviceOfResource`. */
+  service: string;
+  icon?: string;
+  addresses: string[];
+  /**
+   * Another drawn box claims at least one of these too. A role used by two
+   * Lambdas genuinely belongs to both, and saying so is better than picking one.
+   */
+  shared?: boolean;
+}
+
 export interface ArchitectureNode {
   /** Version this call asks for, when it differs from what was imported. */
   versionMismatch?: string;
@@ -82,6 +141,15 @@ export interface ArchitectureNode {
   /** The Terraform name, shown small; omitted when it adds nothing. */
   sublabel?: string;
   icon?: string;
+  /**
+   * On a public subnet whose route to the internet gateway is behind a `count`
+   * or `for_each`: the expression it depends on.
+   *
+   * Information, not a reclassification. The subnet is still drawn public,
+   * because the code does route it out; this is what a reader needs in order to
+   * check whether their own inputs actually switch that route on.
+   */
+  publicRouteCondition?: string;
   parentId?: string;
   /** Drawn differently: its detail lives in another repository. */
   isModuleCall?: boolean;
@@ -97,6 +165,11 @@ export interface ArchitectureNode {
   path?: string;
   /** Every Terraform address folded into this node, for the detail panel. */
   addresses: string[];
+  /**
+   * Undrawn resources serving this box, by service. Ordered by size, so the
+   * first entry is the one worth putting on the tile.
+   */
+  attachments?: ArchitectureAttachment[];
 }
 
 export interface ArchitectureEdge {
@@ -115,6 +188,13 @@ export interface ArchitectureEdge {
 export interface ArchitectureOmission {
   address: string;
   reason: "data-source" | "detail" | "unknown-type" | "unknown-module";
+  /**
+   * Carried rather than parsed back out of `address`, because the address of a
+   * resource inside a nested module has the call path in front of it and the
+   * type is no longer its first segment.
+   */
+  resourceType?: string;
+  providerName?: string | null;
 }
 
 export interface ArchitectureGraph {
@@ -161,21 +241,98 @@ export function buildArchitecture(
 
   const publicSubnets = findPublicSubnets(references, byAddress);
 
-  // Which container each address sits in, resolved before nodes exist so a
-  // subnet can be attached to its VPC in the same pass.
+  /**
+   * How good a candidate container is, judged by what it *is* rather than by
+   * which attribute named it.
+   *
+   *   2  a subnet — the most precise answer, and anything in a subnet is in that
+   *      subnet's VPC anyway
+   *   1  a VPC
+   *   0  anything else, which cannot contain a box no matter what named it
+   *
+   * Read from the architecture table rather than hardcoded, so a container type
+   * added there is understood here without a second edit.
+   */
+  const frameRank = (address: string): 0 | 1 | 2 => {
+    const resource = byAddress.get(address);
+    if (!resource) return 0;
+    if (architectureEntry(resource.resourceType)?.role !== "container")
+      return 0;
+    return resource.resourceType === "aws_subnet" ? 2 : 1;
+  };
+
+  /**
+   * Containment targets per address, before nodes exist so a subnet can be
+   * attached to its VPC in the same pass.
+   *
+   * Ranked rather than first-one-wins, and this is a fix rather than a
+   * refinement. A real module reaches its VPC through a local:
+   *
+   *   locals { vpc_id = try(aws_vpc_ipv4_cidr_block_association.this[0].vpc_id,
+   *                         aws_vpc.this[0].id, "") }
+   *
+   * so the analyser records `aws_subnet.public -> aws_vpc.this` *and*
+   * `aws_subnet.public -> aws_vpc_ipv4_cidr_block_association.this`, both through
+   * `vpc_id`. Keeping whichever arrived first made the placement depend on the
+   * order Postgres returned the rows — and for the upstream VPC module it picked
+   * the association, which is not drawn, so all seven subnets were rendered
+   * outside the VPC frame they belong to.
+   */
   const containerOf = new Map<string, string>();
+  const containerRank = new Map<string, number>();
+
   for (const ref of references) {
-    const relation = containmentRelation(ref);
-    if (!relation) continue;
+    if (!containmentRelation(ref)) continue;
     if (!byAddress.has(ref.fromAddress) || !byAddress.has(ref.toAddress))
       continue;
 
-    // A subnet reference wins over a VPC one: something placed in a subnet is
-    // in that VPC anyway, and the subnet is the more precise answer.
-    const existing = containerOf.get(ref.fromAddress);
-    if (existing && relation === "vpc") continue;
+    const rank = frameRank(ref.toAddress);
+    const best = containerRank.get(ref.fromAddress) ?? -1;
+
+    // Ties are broken by address so the result cannot depend on row order: two
+    // subnets are never both the container, but a module with two VPCs would
+    // otherwise draw differently on every request.
+    const current = containerOf.get(ref.fromAddress);
+    if (
+      rank < best ||
+      (rank === best && current !== undefined && current <= ref.toAddress)
+    ) {
+      continue;
+    }
 
     containerOf.set(ref.fromAddress, ref.toAddress);
+    containerRank.set(ref.fromAddress, rank);
+  }
+
+  /**
+   * Containment that runs through something we do not draw.
+   *
+   * When the only container an address names is not a frame — the association
+   * above, a `vpc_endpoint`, a resource the table omits — that intermediary
+   * usually names the real frame itself. Following it one hop recovers the
+   * placement instead of dropping the box out of every frame.
+   *
+   * Bounded and visited-guarded: `try()` chains can be several deep and a
+   * malformed module could name itself.
+   */
+  for (const [address, target] of [...containerOf.entries()]) {
+    if (frameRank(target) > 0) continue;
+
+    const seen = new Set<string>([address, target]);
+    let next = containerOf.get(target);
+    let hops = 0;
+
+    while (next && hops < 4) {
+      if (frameRank(next) > 0) {
+        containerOf.set(address, next);
+        containerRank.set(address, frameRank(next));
+        break;
+      }
+      if (seen.has(next)) break;
+      seen.add(next);
+      next = containerOf.get(next);
+      hops += 1;
+    }
   }
 
   const nodes: ArchitectureNode[] = [];
@@ -193,6 +350,8 @@ export function buildArchitecture(
       omissions.push({
         address: resourceAddress(resource),
         reason: "data-source",
+        resourceType: resource.resourceType,
+        providerName: resource.providerName,
       });
     }
   }
@@ -201,13 +360,18 @@ export function buildArchitecture(
     const address = resourceAddress(resource);
     const entry = architectureEntry(resource.resourceType);
 
+    const provenance = {
+      resourceType: resource.resourceType,
+      providerName: resource.providerName,
+    };
+
     if (!entry) {
       unmapped.add(resource.resourceType);
-      omissions.push({ address, reason: "unknown-type" });
+      omissions.push({ address, reason: "unknown-type", ...provenance });
       continue;
     }
     if (entry.role === "omit") {
-      omissions.push({ address, reason: "detail" });
+      omissions.push({ address, reason: "detail", ...provenance });
       continue;
     }
 
@@ -235,7 +399,26 @@ export function buildArchitecture(
     }
 
     const isSubnet = resource.resourceType === "aws_subnet";
-    const isPublic = isSubnet && publicSubnets.has(address);
+    const publicRoute = isSubnet ? publicSubnets.get(address) : undefined;
+    const isPublic = publicRoute !== undefined;
+
+    /**
+     * The condition the route out depends on, when there is one — reported, not
+     * acted on.
+     *
+     * Drawing such a subnet as private was tried and was worse. In a real module
+     * essentially every block is guarded: the upstream VPC module wraps all 84 of
+     * them in `local.create_vpc ? … : 0`, and the *public* subnet's own route
+     * carries `local.create_public_subnets && var.create_igw`. Reclassifying on
+     * the presence of a guard therefore turned the one subnet everybody knows is
+     * public into a private one.
+     *
+     * Telling "opt-in" from "on by default" needs the defaults of every variable
+     * and local in the expression evaluated — a Terraform interpreter, not a
+     * heuristic. Until that exists the honest move is to draw what the code says
+     * and hand the reader the condition.
+     */
+    const publicRouteCondition = publicRoute?.conditionalOn ?? null;
 
     const node: ArchitectureNode = {
       id: address,
@@ -250,7 +433,11 @@ export function buildArchitecture(
           ? "Public subnet"
           : "Private subnet"
         : (entry.label ?? resource.resourceType),
-      sublabel: resource.resourceName ?? undefined,
+      ...(publicRouteCondition ? { publicRouteCondition } : {}),
+      // `this` and `current` are conventions meaning "the only one", so they
+      // filled the second line of a tile with a word that told the reader
+      // nothing. Omitted rather than shown small.
+      sublabel: meaningfulResourceName(resource.resourceName),
       icon: isSubnet
         ? isPublic
           ? "subnet-public"
@@ -270,7 +457,7 @@ export function buildArchitecture(
   // its author chose.
   for (const call of moduleCalls) {
     const address = `module.${call.name}`;
-    const ref = parseModuleSourceRef(call.source);
+    const ref = parseModuleSourceRef(call.source, call.sourceKind);
     const entry = ref ? moduleArchitectureEntry(ref.repo) : null;
 
     if (entry?.role === "omit") {
@@ -336,6 +523,35 @@ export function buildArchitecture(
     nodeOfAddress.set(address, node.id);
   }
 
+  /**
+   * Last resort: draw the module coarsely rather than not at all.
+   *
+   * `ARCHITECTURE_MAP` is a curated table and the AWS provider adds resources
+   * faster than anyone maintains one, so a module built entirely from types the
+   * table has not reached drew nothing — and said so in a way that read as "this
+   * module contains no infrastructure". The App Runner, AppSync, EMR, MemoryDB,
+   * Grafana and DMS modules were all in that state: every one of them declares
+   * the service it is named after, and every one of them showed an empty canvas.
+   *
+   * The curation exists to stop supporting detail from crowding out services.
+   * When there are no services on the canvas, nothing is being crowded — so the
+   * argument for withholding does not apply, and one box per service is strictly
+   * better than a blank page. Both tiers are gated on the canvas being empty,
+   * which is why a VPC module's forty route tables and security groups still stay
+   * off the diagram: that module has real boxes to protect.
+   *
+   * Ordered: unclassified types first, since "we have no opinion" is a weaker
+   * reason to hide something than "this is supporting detail". Only if that still
+   * yields nothing are the deliberate omissions promoted, which is what gives a
+   * dedicated ACM or IAM module a diagram of its own.
+   */
+  if (nodes.length === 0) {
+    promoteToServiceBoxes("unknown-type", omissions, nodes, nodeOfAddress);
+  }
+  if (nodes.length === 0) {
+    promoteToServiceBoxes("detail", omissions, nodes, nodeOfAddress);
+  }
+
   const drawn = mergeWrapperDuplicates(nodes, nodeOfAddress, references);
   const nodeById = new Map(drawn.map((n) => [n.id, n]));
 
@@ -365,6 +581,11 @@ export function buildArchitecture(
     if (entry?.global) node.parentId = undefined;
   }
 
+  // Only this module's own nodes: an adopted one already had its supporting
+  // resources attributed inside the recursive call, against that module's
+  // Terraform rather than this one's.
+  attachSupportingResources(drawn, byAddress, nodeOfAddress, references);
+
   return {
     // Frames must precede their contents: React Flow paints in array order.
     nodes: [...drawn, ...adopted],
@@ -376,6 +597,228 @@ export function buildArchitecture(
     omissions,
     unmappedTypes: [...unmapped, ...unrecognisedModules].sort(),
   };
+}
+
+/**
+ * Turns omitted resources into one box per AWS service.
+ *
+ * Coarser than a curated entry on purpose: it has no opinion about which
+ * resource is the subject and which serves it, so it groups by the only thing it
+ * can derive — the service the type belongs to. `aws_appsync_graphql_api`, its
+ * resolvers and its data sources become one "AppSync ×8" box rather than eight.
+ * That is the same answer the curated table gives for API Gateway, arrived at
+ * without knowing anything about AppSync.
+ *
+ * The promoted resources stop being omissions, because they are now drawn.
+ * `unmappedTypes` deliberately still lists them: they remain absent from the
+ * table, and that is the signal for whoever extends it next.
+ */
+function promoteToServiceBoxes(
+  reason: ArchitectureOmission["reason"],
+  omissions: ArchitectureOmission[],
+  nodes: ArchitectureNode[],
+  nodeOfAddress: Map<string, string>,
+): void {
+  const byService = new Map<string, string[]>();
+  const consumed = new Set<string>();
+
+  for (const omission of omissions) {
+    // Module calls carry no resource type and already have a box of their own.
+    if (omission.reason !== reason || !omission.resourceType) continue;
+
+    const service = serviceOfResource(
+      omission.resourceType,
+      omission.providerName ?? "",
+    );
+
+    const list = byService.get(service);
+    if (list) list.push(omission.address);
+    else byService.set(service, [omission.address]);
+
+    consumed.add(omission.address);
+  }
+
+  if (consumed.size === 0) return;
+
+  const promoted = [...byService.entries()].sort(
+    (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]),
+  );
+
+  for (const [service, addresses] of promoted) {
+    // Namespaced so it cannot collide with a resource address or a `group:` id.
+    const id = `service:${service.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+
+    nodes.push({
+      id,
+      type: "service",
+      label: service,
+      icon: iconOfService(service),
+      addresses: [...addresses].sort((a, b) =>
+        a.localeCompare(b, "en", { numeric: true }),
+      ),
+    });
+
+    for (const address of addresses) nodeOfAddress.set(address, id);
+  }
+
+  const kept = omissions.filter((entry) => !consumed.has(entry.address));
+  omissions.length = 0;
+  omissions.push(...kept);
+}
+
+/**
+ * How far a supporting resource may sit from the box that owns it.
+ *
+ * IAM sets the bar and needs three: a state machine names a role, an attachment
+ * names that role *and* a policy, so the policy is two links out and its own
+ * attachment one. Four allows a single further indirection; past that the walk
+ * has stopped describing one service's wiring.
+ */
+const MAX_ATTACHMENT_HOPS = 4;
+
+/**
+ * Works out which undrawn resources serve which drawn box, and records them on
+ * the node.
+ *
+ * Two decisions carry this, and both were arrived at by being wrong first.
+ *
+ * **The walk is undirected.** Following references forwards reaches the IAM role
+ * — a state machine names it through `role_arn` — and stops, because a policy
+ * attachment points *at* the role rather than being pointed at by it. Reference
+ * direction says which resource mentions which; it says nothing about ownership,
+ * so nothing about ownership can be read out of it.
+ *
+ * **The nearest box wins.** An undirected walk that simply collects everything
+ * it can reach does the right thing for a Step Functions module and something
+ * useless for a VPC: route tables, security groups and NACLs form one connected
+ * mass that every subnet and gateway can reach, so all fourteen boxes claimed
+ * the same forty-eight resources and every badge on the diagram read the same
+ * number. Distance breaks that, and breaks it correctly — a route table names
+ * the VPC directly and is two links from any subnet, so the VPC owns it, which
+ * is also the answer a person would give. Ties are kept as ties: one role used
+ * by two ECS services is one link from each and is listed under both, marked
+ * `shared`, because picking a winner there would be arbitrary.
+ *
+ * Drawn resources are walls — reaching one ends the branch, since it has a box
+ * of its own and speaks for itself. Data sources are never traversed:
+ * `data.aws_region.current` is referenced by half a module and going through it
+ * would join every service to every other. They are counted as omissions
+ * instead, which is where they belong.
+ */
+function attachSupportingResources(
+  nodes: ArchitectureNode[],
+  byAddress: Map<string, ArchitectureResource>,
+  nodeOfAddress: Map<string, string>,
+  references: ArchitectureReference[],
+): void {
+  const neighbours = new Map<string, string[]>();
+  const link = (from: string, to: string) => {
+    const list = neighbours.get(from);
+    if (list) list.push(to);
+    else neighbours.set(from, [to]);
+  };
+
+  for (const ref of references) {
+    // `byAddress` holds managed resources only, which is also what keeps data
+    // sources out of the walk.
+    if (!byAddress.has(ref.fromAddress) || !byAddress.has(ref.toAddress))
+      continue;
+
+    link(ref.fromAddress, ref.toAddress);
+    link(ref.toAddress, ref.fromAddress);
+  }
+
+  /** Distance of the closest box, so a later, further one cannot claim it. */
+  const distance = new Map<string, number>();
+  /** Every box tied at that distance. */
+  const owners = new Map<string, Set<string>>();
+  const expanded = new Set<string>();
+
+  // All boxes advance together, one ring at a time. Running them one after
+  // another would let whichever happened to be first claim a resource that a
+  // later box sits closer to.
+  let frontier = nodes.flatMap((node) =>
+    node.addresses
+      .filter((address) => byAddress.has(address))
+      .map((address) => ({ address, nodeId: node.id })),
+  );
+
+  for (let hop = 1; hop <= MAX_ATTACHMENT_HOPS && frontier.length; hop++) {
+    const next: { address: string; nodeId: string }[] = [];
+
+    for (const { address, nodeId } of frontier) {
+      for (const neighbour of neighbours.get(address) ?? []) {
+        if (nodeOfAddress.has(neighbour)) continue;
+
+        const best = distance.get(neighbour);
+        if (best !== undefined && best < hop) continue;
+
+        if (best === undefined) {
+          distance.set(neighbour, hop);
+          owners.set(neighbour, new Set([nodeId]));
+        } else {
+          owners.get(neighbour)?.add(nodeId);
+        }
+
+        // Guards the ring order: without it a resource reached by two boxes at
+        // the same distance would be expanded twice and the pair could ping-pong.
+        const key = `${nodeId}\u0000${neighbour}`;
+        if (expanded.has(key)) continue;
+        expanded.add(key);
+
+        next.push({ address: neighbour, nodeId });
+      }
+    }
+
+    frontier = next;
+  }
+
+  const claimed = new Map<string, string[]>();
+  for (const [address, nodeIds] of owners) {
+    for (const nodeId of nodeIds) {
+      const list = claimed.get(nodeId);
+      if (list) list.push(address);
+      else claimed.set(nodeId, [address]);
+    }
+  }
+
+  for (const node of nodes) {
+    const addresses = claimed.get(node.id);
+    if (!addresses?.length) continue;
+
+    const byService = new Map<string, string[]>();
+    for (const address of addresses) {
+      const resource = byAddress.get(address);
+      if (!resource) continue;
+
+      const service = serviceOfResource(
+        resource.resourceType,
+        resource.providerName ?? "",
+      );
+      const list = byService.get(service);
+      if (list) list.push(address);
+      else byService.set(service, [address]);
+    }
+
+    node.attachments = [...byService.entries()]
+      .map(([service, group]) => {
+        group.sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+        const shared = group.some(
+          (address) => (owners.get(address)?.size ?? 1) > 1,
+        );
+
+        return shared
+          ? { service, icon: iconOfService(service), addresses: group, shared }
+          : { service, icon: iconOfService(service), addresses: group };
+      })
+      // Largest first: the badge names as many services as fit and then counts
+      // the rest, so this decides which ones a reader sees named.
+      .sort(
+        (a, b) =>
+          b.addresses.length - a.addresses.length ||
+          a.service.localeCompare(b.service),
+      );
+  }
 }
 
 /**
@@ -459,6 +902,13 @@ function adoptSubgraph(
       // parent they already had, rewritten to its new id.
       parentId: child.parentId ? idOf(child.parentId) : frameId,
       addresses: child.addresses.map((address) => `${path}/${address}`),
+      // Prefixed for the same reason as the addresses above: the panel resolves
+      // these back to a resource by walking the call path, and an unprefixed
+      // `aws_iam_role.this` would be looked up in the wrong repository.
+      attachments: child.attachments?.map((attachment) => ({
+        ...attachment,
+        addresses: attachment.addresses.map((address) => `${path}/${address}`),
+      })),
     });
   }
 
@@ -512,32 +962,65 @@ function containmentRelation(
 function findPublicSubnets(
   references: ArchitectureReference[],
   byAddress: Map<string, ArchitectureResource>,
-): Set<string> {
+): Map<string, PublicRoute> {
   const typeOf = (address: string) => byAddress.get(address)?.resourceType;
+  const guardOf = (address: string) =>
+    byAddress.get(address)?.conditionalOn ?? null;
 
-  const internetRouteTables = new Set<string>();
+  /**
+   * Route tables with a way out, and what the way out depends on.
+   *
+   * The guard travels with the table because the whole point is that the chain
+   * can be present in the code and absent from the account: the upstream VPC
+   * module writes its database route as
+   * `count = var.create_database_internet_gateway_route ? 1 : 0`.
+   */
+  const internetRouteTables = new Map<string, string | null>();
+
   for (const ref of references) {
     if (typeOf(ref.fromAddress) !== "aws_route") continue;
     if (typeOf(ref.toAddress) !== "aws_internet_gateway") continue;
 
     for (const other of references) {
       if (other.fromAddress !== ref.fromAddress) continue;
-      if (typeOf(other.toAddress) === "aws_route_table") {
-        internetRouteTables.add(other.toAddress);
-      }
+      if (typeOf(other.toAddress) !== "aws_route_table") continue;
+
+      // An unconditional route wins: a table reachable one way for certain is
+      // public regardless of a second, optional route to the same gateway.
+      const guard = guardOf(ref.fromAddress);
+      const existing = internetRouteTables.get(other.toAddress);
+      if (existing === null) continue;
+      internetRouteTables.set(other.toAddress, guard);
     }
   }
 
-  const publicSubnets = new Set<string>();
+  const publicSubnets = new Map<string, PublicRoute>();
+
   for (const ref of references) {
     if (typeOf(ref.fromAddress) !== "aws_route_table_association") continue;
     if (!internetRouteTables.has(ref.toAddress)) continue;
 
     for (const other of references) {
       if (other.fromAddress !== ref.fromAddress) continue;
-      if (typeOf(other.toAddress) === "aws_subnet") {
-        publicSubnets.add(other.toAddress);
+      if (typeOf(other.toAddress) !== "aws_subnet") continue;
+
+      // Either link may be optional, and either being optional makes the whole
+      // path optional. The route's guard is reported because it is the one that
+      // names the decision a reader would look up.
+      const routeGuard = internetRouteTables.get(ref.toAddress) ?? null;
+      const associationGuard = guardOf(ref.fromAddress);
+      const guard = routeGuard ?? associationGuard;
+
+      // Deterministic: an unconditional path wins, and between two conditional
+      // ones the smaller expression is kept. A subnet routed out by both an IPv4
+      // and an IPv6 route would otherwise report whichever row arrived last.
+      const existing = publicSubnets.get(other.toAddress);
+      if (existing) {
+        if (existing.conditionalOn === null) continue;
+        if (guard !== null && existing.conditionalOn <= guard) continue;
       }
+
+      publicSubnets.set(other.toAddress, { conditionalOn: guard });
     }
   }
 

@@ -1,7 +1,15 @@
 "use client";
 
 import { Badge } from "@terrablox/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
+import { Button } from "@terrablox/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@terrablox/ui/card";
+import { ExternalLink } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { CopilotPlan } from "@/lib/agent/copilot-plan";
@@ -29,53 +37,57 @@ export function CopilotCard() {
     };
   }, []);
 
+  const linked = status?.githubLinked ?? false;
+
+  /** Where a user's own Copilot features are configured on GitHub. */
+  const settingsUrl = "https://github.com/settings/copilot/features";
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>GitHub Copilot</CardTitle>
+        {/* Laid out exactly like the account screen's integration cards: title
+            with a link out beside it, state on the right. The link used to hang
+            off the badge, which made one control mean two things — "you are
+            connected" and "go to GitHub" — and neither was obvious. */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-1.5">
+            <CardTitle>GitHub Copilot</CardTitle>
+            <Button asChild className="h-7 w-7" size="icon" variant="ghost">
+              <a
+                aria-label="Open your Copilot settings on GitHub"
+                href={settingsUrl}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </Button>
+          </div>
+
+          <Badge
+            className={
+              linked
+                ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950 dark:text-emerald-300 dark:hover:bg-emerald-950"
+                : "text-muted-foreground"
+            }
+            variant={linked ? "secondary" : "outline"}
+          >
+            {linked ? "Connected" : "Unconnected"}
+          </Badge>
+        </div>
+        {!linked ? (
+          <CardDescription>
+            Link GitHub in Account Settings so the agent can run on your own
+            Copilot seat.
+          </CardDescription>
+        ) : null}
       </CardHeader>
       <CardContent className="space-y-4">
-        {status ? (
-          <ul className="space-y-2 text-sm">
-            <StatusLine
-              ok={status.githubLinked}
-              label="GitHub account linked"
-              hint="Link GitHub above so the agent can run as you."
-            />
-          </ul>
-        ) : (
+        {status ? null : (
           <p className="text-muted-foreground text-sm">Checking...</p>
         )}
 
         {status?.plan ? <PlanSummary plan={status.plan} /> : null}
-
-        {status?.plan?.organizations.length ? (
-          <p className="text-sm">
-            Organisation settings:{" "}
-            {status.plan.organizations.map((org, index) => (
-              <span key={org}>
-                {index > 0 ? ", " : null}
-                <a
-                  className="text-primary underline underline-offset-4 hover:text-primary/80"
-                  href={`https://github.com/orgs/${encodeURIComponent(org)}/settings/copilot`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {org}
-                </a>
-              </span>
-            ))}
-          </p>
-        ) : null}
-
-        <a
-          className="block text-sm text-primary underline underline-offset-4 hover:text-primary/80"
-          href="https://github.com/settings/copilot/features"
-          target="_blank"
-          rel="noreferrer"
-        >
-          Open your Copilot settings on GitHub
-        </a>
       </CardContent>
     </Card>
   );
@@ -88,7 +100,7 @@ function PlanSummary({ plan }: { plan: CopilotPlan }) {
   return (
     <div className="space-y-3 rounded-md border p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium text-sm">Your licence</span>
+        <span className="font-medium text-sm">Your Licence</span>
         <Badge variant={plan.plan ? "default" : "secondary"}>
           {plan.plan ? planLabel(plan.plan) : "No Copilot plan"}
         </Badge>
@@ -158,26 +170,4 @@ function formatDate(value: string): string {
         month: "long",
         year: "numeric",
       });
-}
-
-function StatusLine({
-  ok,
-  label,
-  hint,
-}: {
-  ok: boolean;
-  label: string;
-  hint: string;
-}) {
-  return (
-    <li>
-      <span className={ok ? "text-emerald-600" : "text-amber-600"}>
-        {ok ? "Connected: " : "Not connected: "}
-        {label}
-        {ok ? null : (
-          <span className="block text-muted-foreground text-xs">{hint}</span>
-        )}
-      </span>
-    </li>
-  );
 }

@@ -7,9 +7,7 @@ export function buildNextParam(pathname: string, search: string) {
 }
 
 export type AuthRoutingConfig = {
-  /**
-   * Public auth pages (login/signup/forgot-password).
-   */
+  /** Auth pages reachable without a session. */
   publicPaths: string[];
   /**
    * The main protected home route.
@@ -26,18 +24,15 @@ export type AuthRoutingConfig = {
 };
 
 /**
- * Reachable without a session. `/reset-password` is opened from an email link,
- * so it has to work for someone who by definition cannot sign in.
+ * Reachable without a session.
+ *
+ * Just the one page now: signing in is GitHub only, so there is no account to
+ * create here and no password to reset.
  */
-const UNAUTHENTICATED_PATHS = [
-  "/login",
-  "/signup",
-  "/forgot-password",
-  "/reset-password",
-];
+const UNAUTHENTICATED_PATHS = ["/login"];
 
 export const defaultAuthRouting: AuthRoutingConfig = {
-  publicPaths: ["/login", "/signup", "/forgot-password"],
+  publicPaths: ["/login"],
   homePath: "/projects",
   loginPath: "/login",
   // Everything else needs a session. Stated as an exception list because the

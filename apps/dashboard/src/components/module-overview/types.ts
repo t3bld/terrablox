@@ -20,8 +20,22 @@ export interface RepositoryDto {
   tags: string[];
   url: string | null;
   provider: string | null;
-  /** Newest version by semver-aware ordering; never null in practice. */
-  latestVersion: RepositoryVersionDto | null;
+  /**
+   * Part of the catalogue TerraBlox ships with: available to every user, owned
+   * by none, and not removable.
+   */
+  isBuiltin: boolean;
+  /** Which icon source to draw from: `repo`, `aws` or `none`. */
+  iconMode: string;
+  /** True when the repository ships its own icon. */
+  hasIcon: boolean;
+  /** A bundled AWS icon chosen at import, without the extension. */
+  iconName: string | null;
+  /**
+   * The version this repository opens at: its tracked branch, or the newest
+   * release when it has none. Never null in practice.
+   */
+  defaultVersion: RepositoryVersionDto | null;
   versionCount: number;
   totalSubmoduleCount: number;
   /** Sorted newest first. */

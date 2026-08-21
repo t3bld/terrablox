@@ -13,8 +13,7 @@ import {
 import { ChevronDown, Cpu, Gauge } from "lucide-react";
 import { useEffect, useState } from "react";
 
-/** The levels the Copilot SDK defines, used until a model names its own. */
-const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+import { REASONING_EFFORTS } from "@/lib/agent/runtime-options";
 
 interface ModelOption {
   id: string;
@@ -67,9 +66,9 @@ export function ChatModelPicker({
 
   const selected = models.find((entry) => entry.id === value.model);
   // An empty list from the runtime means "unknown", not "supports nothing".
-  const efforts = selected?.reasoningEfforts.length
+  const efforts: readonly string[] = selected?.reasoningEfforts.length
     ? selected.reasoningEfforts
-    : EFFORTS;
+    : REASONING_EFFORTS;
 
   // The configured default can be outside the entitlement list, so it is
   // offered explicitly instead of silently resetting the user's choice.
@@ -78,7 +77,11 @@ export function ChatModelPicker({
     : [{ id: value.model, name: value.model, multiplier: null }, ...models];
 
   const selectedModel = options.find((entry) => entry.id === value.model);
-  const modelLabel = selectedModel?.name ?? value.model;
+  // Empty means the project's settings have not arrived yet. Saying so beats an
+  // empty button, and the control is disabled until they do.
+  const modelLabel = value.model
+    ? (selectedModel?.name ?? value.model)
+    : "Loading…";
 
   return (
     <div className="flex min-w-0 items-center gap-1.5">

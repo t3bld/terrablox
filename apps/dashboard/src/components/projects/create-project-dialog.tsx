@@ -1,21 +1,29 @@
 "use client";
 
-import type { GitRepo } from "@terrablox/git-import";
 import { Button } from "@terrablox/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@terrablox/ui/command";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@terrablox/ui/dialog";
 import { Input } from "@terrablox/ui/input";
 import { Label } from "@terrablox/ui/label";
-import { AlertCircle, GitBranch, Lock, Search } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@terrablox/ui/popover";
+import { AlertCircle, Check, ChevronsUpDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import type { ProjectDto } from "@/lib/projects/types";
+import { AppRepoPicker, type AppRepoSelection } from "./app-repo-picker";
 
 interface CreateProjectDialogProps {
   open: boolean;
@@ -23,103 +31,158 @@ interface CreateProjectDialogProps {
   onCreated: (project: ProjectDto) => void;
 }
 
-type RepoMode = "existing" | "new";
+interface RepoOwner {
+  login: string;
+  personal: boolean;
+}
 
 /**
- * Creates a project and binds it to a repository in one step.
+ * The repository name a project name implies.
  *
- * The binding cannot be deferred: everything the project shows is read from the
- * repository, so the dialog either adopts one the user already has or creates
- * an empty one for them.
+ * Lowercased, spaces to hyphens, and anything GitHub would reject dropped rather
+ * than sent: the API only accepts letters, digits, dots, underscores and hyphens,
+ * so an umlaut or an ampersand in a project name would otherwise turn into a 400
+ * from a field the user cannot see.
+ */
+export function repoNameFromProjectName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._-]/g, "")
+    .replace(/-{2,}/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "");
+}
+
+/**
+ * The same character rules as {@link repoNameFromProjectName}, without the
+ * tidying up.
+ *
+ * For a name being typed rather than derived. Collapsing `--` or dropping a
+ * trailing `-` while someone is still mid-word deletes the character they just
+ * pressed, so only what GitHub would actually reject is refused here.
+ */
+export function sanitizeRepoName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._-]/g, "");
+}
+
+/** A name GitHub will accept: it has to carry something other than punctuation. */
+function isUsableRepoName(value: string): boolean {
+  return /[a-z0-9]/.test(value);
+}
+
+/**
+ * Creates a project and the repository behind it.
+ *
+ * One path, not two. Adopting an existing repository was the other half of this
+ * dialog and it asked more of the user than it gave: a repository picker, a folder
+ * path and a guess about which of the two modes they were in. A project *is* its
+ * repository here, so creating both together is the shape that needs no
+ * explanation — and a fresh repository has exactly one possible Terraform root,
+ * which is why nothing asks for one any more.
  */
 export function CreateProjectDialog({
   open,
   onOpenChange,
   onCreated,
 }: CreateProjectDialogProps) {
-  const [mode, setMode] = useState<RepoMode>("existing");
   const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [rootFolder, setRootFolder] = useState(".");
+  /**
+   * A repository name typed by hand, or `null` to keep following the project
+   * name.
+   *
+   * Two states rather than one string kept in sync: with a single field, every
+   * keystroke in the project name would have to decide whether it may overwrite
+   * what is in the repository field, and "the user has taken this over" is the
+   * fact that decision needs.
+   *
+   * Taking over is one-way for the life of the dialog, including clearing the
+   * field to empty. Refilling it from the project name at that moment would put
+   * text back into a field someone just emptied; the empty field disables
+   * Create instead, and the placeholder still shows what would have been used.
+   */
+  const [repoOverride, setRepoOverride] = useState<string | null>(null);
+  const [owner, setOwner] = useState("");
+  const [ownerPickerOpen, setOwnerPickerOpen] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(true);
+  const [appRepo, setAppRepo] = useState<AppRepoSelection | null>(null);
 
-  const [repos, setRepos] = useState<GitRepo[]>([]);
-  const [reposLoading, setReposLoading] = useState(false);
-  const [reposError, setReposError] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
-
-  const [newRepoName, setNewRepoName] = useState("");
-  const [newRepoOwner, setNewRepoOwner] = useState("");
-  const [newRepoPrivate, setNewRepoPrivate] = useState(true);
-
+  const [owners, setOwners] = useState<RepoOwner[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Reset on close so a cancelled attempt does not bleed into the next one.
+  // Reset on close so a cancelled attempt does not bleed into the next one. The
+  // owner list is kept: it is a fact about the account, not about this attempt.
   useEffect(() => {
     if (open) return;
-    setMode("existing");
     setName("");
-    setDescription("");
-    setRootFolder(".");
-    setSearch("");
-    setSelectedRepo(null);
-    setNewRepoName("");
-    setNewRepoOwner("");
-    setNewRepoPrivate(true);
+    setRepoOverride(null);
+    setOwnerPickerOpen(false);
+    setIsPrivate(true);
+    setAppRepo(null);
     setError(null);
   }, [open]);
 
   useEffect(() => {
-    if (!open || mode !== "existing" || repos.length > 0) return;
+    if (!open) return;
 
     let cancelled = false;
-    setReposLoading(true);
-    setReposError(null);
 
-    fetch("/api/git-provider/github/repos")
-      .then(async (res) => {
-        const body = await res.json();
-        if (!res.ok)
-          throw new Error(body?.error ?? "Failed to load repositories");
-        if (!cancelled) setRepos(body.repos ?? []);
+    fetch("/api/git-provider/github/owners")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (cancelled) return;
+        const list = (body?.owners ?? []) as RepoOwner[];
+        setOwners(list);
+        // The personal namespace is the default because it always exists and
+        // needs nobody's permission. It is sent as an empty owner, which is what
+        // makes the API use the personal endpoint.
+        setOwner("");
       })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setReposError(
-            err instanceof Error ? err.message : "Failed to load repositories",
-          );
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setReposLoading(false);
+      .catch(() => {
+        // An empty list still creates under the personal account, which is the
+        // default anyway — so there is nothing to report here.
       });
 
     return () => {
       cancelled = true;
     };
-  }, [open, mode, repos.length]);
+  }, [open]);
 
-  const filteredRepos = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return repos.slice(0, 50);
-    return repos
-      .filter((repo) => repo.full_name.toLowerCase().includes(query))
-      .slice(0, 50);
-  }, [repos, search]);
+  const derivedRepoName = useMemo(() => repoNameFromProjectName(name), [name]);
+  const repoName = repoOverride ?? derivedRepoName;
 
-  const canSubmit =
-    name.trim().length > 0 &&
-    (mode === "existing"
-      ? Boolean(selectedRepo)
-      : newRepoName.trim().length > 0);
+  const personal = owners.find((entry) => entry.personal);
+  const organisations = useMemo(
+    () => owners.filter((entry) => !entry.personal),
+    [owners],
+  );
 
-  function selectRepo(repo: GitRepo) {
-    setSelectedRepo(repo.full_name);
-    // The repo name is the most likely project name, but never overwrite what
-    // the user already typed.
-    if (!name.trim()) setName(repo.name);
-  }
+  /** The personal namespace is an empty owner, which is what makes the API use
+   *  the personal endpoint — so it is an option here like any other. */
+  const ownerOptions = useMemo(
+    () => [
+      { value: "", label: personal?.login ?? "Your account", personal: true },
+      ...organisations.map((entry) => ({
+        value: entry.login,
+        label: entry.login,
+        personal: false,
+      })),
+    ],
+    [personal, organisations],
+  );
+
+  const selectedOwner =
+    ownerOptions.find((option) => option.value === owner) ?? ownerOptions[0];
+
+  // A search over three rows is chrome, not help. Shown once the list is longer
+  // than the eye can take in at a glance.
+  const searchableOwners = ownerOptions.length > 5;
+
+  const canSubmit = name.trim().length > 0 && isUsableRepoName(repoName);
 
   async function submit() {
     if (!canSubmit || submitting) return;
@@ -133,17 +196,12 @@ export function CreateProjectDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: name.trim(),
-          description: description.trim() || null,
-          terraformRootFolder: rootFolder,
-          repo:
-            mode === "existing"
-              ? { mode: "existing", fullName: selectedRepo }
-              : {
-                  mode: "new",
-                  name: newRepoName.trim(),
-                  owner: newRepoOwner.trim() || null,
-                  private: newRepoPrivate,
-                },
+          repo: {
+            name: repoName,
+            owner: owner || null,
+            private: isPrivate,
+          },
+          appRepo,
         }),
       });
 
@@ -163,141 +221,136 @@ export function CreateProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[640px]">
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>New project</DialogTitle>
-          <DialogDescription>
-            Every project is backed by a Git repository. Changes you make in the
-            graph or through the agent are committed there.
-          </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        {/* `pt-2` on top of the dialog's own header spacing: the title sat close
+            enough to the first label to read as its caption. */}
+        <div className="space-y-4 pt-2">
           <div className="grid gap-2">
             <Label htmlFor="project-name">Project name</Label>
             <Input
               id="project-name"
-              value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Platform landing zone"
+              value={name}
+            />
+          </div>
+
+          {/* A field rather than a note. The derived name is what will exist on
+              GitHub afterwards, so it is shown — and since the derivation drops
+              anything GitHub would reject, the one person who knows what the
+              repository should be called can say so. */}
+          <div className="grid gap-2">
+            <Label htmlFor="repo-name">Repository name</Label>
+            <Input
+              className="font-mono text-sm"
+              id="repo-name"
+              onChange={(event) =>
+                setRepoOverride(sanitizeRepoName(event.target.value))
+              }
+              placeholder={derivedRepoName || "platform-landing-zone"}
+              value={repoName}
             />
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="project-description">Description</Label>
-            <Input
-              id="project-description"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="Optional"
-            />
-          </div>
-
-          <div className="flex gap-2 rounded-lg border p-1">
-            <ModeButton
-              active={mode === "existing"}
-              onClick={() => setMode("existing")}
-              label="Use existing repository"
-            />
-            <ModeButton
-              active={mode === "new"}
-              onClick={() => setMode("new")}
-              label="Create new repository"
-            />
-          </div>
-
-          {mode === "existing" ? (
-            <div className="space-y-2">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search repositories"
-                  className="pl-9"
-                />
-              </div>
-
-              <div className="h-56 overflow-y-auto rounded-lg border">
-                {reposLoading ? (
-                  <p className="p-4 text-sm text-muted-foreground">
-                    Loading repositories…
-                  </p>
-                ) : reposError ? (
-                  <p className="flex items-start gap-2 p-4 text-sm text-destructive">
-                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-                    {reposError}
-                  </p>
-                ) : filteredRepos.length === 0 ? (
-                  <p className="p-4 text-sm text-muted-foreground">
-                    No repositories match your search.
-                  </p>
-                ) : (
-                  <ul>
-                    {filteredRepos.map((repo) => (
-                      <li key={repo.id}>
-                        <button
-                          type="button"
-                          onClick={() => selectRepo(repo)}
-                          className={`flex w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted/60 ${
-                            selectedRepo === repo.full_name ? "bg-muted" : ""
-                          }`}
-                        >
-                          <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
-                          <span className="truncate">{repo.full_name}</span>
-                          {repo.private ? (
-                            <Lock className="ml-auto h-3 w-3 shrink-0 text-muted-foreground" />
-                          ) : null}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="grid gap-2">
-                <Label htmlFor="repo-name">Repository name</Label>
-                <Input
-                  id="repo-name"
-                  value={newRepoName}
-                  onChange={(event) => setNewRepoName(event.target.value)}
-                  placeholder="platform-landing-zone"
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="repo-owner">Organisation</Label>
-                <Input
+            <Label htmlFor="repo-owner">Organisation</Label>
+            <Popover onOpenChange={setOwnerPickerOpen} open={ownerPickerOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  aria-expanded={ownerPickerOpen}
+                  className="h-10 w-full justify-between gap-1 font-normal"
+                  disabled={submitting}
                   id="repo-owner"
-                  value={newRepoOwner}
-                  onChange={(event) => setNewRepoOwner(event.target.value)}
-                  placeholder="Leave empty to create under your account"
-                />
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={newRepoPrivate}
-                  onChange={(event) => setNewRepoPrivate(event.target.checked)}
-                  className="h-4 w-4"
-                />
-                Private repository
-              </label>
-            </div>
-          )}
+                  role="combobox"
+                  variant="outline"
+                >
+                  {/* No "(your account)" beside it: the login is the user's own,
+                      and they know which one that is. */}
+                  <span className="min-w-0 truncate">
+                    {selectedOwner?.label ?? "Your account"}
+                  </span>
+                  <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
 
-          <div className="grid gap-2">
-            <Label htmlFor="root-folder">Terraform folder</Label>
-            <Input
-              id="root-folder"
-              value={rootFolder}
-              onChange={(event) => setRootFolder(event.target.value)}
-              placeholder="."
+              {/* Matched to the trigger so the list lines up with the field it
+                  belongs to, rather than the popover's default 18rem. */}
+              <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+                <Command>
+                  {searchableOwners ? (
+                    <CommandInput placeholder="Search organisations" />
+                  ) : null}
+                  <CommandList>
+                    <CommandEmpty>No organisation matches.</CommandEmpty>
+                    <CommandGroup>
+                      {ownerOptions.map((option) => (
+                        <CommandItem
+                          key={option.value || "__personal"}
+                          onSelect={() => {
+                            setOwner(option.value);
+                            setOwnerPickerOpen(false);
+                          }}
+                          // cmdk filters and navigates on this, so it carries the
+                          // visible text rather than the empty personal value.
+                          value={option.label}
+                        >
+                          <Check
+                            className={`h-3.5 w-3.5 shrink-0 ${
+                              option.value === owner
+                                ? "opacity-100"
+                                : "opacity-0"
+                            }`}
+                          />
+                          <span className="min-w-0 flex-1 truncate">
+                            {option.label}
+                          </span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              checked={isPrivate}
+              className="h-4 w-4"
+              onChange={(event) => setIsPrivate(event.target.checked)}
+              type="checkbox"
             />
+            Private repository
+          </label>
+
+          {/* Asked here rather than later because it changes the first answer the
+              agent gives. Infrastructure that fits an application has to come
+              from how that application is built, and nobody wants to describe
+              their own codebase in a chat box. */}
+          {/* The explanation sits between the label and the control, because it
+              is what tells someone whether to fill the field in at all — read
+              after the picker it arrives too late to be a decision. */}
+          <div className="grid gap-2 border-t pt-4">
+            <Label htmlFor="app-repo">
+              Application repository{" "}
+              <span className="font-normal text-muted-foreground">
+                — optional
+              </span>
+            </Label>
             <p className="text-xs text-muted-foreground">
-              Folder inside the repository that holds the root configuration.
+              The agent gets read-only access to the application repository you
+              are creating this infrastructure for.
             </p>
+            <AppRepoPicker
+              disabled={submitting}
+              onChange={setAppRepo}
+              triggerId="app-repo"
+              value={appRepo}
+            />
           </div>
 
           {error ? (
@@ -310,41 +363,17 @@ export function CreateProjectDialog({
 
         <DialogFooter>
           <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
             disabled={submitting}
+            onClick={() => onOpenChange(false)}
+            variant="outline"
           >
             Cancel
           </Button>
-          <Button onClick={submit} disabled={!canSubmit || submitting}>
+          <Button disabled={!canSubmit || submitting} onClick={submit}>
             {submitting ? "Creating…" : "Create project"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function ModeButton({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors ${
-        active
-          ? "bg-primary text-primary-foreground"
-          : "text-muted-foreground hover:bg-muted"
-      }`}
-    >
-      {label}
-    </button>
   );
 }

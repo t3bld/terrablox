@@ -1,15 +1,18 @@
 import { NextResponse } from "next/server";
-
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
-import { database } from "@/lib/database";
+import { isGithubConfigured } from "@/lib/auth/server";
+import {
+  getCurrentUserId,
+  getUserGithubToken,
+} from "@/lib/auth/server-helpers";
 import { hasInfracostApiKey } from "@/lib/integrations/infracost";
 
 /**
  * Which of the user's own accounts are connected.
  *
- * One endpoint rather than one per integration, because the caller is a screen
- * that has to decide what it may show at all — asking twice would let it render
- * half a decision.
+ * AWS is deliberately absent. It used to be reported here, and a screen gating on
+ * "this user has some AWS connection" would unlock a project that had no account
+ * of its own — then fail on the first read. Whether AWS is reachable is a question
+ * about a project, and `/api/projects/[projectId]/aws` is where it is asked.
  */
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -17,23 +20,20 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [connections, infracost] = await Promise.all([
-    database.awsConnection.findMany({
-      where: { userId },
-      select: { verifiedAt: true },
-    }),
+  const [infracost, githubToken] = await Promise.all([
     hasInfracostApiKey(userId),
+    // A live check, not a lookup of the linked account. Revoking the grant on
+    // GitHub leaves the link row in place while every request made with it
+    // fails, and that is exactly the state a user needs to be told about.
+    getUserGithubToken(),
   ]);
 
   return NextResponse.json({
-    aws: {
-      connected: connections.length > 0,
-      // A role that has never been assumed successfully is a promise, not a
-      // connection, so the UI can warn without blocking.
-      verified: connections.some(
-        (connection) => connection.verifiedAt !== null,
-      ),
-    },
     infracost: { connected: infracost },
+    github: {
+      /** False on a server with no GitHub credentials, where nothing can be linked. */
+      configured: isGithubConfigured,
+      connected: githubToken !== null,
+    },
   });
 }

@@ -4,7 +4,6 @@ import { useAuth } from "@terrablox/auth/hooks";
 import type {
   GitBranch,
   GitProviderId,
-  GitRelease,
   GitRepo,
   GitTag,
 } from "@terrablox/git-import";
@@ -21,13 +20,13 @@ import { Label } from "@terrablox/ui/label";
 import { Github, Loader2, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MultiRepoFolderPicker } from "@/components/multi-repo-folder-picker";
-import { FolderPicker } from "@/components/repo-folder-picker";
+import { IconChoice, type RepoIconState } from "@/components/icon-picker";
 import { TagsInput } from "@/components/tags-input";
 import {
-  type CompanySettingsDto,
-  findSubmoduleFolders,
-} from "@/lib/company-settings";
+  findRepoIconPath,
+  type IconChoiceValue,
+  isIconMode,
+} from "@/lib/modules/icon";
 
 interface ImportModuleDialogProps {
   provider: GitProviderId;
@@ -41,18 +40,19 @@ interface ImportModuleDialogProps {
   onImported?: () => void;
 }
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3;
 
-type RefChoice =
-  | { type: "release"; name: string }
-  | { type: "tag"; name: string }
-  | { type: "branch"; name: string };
+type RefChoice = { type: "branch" | "tag"; name: string };
 
 type ImportedSource = {
   name: string;
   description: string | null;
   tags: string[];
   url: string;
+  /** Stored icon choice. Absent on responses written before it existed. */
+  iconMode?: string | null;
+  iconName?: string | null;
+  hasIcon?: boolean;
 };
 
 type ImportedModule = {
@@ -65,12 +65,15 @@ type ImportedModule = {
 
 type ImportedVersionsResponse = {
   repoImported?: boolean;
+  /** The repository is part of the catalogue TerraBlox ships with. */
+  isBuiltin?: boolean;
   source?: ImportedSource;
   importedVersions?: string[];
 };
 
 type LookupImportResponse = {
   exists?: boolean;
+  isBuiltin?: boolean;
   source?: ImportedSource;
   module?: ImportedModule;
 };
@@ -79,8 +82,7 @@ function Stepper({ current }: { current: Step }) {
   const items: Array<{ step: Step; label: string }> = [
     { step: 1, label: "Repository" },
     { step: 2, label: "Version" },
-    { step: 3, label: "Description" },
-    { step: 4, label: "Terraform" },
+    { step: 3, label: "Details" },
   ];
 
   return (
@@ -139,47 +141,70 @@ export function ImportModuleDialog({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedRepo, setSelectedRepo] = useState<GitRepo | null>(null);
 
+  // What is already in the database for this repo. Declared ahead of the ref
+  // lists because the step-2 default selection has to skip versions that are
+  // imported already.
+  const [existingImport, setExistingImport] = useState<{
+    source: ImportedSource;
+    module: ImportedModule;
+  } | null>(null);
+  const [existingImportLoading, setExistingImportLoading] = useState(false);
+
+  const [repoImportedInfo, setRepoImportedInfo] = useState<{
+    source: ImportedSource;
+    importedVersions: string[];
+    isBuiltin: boolean;
+  } | null>(null);
+  const [repoImportedLoading, setRepoImportedLoading] = useState(false);
+
+  const importedVersionSet = useMemo(() => {
+    return new Set(
+      (repoImportedInfo?.importedVersions ?? []).map((v) => v.trim()),
+    );
+  }, [repoImportedInfo?.importedVersions]);
+
   // Step 2
-  const [releases, setReleases] = useState<GitRelease[]>([]);
   // Git tags of the repository. Distinct from the user-defined metadata `tags`
   // in step 3, which have nothing to do with git.
   const [gitTags, setGitTags] = useState<GitTag[]>([]);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [refLoading, setRefLoading] = useState(false);
   const [refError, setRefError] = useState<string | null>(null);
-  const [refChoice, setRefChoice] = useState<RefChoice | null>(null);
-  const [refTab, setRefTab] = useState<"release" | "tag" | "branch">("release");
+  // Several refs can be imported in one go, so the selection is a list. The
+  // order is the order they were picked, which is also the import order.
+  const [refChoices, setRefChoices] = useState<RefChoice[]>([]);
+  const [refTab, setRefTab] = useState<"branch" | "tag">("branch");
   // Which repo the current ref lists belong to. The fetch effect is keyed on
   // `step`, so without this it re-runs on every Back and wipes the user's
   // choice — painful with hundreds of tags.
   const loadedRefsForRepo = useRef<string | null>(null);
+  // Some lookups only make sense for a single ref (does this exact version
+  // already exist, which tree holds the icon). The first pick stands in for the
+  // whole selection there.
+  const primaryRef = refChoices[0] ?? null;
 
   // Step 3
   const [moduleName, setModuleName] = useState("");
   const [moduleDescription, setModuleDescription] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
+  const [icon, setIcon] = useState<IconChoiceValue>({
+    mode: "repo",
+    iconName: null,
+  });
+  const [repoIcon, setRepoIcon] = useState<RepoIconState>({
+    status: "unknown",
+  });
+  // Set once the choice came out of the database, which stops the fallback below
+  // from rewriting a stored `repo` into `none` just because the file has since
+  // been deleted upstream. The control is read-only in that case and has to show
+  // what is stored, not what we would pick today.
+  const iconFromStore = useRef(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-
-  // Step 4
-  const [terraformRootFolder, setTerraformRootFolder] = useState(".");
-  const [terraformSubmodulesFolders, setTerraformSubmodulesFolders] = useState<
-    string[]
-  >([]);
-
-  // Company-wide conventions. Null while unknown so nothing is applied early.
-  const [companySettings, setCompanySettings] =
-    useState<CompanySettingsDto | null>(null);
-  const [discovery, setDiscovery] = useState<{
-    status: "idle" | "loading" | "done" | "error";
-    folders: string[];
-    message?: string;
-  }>({ status: "idle", folders: [] });
-  // Auto-discovery must apply once per repo+ref, otherwise stepping back and
-  // forth would resurrect submodules the user deliberately removed.
-  const appliedDiscoveryFor = useRef<string | null>(null);
-  const appliedCompanyRoot = useRef(false);
+  // How many refs finished, so a multi-ref import can report progress instead of
+  // looking stuck for as long as it takes GitHub to answer.
+  const [savedRefCount, setSavedRefCount] = useState(0);
 
   // Reset the wizard on open/close.
   useEffect(() => {
@@ -187,23 +212,25 @@ export function ImportModuleDialog({
       setStep(1);
       setSearchQuery("");
       setSelectedRepo(null);
-      setRefChoice(null);
+      setRefChoices([]);
       loadedRefsForRepo.current = null;
       setModuleName("");
       setModuleDescription("");
       setTags([]);
       setTagSuggestions([]);
+      setIcon({ mode: "repo", iconName: null });
+      setRepoIcon({ status: "unknown" });
+      iconFromStore.current = false;
       setSaveError(null);
+      setSavedRefCount(0);
       setRefError(null);
-      setTerraformRootFolder(".");
-      setTerraformSubmodulesFolders([]);
-      setDiscovery({ status: "idle", folders: [] });
-      appliedDiscoveryFor.current = null;
-      appliedCompanyRoot.current = false;
     }
   }, [open]);
 
-  // Prefill description from repo when chosen.
+  // Prefill description from repo when chosen. The text belongs to the
+  // repository itself, not to any one ref, which is why it is seeded here once
+  // and not re-read for each selected branch or tag. An empty repository
+  // description stays empty rather than being invented.
   useEffect(() => {
     if (!selectedRepo) return;
     setModuleDescription(selectedRepo.description ?? "");
@@ -226,43 +253,6 @@ export function ImportModuleDialog({
 
     fetchTags();
   }, [open]);
-
-  // Load company conventions once per opening.
-  useEffect(() => {
-    if (!open) return;
-
-    let cancelled = false;
-
-    fetch("/api/company-settings")
-      .then((res) => (res.ok ? res.json() : null))
-      .then((body) => {
-        if (cancelled) return;
-        setCompanySettings(
-          (body?.settings as CompanySettingsDto | undefined) ?? null,
-        );
-      })
-      .catch(() => {
-        // Conventions are a convenience; the wizard stays fully usable without.
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
-  // Apply the company's default root folder, but only before the user reaches
-  // the folder step so it never overwrites a deliberate choice.
-  useEffect(() => {
-    if (!open || appliedCompanyRoot.current) return;
-
-    const root = companySettings?.terraformRootFolder;
-    if (!root) return;
-
-    appliedCompanyRoot.current = true;
-    if (step < 4) {
-      setTerraformRootFolder(root);
-    }
-  }, [open, companySettings, step]);
 
   // Step 1: fetch repos
   useEffect(() => {
@@ -334,10 +324,9 @@ export function ImportModuleDialog({
     async function fetchRefs() {
       setRefLoading(true);
       setRefError(null);
-      setReleases([]);
       setGitTags([]);
       setBranches([]);
-      setRefChoice(null);
+      setRefChoices([]);
 
       try {
         const [owner, repo] = repoToLoad.full_name.split("/");
@@ -360,34 +349,43 @@ export function ImportModuleDialog({
           return body;
         };
 
-        const [releasesBody, tagsBody, branchesBody] = await Promise.all([
-          read("releases"),
+        const [tagsBody, branchesBody] = await Promise.all([
           read("tags"),
           read("branches"),
         ]);
 
-        const rels = (releasesBody?.releases ?? []) as GitRelease[];
         const tgs = (tagsBody?.tags ?? []) as GitTag[];
         const brs = (branchesBody?.branches ?? []) as GitBranch[];
 
         if (controller.signal.aborted) return;
 
-        setReleases(rels);
         setGitTags(tgs);
         setBranches(brs);
         loadedRefsForRepo.current = repoToLoad.full_name;
 
-        // Pick a sensible default so users can "Continue" quickly.
-        if (rels.length > 0 && rels[0]) {
-          setRefTab("release");
-          setRefChoice({ type: "release", name: rels[0].tag_name });
-        } else if (tgs.length > 0 && tgs[0]) {
-          setRefTab("tag");
-          setRefChoice({ type: "tag", name: tgs[0].name });
-        } else if (brs.length > 0 && brs[0]) {
-          setRefTab("branch");
-          setRefChoice({ type: "branch", name: brs[0].name });
+        // Pick sensible defaults so users can "Continue" quickly: the branch the
+        // repository itself considers current, plus the newest tag — the two refs
+        // people actually want. Anything already imported is skipped because
+        // those rows cannot be selected.
+        const defaults: RefChoice[] = [];
+
+        const defaultBranch =
+          brs.find((b) => b.name === repoToLoad.default_branch) ??
+          brs.find((b) => b.name === "main") ??
+          brs.find((b) => b.name === "master");
+        if (defaultBranch && !importedVersionSet.has(defaultBranch.name)) {
+          defaults.push({ type: "branch", name: defaultBranch.name });
         }
+
+        // The provider sorts tags newest-first numerically, so the head is the
+        // latest version.
+        const newestTag = tgs[0];
+        if (newestTag && !importedVersionSet.has(newestTag.name)) {
+          defaults.push({ type: "tag", name: newestTag.name });
+        }
+
+        setRefTab("branch");
+        setRefChoices(defaults);
       } catch (err) {
         if (controller.signal.aborted) return;
         loadedRefsForRepo.current = null;
@@ -402,13 +400,46 @@ export function ImportModuleDialog({
     fetchRefs();
 
     return () => controller.abort();
-  }, [open, provider, selectedRepo, step]);
+  }, [open, provider, selectedRepo, step, importedVersionSet]);
+
+  // The defaults are picked when the refs load, but which versions already exist
+  // arrives from a separate lookup that can land afterwards. Without this, a
+  // pre-selected ref could turn out to be imported already — and its row is then
+  // not clickable, so the user could not take it out of a selection they never
+  // made. Pruning here rather than relaxing the row keeps "already imported means
+  // not selectable" true in one place.
+  useEffect(() => {
+    if (importedVersionSet.size === 0) return;
+
+    setRefChoices((prev) => {
+      const kept = prev.filter(
+        (choice) => !importedVersionSet.has(choice.name),
+      );
+      return kept.length === prev.length ? prev : kept;
+    });
+  }, [importedVersionSet]);
 
   const canContinue =
     (step === 1 && !!selectedRepo) ||
-    (step === 2 && !!refChoice) ||
-    step === 3 ||
-    step === 4;
+    (step === 2 && refChoices.length > 0) ||
+    step === 3;
+
+  /** Compares by type and name because the choices are recreated per render. */
+  function isRefSelected(type: RefChoice["type"], name: string) {
+    return refChoices.some(
+      (choice) => choice.type === type && choice.name === name,
+    );
+  }
+
+  function toggleRefChoice(type: RefChoice["type"], name: string) {
+    setRefChoices((prev) =>
+      prev.some((choice) => choice.type === type && choice.name === name)
+        ? prev.filter(
+            (choice) => !(choice.type === type && choice.name === name),
+          )
+        : [...prev, { type, name }],
+    );
+  }
 
   // We no longer render step meta title/description in the header.
   // const stepMeta = STEP_META[step];
@@ -428,44 +459,57 @@ export function ImportModuleDialog({
       setSaveError("Choose a repository first.");
       return;
     }
-    if (!refChoice) {
-      setSaveError("Choose a release, tag or branch first.");
+    if (refChoices.length === 0) {
+      setSaveError("Choose at least one branch or tag first.");
       return;
     }
 
     setSaving(true);
     setSaveError(null);
+    setSavedRefCount(0);
+
+    let succeeded = 0;
 
     try {
-      const res = await fetch("/api/modules/import-from-git", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: user.id,
-          repoFullName: selectedRepo.full_name,
-          refType: refChoice.type,
-          refName: refChoice.name,
-          terraformRootFolder,
-          terraformSubmodulesFolders,
-          nameOverride: moduleName,
-          description: moduleDescription,
-          tags,
-        }),
-      });
+      // Sequential on purpose: every call fans out into GitHub API requests and
+      // the server writes each module in its own transaction. Firing them all at
+      // once buys nothing and gets us rate-limited.
+      for (const choice of refChoices) {
+        const res = await fetch("/api/modules/import-from-git", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: user.id,
+            repoFullName: selectedRepo.full_name,
+            refType: choice.type,
+            refName: choice.name,
+            nameOverride: moduleName,
+            description: moduleDescription,
+            tags,
+            icon,
+          }),
+        });
 
-      const body = await res.json().catch(() => ({}));
+        const body = await res.json().catch(() => ({}));
 
-      if (!res.ok) {
-        throw new Error(
-          typeof body?.error === "string" && body.error
-            ? body.error
-            : "Failed to create module.",
-        );
+        if (!res.ok) {
+          const message =
+            typeof body?.error === "string" && body.error
+              ? body.error
+              : "Failed to create module.";
+          throw new Error(`${choice.name}: ${message}`);
+        }
+
+        succeeded += 1;
+        setSavedRefCount(succeeded);
       }
 
       onImported?.();
       onOpenChange(false);
     } catch (err) {
+      // Whatever got imported before the failure stays imported — undoing it
+      // would throw away work the user asked for. The list still needs to know.
+      if (succeeded > 0) onImported?.();
       setSaveError(
         err instanceof Error ? err.message : "Failed to create module.",
       );
@@ -474,53 +518,24 @@ export function ImportModuleDialog({
     }
   }
 
-  const [existingImport, setExistingImport] = useState<{
-    source: ImportedSource;
-    module: ImportedModule;
-  } | null>(null);
-  const [existingImportLoading, setExistingImportLoading] = useState(false);
-
-  const [repoImportedInfo, setRepoImportedInfo] = useState<{
-    source: ImportedSource;
-    importedVersions: string[];
-  } | null>(null);
-  const [repoImportedLoading, setRepoImportedLoading] = useState(false);
-
-  const importedVersionSet = useMemo(() => {
-    return new Set(
-      (repoImportedInfo?.importedVersions ?? []).map((v) => v.trim()),
-    );
-  }, [repoImportedInfo?.importedVersions]);
-
   const lockRepoProvidedFields = !!repoImportedInfo;
-  // When a repo already has a module_source, we don't allow changing terraform paths/folders.
-  // For already-imported versions we display the stored folders from the DB via lookup-import.
-  const lockTerraformFields = !!repoImportedInfo;
 
-  const companyDiscoveryHint = useMemo(() => {
-    const path = companySettings?.terraformSubmodulesPath;
-    if (!path || lockTerraformFields) return undefined;
+  /**
+   * Shows the icon choice already stored for this repository.
+   *
+   * Guarded on `iconMode` being present so that a response from an older build —
+   * or any other source that does not carry the field — leaves the control on its
+   * own default instead of resetting it to a mode nobody chose.
+   */
+  function applyStoredIcon(source: ImportedSource) {
+    if (!source.iconMode) return;
 
-    if (discovery.status === "loading") {
-      return `Looking for submodules in ${path}/ …`;
-    }
-    if (discovery.status === "error") {
-      return `Could not apply the company convention: ${discovery.message}`;
-    }
-    if (discovery.status === "done") {
-      return discovery.folders.length > 0
-        ? `Pre-selected ${discovery.folders.length} submodule${
-            discovery.folders.length === 1 ? "" : "s"
-          } found in ${path}/ (company setting).`
-        : `No submodules found in ${path}/ (company setting).`;
-    }
-
-    return undefined;
-  }, [
-    companySettings?.terraformSubmodulesPath,
-    discovery,
-    lockTerraformFields,
-  ]);
+    iconFromStore.current = true;
+    setIcon({
+      mode: isIconMode(source.iconMode) ? source.iconMode : "repo",
+      iconName: source.iconName ?? null,
+    });
+  }
 
   // When repo is selected, check whether it was imported before and which versions exist.
   // Only `full_name` identifies the repo for this lookup; the rest of the object
@@ -554,11 +569,13 @@ export function ImportModuleDialog({
         setRepoImportedInfo({
           source: body.source,
           importedVersions: body.importedVersions ?? [],
+          isBuiltin: body.isBuiltin ?? false,
         });
         // Populate fields from the source; these live on terraform_module_sources.
         setModuleName((prev) => body.source?.name ?? prev);
         setModuleDescription(body.source.description ?? "");
         setTags(body.source.tags ?? []);
+        applyStoredIcon(body.source);
       })
       .catch(() => {
         if (!controller.signal.aborted) setRepoImportedInfo(null);
@@ -576,7 +593,7 @@ export function ImportModuleDialog({
   useEffect(() => {
     if (!open) return;
     if (!user?.id) return;
-    if (!selectedRepo || !refChoice) {
+    if (!selectedRepo || !primaryRef) {
       setExistingImport(null);
       return;
     }
@@ -587,9 +604,7 @@ export function ImportModuleDialog({
     fetch(
       `/api/modules/lookup-import?repoFullName=${encodeURIComponent(
         selectedRepo.full_name,
-      )}&refName=${encodeURIComponent(
-        refChoice.name,
-      )}&terraformRootFolder=${encodeURIComponent(terraformRootFolder || ".")}`,
+      )}&refName=${encodeURIComponent(primaryRef.name)}`,
       { signal: controller.signal },
     )
       .then(async (res) => {
@@ -606,12 +621,7 @@ export function ImportModuleDialog({
         setModuleName((prev) => body.source?.name ?? prev);
         setModuleDescription(body.source.description ?? "");
         setTags(body.source.tags ?? []);
-        setTerraformRootFolder(
-          (prev) => body.module?.terraformRootFolder ?? prev ?? ".",
-        );
-        setTerraformSubmodulesFolders(
-          body.module.terraformSubmodulesFolders ?? [],
-        );
+        applyStoredIcon(body.source);
       })
       .catch(() => {
         if (!controller.signal.aborted) setExistingImport(null);
@@ -621,89 +631,90 @@ export function ImportModuleDialog({
       });
 
     return () => controller.abort();
-    // terraformRootFolder is a dependency on purpose: changing it re-checks.
-  }, [
-    open,
-    user?.id,
-    selectedRepo?.full_name,
-    refChoice?.name,
-    terraformRootFolder,
-  ]);
+  }, [open, user?.id, selectedRepo?.full_name, primaryRef?.name]);
 
-  // Pre-select submodules using the company convention. Stored values from a
-  // previous import always win, so this waits for both lookups to settle.
+  // Does the repository ship an `icon.png`? Decides whether the icon step offers
+  // it at all, so it is looked up rather than guessed.
+  //
+  // Asked of the default branch, not of the ref being imported, because that is
+  // where the importer reads it from. Asking about the ref would hide the option
+  // for anyone importing a tag older than the file — and then store an icon the
+  // dialog had just said was not there.
   useEffect(() => {
-    const submodulesPath = companySettings?.terraformSubmodulesPath;
     const repoFullName = selectedRepo?.full_name;
-    const refName = refChoice?.name;
-    if (!open || !repoFullName || !refName || !submodulesPath) return;
-    if (existingImportLoading || repoImportedLoading) return;
-    if (existingImport || repoImportedInfo) return;
+    const refName = selectedRepo?.default_branch ?? primaryRef?.name;
 
-    const key = `${repoFullName}@${refName}@${submodulesPath}`;
-    if (appliedDiscoveryFor.current === key) return;
-    appliedDiscoveryFor.current = key;
-
-    // The response is matched against the ref rather than an effect-scoped
-    // flag: unrelated dependencies (the import lookups) settle while the tree
-    // is in flight, and cancelling on every re-run would strand the request.
-    const isCurrent = () => appliedDiscoveryFor.current === key;
-    setDiscovery({ status: "loading", folders: [] });
+    if (!open || !repoFullName || !refName) {
+      setRepoIcon({ status: "unknown" });
+      return;
+    }
 
     const [owner, repo] = repoFullName.split("/");
+    if (!owner || !repo) return;
+
+    const controller = new AbortController();
+    setRepoIcon({ status: "loading" });
+
     fetch(
       `/api/git-provider/github/repos/${owner}/${repo}/tree?ref=${encodeURIComponent(
         refName,
       )}`,
+      { signal: controller.signal },
     )
       .then(async (res) => {
         const body = (await res.json().catch(() => null)) as {
           entries?: Array<{ path: string; type: string }>;
-          error?: string;
         } | null;
 
-        if (!isCurrent()) return;
+        if (controller.signal.aborted) return;
 
         if (!res.ok) {
-          setDiscovery({
-            status: "error",
-            folders: [],
-            message: body?.error ?? "Could not read the repository tree.",
-          });
+          // Unreadable is not the same as absent, but for this control it has to
+          // behave the same way: we cannot offer a file we could not see.
+          setRepoIcon({ status: "absent" });
           return;
         }
 
-        const folders = findSubmoduleFolders(
+        const path = findRepoIconPath(
           (body?.entries ?? [])
             .filter((entry) => entry.type === "blob")
             .map((entry) => entry.path),
-          submodulesPath,
         );
 
-        setDiscovery({ status: "done", folders });
-        if (folders.length > 0) {
-          setTerraformSubmodulesFolders(folders);
-        }
+        setRepoIcon(
+          path
+            ? {
+                status: "present",
+                path,
+                previewUrl: `https://raw.githubusercontent.com/${repoFullName}/${encodeURIComponent(
+                  refName,
+                )}/${path}`,
+              }
+            : { status: "absent" },
+        );
       })
-      .catch((e: unknown) => {
-        if (!isCurrent()) return;
-        setDiscovery({
-          status: "error",
-          folders: [],
-          message:
-            e instanceof Error ? e.message : "Could not read the repository.",
-        });
+      .catch(() => {
+        if (!controller.signal.aborted) setRepoIcon({ status: "absent" });
       });
+
+    return () => controller.abort();
   }, [
     open,
     selectedRepo?.full_name,
-    refChoice?.name,
-    companySettings?.terraformSubmodulesPath,
-    existingImport,
-    existingImportLoading,
-    repoImportedInfo,
-    repoImportedLoading,
+    selectedRepo?.default_branch,
+    primaryRef?.name,
   ]);
+
+  // `repo` is the initial mode because it is the right answer whenever it is
+  // available. Once we know it is not, the choice moves to the plain mark rather
+  // than sitting on an option the user cannot select.
+  useEffect(() => {
+    if (repoIcon.status !== "absent") return;
+    if (iconFromStore.current) return;
+    setIcon((prev) =>
+      prev.mode === "repo" ? { ...prev, mode: "none" } : prev,
+    );
+  }, [repoIcon.status]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -720,7 +731,7 @@ export function ImportModuleDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {existingImport && (step === 3 || step === 4) ? (
+        {existingImport && step === 3 ? (
           <div className="rounded-md border bg-muted/30 p-3 text-sm">
             This module is already imported for this version. The fields below
             are read-only and show what’s stored in the database.
@@ -732,7 +743,7 @@ export function ImportModuleDialog({
             <div className="relative rounded-md border border-input bg-background focus-within:border-primary">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search repositories…"
+                placeholder="Search repositories"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="border-0 pl-10 focus-visible:ring-0 focus-visible:ring-offset-0"
@@ -805,19 +816,20 @@ export function ImportModuleDialog({
           <div className="space-y-4">
             {repoImportedInfo ? (
               <div className="rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">
-                This repository was imported before. Versions already imported
-                are disabled.
+                {repoImportedInfo.isBuiltin
+                  ? "This repository ships with TerraBlox and is already in your module list. Its versions are disabled; pick another ref to add one of your own."
+                  : "This repository was imported before. Versions already imported are disabled."}
               </div>
             ) : null}
 
             <div className="flex items-center gap-2">
               <Button
                 type="button"
-                variant={refTab === "release" ? "default" : "outline"}
+                variant={refTab === "branch" ? "default" : "outline"}
                 size="sm"
-                onClick={() => setRefTab("release")}
+                onClick={() => setRefTab("branch")}
               >
-                Releases ({releases.length})
+                Branches ({branches.length})
               </Button>
               <Button
                 type="button"
@@ -827,14 +839,6 @@ export function ImportModuleDialog({
               >
                 Tags ({gitTags.length})
               </Button>
-              <Button
-                type="button"
-                variant={refTab === "branch" ? "default" : "outline"}
-                size="sm"
-                onClick={() => setRefTab("branch")}
-              >
-                Branches ({branches.length})
-              </Button>
             </div>
 
             {refLoading ? (
@@ -843,54 +847,6 @@ export function ImportModuleDialog({
               </div>
             ) : refError ? (
               <div className="text-sm text-destructive">{refError}</div>
-            ) : refTab === "release" ? (
-              <div className="space-y-2 h-[260px] overflow-y-auto pr-2">
-                {releases.length === 0 ? (
-                  <div className="rounded-md border p-3 text-sm text-muted-foreground">
-                    No releases found for this repository. Switch to Branches to
-                    pick a branch instead.
-                  </div>
-                ) : (
-                  releases.map((r) => {
-                    const selected =
-                      refChoice?.type === "release" &&
-                      refChoice.name === r.tag_name;
-
-                    const alreadyImported = importedVersionSet.has(r.tag_name);
-
-                    return (
-                      <button
-                        type="button"
-                        key={r.id}
-                        className={`w-full text-left rounded-md border p-3 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                          selected ? "border-primary" : "border-transparent"
-                        } ${alreadyImported ? "opacity-60 cursor-not-allowed" : ""}`}
-                        onClick={() => {
-                          if (alreadyImported) return;
-                          setRefChoice({ type: "release", name: r.tag_name });
-                          setStep(3);
-                        }}
-                        aria-pressed={selected}
-                        aria-disabled={alreadyImported}
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <div className="font-medium">{r.tag_name}</div>
-                            {alreadyImported ? (
-                              <span className="text-[11px] rounded border px-2 py-0.5 text-muted-foreground">
-                                Already imported
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="text-xs text-muted-foreground truncate">
-                            {r.name || "Release"}
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })
-                )}
-              </div>
             ) : refTab === "tag" ? (
               <div className="space-y-2 h-[260px] overflow-y-auto pr-2">
                 {gitTags.length === 0 ? (
@@ -899,8 +855,7 @@ export function ImportModuleDialog({
                   </div>
                 ) : (
                   gitTags.map((t) => {
-                    const selected =
-                      refChoice?.type === "tag" && refChoice.name === t.name;
+                    const selected = isRefSelected("tag", t.name);
 
                     const alreadyImported = importedVersionSet.has(t.name);
 
@@ -913,8 +868,7 @@ export function ImportModuleDialog({
                         } ${alreadyImported ? "opacity-60 cursor-not-allowed" : ""}`}
                         onClick={() => {
                           if (alreadyImported) return;
-                          setRefChoice({ type: "tag", name: t.name });
-                          setStep(3);
+                          toggleRefChoice("tag", t.name);
                         }}
                         aria-pressed={selected}
                         aria-disabled={alreadyImported}
@@ -947,8 +901,7 @@ export function ImportModuleDialog({
                   </div>
                 ) : (
                   branches.map((b) => {
-                    const selected =
-                      refChoice?.type === "branch" && refChoice.name === b.name;
+                    const selected = isRefSelected("branch", b.name);
 
                     const alreadyImported = importedVersionSet.has(b.name);
 
@@ -961,8 +914,7 @@ export function ImportModuleDialog({
                         } ${alreadyImported ? "opacity-60 cursor-not-allowed" : ""}`}
                         onClick={() => {
                           if (alreadyImported) return;
-                          setRefChoice({ type: "branch", name: b.name });
-                          setStep(3);
+                          toggleRefChoice("branch", b.name);
                         }}
                         aria-pressed={selected}
                         aria-disabled={alreadyImported}
@@ -1019,6 +971,18 @@ export function ImportModuleDialog({
               />
             </div>
 
+            <div className="space-y-2">
+              {/* Not a `Label`: the control is a group of buttons, so there is no
+                  single form element for a label to point at. */}
+              <p className="text-sm font-medium leading-none">Icon</p>
+              <IconChoice
+                disabled={lockRepoProvidedFields}
+                onChange={setIcon}
+                repoIcon={repoIcon}
+                value={icon}
+              />
+            </div>
+
             <TagsInput
               label="Tags"
               value={tags}
@@ -1026,58 +990,6 @@ export function ImportModuleDialog({
               suggestions={tagSuggestions}
               disabled={lockRepoProvidedFields}
             />
-
-            {saveError ? (
-              <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
-                {saveError}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {step === 4 ? (
-          <div className="space-y-5">
-            {selectedRepo && refChoice ? (
-              <FolderPicker
-                label="Terraform root path"
-                value={terraformRootFolder}
-                onChange={setTerraformRootFolder}
-                provider="github"
-                repoFullName={selectedRepo.full_name}
-                refName={refChoice.name}
-                disabled={lockTerraformFields}
-              />
-            ) : (
-              <div className="space-y-2">
-                <Label htmlFor="terraformRoot">Terraform root path</Label>
-                <Input
-                  id="terraformRoot"
-                  value={terraformRootFolder}
-                  onChange={(e) => setTerraformRootFolder(e.target.value)}
-                  placeholder="e.g. . or modules/vpc"
-                  disabled={lockTerraformFields}
-                />
-              </div>
-            )}
-
-            {selectedRepo && refChoice ? (
-              <MultiRepoFolderPicker
-                label="Terraform submodule folders"
-                value={terraformSubmodulesFolders}
-                onChange={(next) => {
-                  // Any manual edit ends auto-discovery for this repo+ref.
-                  appliedDiscoveryFor.current = "manual";
-                  setTerraformSubmodulesFolders(next);
-                }}
-                provider="github"
-                repoFullName={selectedRepo.full_name}
-                refName={refChoice.name}
-                disabled={lockTerraformFields}
-                {...(companyDiscoveryHint
-                  ? { description: companyDiscoveryHint }
-                  : {})}
-              />
-            ) : null}
 
             {saveError ? (
               <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
@@ -1096,11 +1008,7 @@ export function ImportModuleDialog({
               if (step === 1) {
                 onOpenChange(false);
               } else {
-                setStep((s) => {
-                  if (s === 2) return 1;
-                  if (s === 3) return 2;
-                  return 3;
-                });
+                setStep((s) => (s === 3 ? 2 : 1));
               }
             }}
           >
@@ -1108,13 +1016,12 @@ export function ImportModuleDialog({
           </Button>
 
           <div className="flex items-center gap-2">
-            {step < 4 ? (
+            {step < 3 ? (
               <Button
                 type="button"
                 onClick={() => {
                   if (step === 1 && selectedRepo) setStep(2);
-                  if (step === 2 && refChoice) setStep(3);
-                  if (step === 3) setStep(4);
+                  if (step === 2 && refChoices.length > 0) setStep(3);
                 }}
                 disabled={
                   !canContinue ||
@@ -1130,7 +1037,12 @@ export function ImportModuleDialog({
                 {saving ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Importing…
+                    {refChoices.length > 1
+                      ? `Importing ${Math.min(
+                          savedRefCount + 1,
+                          refChoices.length,
+                        )} of ${refChoices.length}…`
+                      : "Importing…"}
                   </>
                 ) : existingImport ? (
                   "Close"

@@ -828,3 +828,14 @@ export const AWS_ICONS_BY_FLAT_NAME: ReadonlyMap<string, string> = new Map(
     // `waf-bot-control` when both could match the same prefix.
     .sort((a, b) => b[1].length - a[1].length),
 );
+
+/**
+ * Whether a name refers to a bundled icon.
+ *
+ * Used where a name arrives from outside and ends up in an image `src`: an
+ * unchecked value would render as a broken image rather than falling back, and
+ * the set is a fixed list, so membership is the whole validation needed.
+ */
+export function isKnownAwsIcon(name: string): boolean {
+  return AWS_ICON_NAMES.includes(name);
+}

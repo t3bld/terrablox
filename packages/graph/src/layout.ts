@@ -69,15 +69,16 @@ export type LayoutedDependencyGraphNode<
 };
 
 /**
- * Heights account for the node frame's full content: a group badge, the title
- * and one metadata row. Too little and the rows overlap instead of stacking,
- * which silently swallows the title.
+ * Heights account for the node frame's full content: a group badge, the title,
+ * three lines of description and one metadata row. Too little and the rows are
+ * clipped instead of stacking, which silently swallows the description the node
+ * exists to carry.
  */
 export const defaultDependencyGraphNodeDimensions = {
-  module: { width: 280, height: 112 },
-  resource: { width: 240, height: 104 },
-  data: { width: 240, height: 104 },
-  "external-module": { width: 260, height: 108 },
+  module: { width: 300, height: 148 },
+  resource: { width: 260, height: 140 },
+  data: { width: 260, height: 140 },
+  "external-module": { width: 280, height: 144 },
 } satisfies Record<DependencyGraphNodeKind, DependencyGraphNodeDimensions>;
 
 const nodeKindSortOrder = {

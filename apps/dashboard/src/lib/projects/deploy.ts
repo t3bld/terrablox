@@ -9,21 +9,7 @@
  */
 
 export const WORKFLOW_DIR = ".github/workflows";
-export const PLAN_WORKFLOW_PATH = `${WORKFLOW_DIR}/terraform-plan.yml`;
-export const APPLY_WORKFLOW_PATH = `${WORKFLOW_DIR}/terraform-apply.yml`;
-export const STATE_WORKFLOW_PATH = `${WORKFLOW_DIR}/terraform-state.yml`;
-export const COST_WORKFLOW_PATH = `${WORKFLOW_DIR}/terraform-cost.yml`;
 export const BACKEND_FILE = "backend.tf";
-
-/**
- * Where the pipeline publishes its inventory of deployed resources.
- *
- * In the repository rather than in this app's database, because the pipeline is
- * the only thing holding AWS credentials. TerraBlox reads the inventory through
- * the same GitHub token it already uses for the code, which keeps the promise
- * that it never needs access to the account it deploys into.
- */
-export const STATE_SNAPSHOT_PATH = ".terrablox/state.json";
 
 /**
  * Where the pipeline publishes its cost estimate.
@@ -44,13 +30,51 @@ export const DEFAULT_TERRAFORM_VERSION = "1.9.8";
 /** The single audience and issuer GitHub Actions uses for AWS federation. */
 export const GITHUB_OIDC_PROVIDER = "token.actions.githubusercontent.com";
 
+/**
+ * Repository variables the generated workflows read at run time.
+ *
+ * Defined here rather than next to the GitHub client because they are part of
+ * the contract of the rendered YAML: whoever changes a name has to change the
+ * workflow in the same edit, or the pipeline silently falls back.
+ *
+ * Variables, not secrets: a role ARN and a bucket name are not credentials, and
+ * a secret could never be read back to show the user what is configured.
+ */
+export const AWS_ROLE_VARIABLE = "TERRABLOX_AWS_ROLE_ARN";
+export const AWS_REGION_VARIABLE = "TERRABLOX_AWS_REGION";
+export const STATE_BUCKET_VARIABLE = "TERRABLOX_STATE_BUCKET";
+
+/**
+ * What the deployment role may do, beyond reading and writing its own state.
+ *
+ * Administrator, because Terraform can be asked to create anything and a role
+ * scoped narrower fails halfway through an apply with a permission error rather
+ * than a plan. The consequence is deliberate and worth stating plainly: anyone
+ * who can push to the repository, or start a workflow in it, can do anything in
+ * this AWS account. The role is a CloudFormation parameter precisely so it can
+ * be narrowed later without regenerating anything.
+ */
+export const DEPLOY_PERMISSIONS_POLICY_ARN =
+  "arn:aws:iam::aws:policy/AdministratorAccess";
+
+/** CloudFormation parameter names the bootstrap template accepts. */
+export const PERMISSIONS_POLICY_PARAMETER = "PermissionsPolicyArn";
+export const CREATE_OIDC_PARAMETER = "CreateOidcProvider";
+
 export interface DeploySettings {
   awsAccountId: string | null;
   awsRegion: string;
   awsRoleArn: string | null;
   stateBucket: string | null;
   stateLockTable: string | null;
+  /** Set once the state stack has run; the backend cannot encrypt without it. */
+  stateKmsKeyArn: string | null;
 }
+
+/** The stack that owns the state, separate from the one that owns the role. */
+export const STATE_BUCKET_OUTPUT_KEY = "StateBucketName";
+export const LOCK_TABLE_OUTPUT_KEY = "LockTableName";
+export const KMS_KEY_OUTPUT_KEY = "StateKmsKeyArn";
 
 export interface PipelineContext extends DeploySettings {
   repoFullName: string;
@@ -62,17 +86,12 @@ export interface PipelineContext extends DeploySettings {
 }
 
 /** `.` is where Terraform lives by default, but Actions wants a real path. */
-function workingDirectory(rootFolder: string): string {
+export function workingDirectory(rootFolder: string): string {
   const trimmed = rootFolder
     .trim()
     .replace(/^\.\/?/, "")
     .replace(/\/+$/, "");
   return trimmed === "" ? "." : trimmed;
-}
-
-function pathFilter(rootFolder: string): string {
-  const dir = workingDirectory(rootFolder);
-  return dir === "." ? "**.tf" : `${dir}/**`;
 }
 
 function slugify(value: string): string {
@@ -85,360 +104,31 @@ function slugify(value: string): string {
 }
 
 /** Terraform state keys are paths; keep them free of anything that needs escaping. */
-function stateKey(projectName: string): string {
+export function stateKey(projectName: string): string {
   return `${slugify(projectName)}/terraform.tfstate`;
 }
 
-const GENERATED_HEADER = `# Managed by TerraBlox. Edits are kept, but regenerating the pipeline
-# overwrites this file.`;
-
-export function renderPlanWorkflow(context: PipelineContext): string {
-  const dir = workingDirectory(context.rootFolder);
-  const version = context.terraformVersion ?? DEFAULT_TERRAFORM_VERSION;
-
-  return `${GENERATED_HEADER}
-name: Terraform Plan
-
-on:
-  pull_request:
-    paths:
-      - "${pathFilter(context.rootFolder)}"
-  workflow_dispatch:
-
-# id-token is what lets the job exchange a GitHub token for AWS credentials.
-permissions:
-  contents: read
-  id-token: write
-  pull-requests: write
-
-jobs:
-  plan:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ${dir}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${context.awsRoleArn ?? "<set the IAM role in TerraBlox>"}
-          aws-region: ${context.awsRegion}
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${version}
-
-      - run: terraform fmt -check -recursive
-
-      - run: terraform init -input=false
-
-      - run: terraform validate
-
-      - name: Terraform plan
-        id: plan
-        run: terraform plan -no-color -input=false -out=tfplan
-
-      - name: Comment plan on the pull request
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        env:
-          PLAN: \${{ steps.plan.outputs.stdout }}
-        with:
-          script: |
-            const plan = (process.env.PLAN || '').slice(0, 60000);
-            await github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '### Terraform plan\\n\\n\`\`\`terraform\\n' + plan + '\\n\`\`\`',
-            });
-`;
-}
-
-export function renderApplyWorkflow(context: PipelineContext): string {
-  const dir = workingDirectory(context.rootFolder);
-  const version = context.terraformVersion ?? DEFAULT_TERRAFORM_VERSION;
-
-  return `${GENERATED_HEADER}
-name: Terraform Apply
-
-on:
-  push:
-    branches:
-      - ${context.branch}
-    paths:
-      - "${pathFilter(context.rootFolder)}"
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  id-token: write
-
-# Two applies against the same state at once would fight over the lock, so runs
-# queue instead of cancelling each other.
-concurrency:
-  group: terraform-apply-${context.branch}
-  cancel-in-progress: false
-
-jobs:
-  apply:
-    runs-on: ubuntu-latest
-    # Protect this environment in GitHub to require a manual approval before
-    # anything is changed in AWS.
-    environment: production
-    defaults:
-      run:
-        working-directory: ${dir}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${context.awsRoleArn ?? "<set the IAM role in TerraBlox>"}
-          aws-region: ${context.awsRegion}
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${version}
-
-      - run: terraform init -input=false
-
-      - run: terraform apply -auto-approve -input=false
-`;
-}
-
 /**
- * Publishes an inventory of what is actually deployed.
+ * A state bucket name nobody has to invent.
  *
- * Only identifiers are extracted — address, type, id, ARN — never attribute
- * values. Terraform state holds generated passwords and private keys in clear
- * text, so the summary is built from an allow-list: a resource type this filter
- * has never seen contributes its name and nothing else, rather than leaking
- * whatever it happens to store.
+ * Asking for one is the step the setup used to stall on: the name has to be
+ * globally unique across all of S3, so the obvious guesses are taken and the
+ * error only appears once CloudFormation is already running. The account id
+ * makes it unique without being secret — it is in every ARN the pipeline logs.
+ *
+ * Bucket names are capped at 63 characters, hence the truncated slug.
  */
-export function renderStateWorkflow(context: PipelineContext): string {
-  const dir = workingDirectory(context.rootFolder);
-  const version = context.terraformVersion ?? DEFAULT_TERRAFORM_VERSION;
-
-  return `${GENERATED_HEADER}
-name: Terraform State
-
-on:
-  # After every apply so the inventory follows the account instead of lagging
-  # behind it, and daily to pick up changes made outside Terraform.
-  workflow_run:
-    workflows: ["Terraform Apply"]
-    types: [completed]
-  schedule:
-    - cron: "0 6 * * *"
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  id-token: write
-
-concurrency:
-  group: terrablox-state
-  cancel-in-progress: true
-
-jobs:
-  snapshot:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${context.branch}
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${context.awsRoleArn ?? "<set the IAM role in TerraBlox>"}
-          aws-region: ${context.awsRegion}
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${version}
-          # The wrapper prefixes the output with its own logging, which would
-          # end up in the JSON.
-          terraform_wrapper: false
-
-      - name: Read the remote state
-        working-directory: ${dir}
-        run: |
-          terraform init -input=false
-          terraform show -json > "$RUNNER_TEMP/state.json"
-
-      - name: Summarise the state
-        run: |
-          mkdir -p .terrablox
-          jq 'def modules: ., (.child_modules[]? | modules);
-            {
-              version: 1,
-              generatedAt: (now | todate),
-              terraformVersion: (.terraform_version // null),
-              resources: [
-                .values.root_module? | modules | .resources[]? | {
-                  address: .address,
-                  type: .type,
-                  name: .name,
-                  mode: .mode,
-                  provider: .provider_name,
-                  index: (.index // null),
-                  id: (.values.id? // null),
-                  arn: (.values.arn? // null)
-                }
-              ],
-              outputs: [
-                (.values.outputs? // {}) | to_entries[] | {
-                  name: .key,
-                  sensitive: (.value.sensitive // false),
-                  value: (
-                    if (.value.sensitive // false) then null
-                    else ((.value.value | tostring)[0:200])
-                    end
-                  )
-                }
-              ]
-            }' "$RUNNER_TEMP/state.json" > ${STATE_SNAPSHOT_PATH}
-
-      - name: Publish the snapshot
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ${STATE_SNAPSHOT_PATH}
-          git diff --cached --quiet && exit 0
-          git commit -m "chore(terrablox): update state snapshot [skip ci]"
-          # The apply that triggered this run may have been overtaken by another
-          # push, and a rejected push would silently lose the snapshot.
-          git pull --rebase --autostash origin ${context.branch}
-          git push origin HEAD:${context.branch}
-`;
+export function defaultStateBucket(
+  projectName: string,
+  accountId: string,
+): string {
+  const slug = slugify(projectName).slice(0, 24).replace(/-+$/, "");
+  return `terrablox-tfstate-${accountId}-${slug}`;
 }
 
-/**
- * Prices the plan and publishes the result beside the state snapshot.
- *
- * Infracost is given a plan rather than the sources, which is the whole point:
- * every variable is resolved, `count` has a number, and an instance has a real
- * size. What it still cannot know is traffic, so usage-driven components come
- * back without a figure and are reported as such instead of being quietly
- * counted as zero.
- *
- * Prices change without the code changing, so this also runs on a schedule.
- */
-export function renderCostWorkflow(context: PipelineContext): string {
-  const dir = workingDirectory(context.rootFolder);
-  const version = context.terraformVersion ?? DEFAULT_TERRAFORM_VERSION;
-
-  return `${GENERATED_HEADER}
-name: Terraform Cost
-
-on:
-  # After an apply so the estimate follows what was actually deployed, and
-  # monthly because AWS prices move on their own.
-  workflow_run:
-    workflows: ["Terraform Apply"]
-    types: [completed]
-  schedule:
-    - cron: "0 7 1 * *"
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  id-token: write
-
-concurrency:
-  group: terrablox-cost
-  cancel-in-progress: true
-
-jobs:
-  estimate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${context.branch}
-
-      - name: Check for the Infracost API key
-        run: |
-          if [ -z "\${{ secrets.${INFRACOST_API_KEY_SECRET} }}" ]; then
-            echo "::error::${INFRACOST_API_KEY_SECRET} is not set. Add it as a repository secret; a free key is available at infracost.io."
-            exit 1
-          fi
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${context.awsRoleArn ?? "<set the IAM role in TerraBlox>"}
-          aws-region: ${context.awsRegion}
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${version}
-          # The wrapper prefixes the output with its own logging, which would
-          # end up in the JSON.
-          terraform_wrapper: false
-
-      - uses: infracost/actions/setup@v3
-        with:
-          api-key: \${{ secrets.${INFRACOST_API_KEY_SECRET} }}
-
-      - name: Plan
-        working-directory: ${dir}
-        run: |
-          terraform init -input=false
-          terraform plan -input=false -out=tfplan
-          terraform show -json tfplan > "$RUNNER_TEMP/plan.json"
-
-      - name: Price the plan
-        run: |
-          infracost breakdown \\
-            --path "$RUNNER_TEMP/plan.json" \\
-            --format json \\
-            --out-file "$RUNNER_TEMP/infracost.json"
-
-      - name: Summarise the estimate
-        run: |
-          mkdir -p .terrablox
-          jq 'def components($prefix):
-              ( .costComponents[]? | {
-                  name: ($prefix + .name),
-                  unit: .unit,
-                  monthlyQuantity: (.monthlyQuantity // null),
-                  monthlyCost: (.monthlyCost // null)
-                } ),
-              ( .subresources[]? | components($prefix + .name + " · ") );
-            {
-              version: 1,
-              generatedAt: (now | todate),
-              currency: (.currency // "USD"),
-              totalMonthlyCost: (.totalMonthlyCost // null),
-              detectedResources: (.summary.totalDetectedResources // null),
-              supportedResources: (.summary.totalSupportedResources // null),
-              unsupportedResources: (.summary.totalUnsupportedResources // null),
-              noPriceResources: (.summary.totalNoPriceResources // null),
-              resources: [
-                .projects[]? | .breakdown.resources[]? | {
-                  name: .name,
-                  monthlyCost: (.monthlyCost // null),
-                  components: [ components("") ]
-                }
-              ]
-            }' "$RUNNER_TEMP/infracost.json" > ${COST_SNAPSHOT_PATH}
-
-      - name: Publish the estimate
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ${COST_SNAPSHOT_PATH}
-          git diff --cached --quiet && exit 0
-          git commit -m "chore(terrablox): update cost estimate [skip ci]"
-          git pull --rebase --autostash origin ${context.branch}
-          git push origin HEAD:${context.branch}
-`;
+/** DynamoDB is far more relaxed about names, so this one only has to be stable. */
+export function defaultLockTable(projectName: string): string {
+  return `terrablox-${slugify(projectName)}-tflock`;
 }
 
 export function renderBackendFile(context: PipelineContext): string {
@@ -446,6 +136,14 @@ export function renderBackendFile(context: PipelineContext): string {
 
   const lock = context.stateLockTable
     ? `\n    dynamodb_table = "${context.stateLockTable}"`
+    : "";
+
+  // Naming the key rather than relying on the bucket default: the default only
+  // applies to objects S3 encrypts on its own, and a backend that silently fell
+  // back to SSE-S3 would look identical from here while being a different
+  // guarantee.
+  const kms = context.stateKmsKeyArn
+    ? `\n    kms_key_id     = "${context.stateKmsKeyArn}"`
     : "";
 
   return `# Managed by TerraBlox.
@@ -456,7 +154,7 @@ terraform {
     bucket         = "${context.stateBucket}"
     key            = "${stateKey(context.projectName)}"
     region         = "${context.awsRegion}"
-    encrypt        = true${lock}
+    encrypt        = true${kms}${lock}
   }
 }
 `;
@@ -489,13 +187,13 @@ export function renderTrustPolicy(params: {
             StringEquals: {
               [`${GITHUB_OIDC_PROVIDER}:aud`]: "sts.amazonaws.com",
             },
-            // Scoped to this repository so no other repository can assume the
-            // role, and to the deployment branch plus pull requests so a fork
-            // cannot reach it either.
+            // Scoped to this repository and to the deployment branch, which is
+            // the only ref a manually started run can use. Pull requests are
+            // deliberately absent: nothing runs on them, and a fork's PR must
+            // never reach a role with these permissions.
             StringLike: {
               [`${GITHUB_OIDC_PROVIDER}:sub`]: [
                 `repo:${params.repoFullName}:ref:refs/heads/${params.branch}`,
-                `repo:${params.repoFullName}:pull_request`,
                 `repo:${params.repoFullName}:environment:production`,
               ],
             },
@@ -514,6 +212,7 @@ export function missingDeploySettings(settings: DeploySettings): string[] {
   if (!settings.awsRoleArn) missing.push("IAM role ARN");
   if (!settings.awsRegion) missing.push("AWS region");
   if (!settings.stateBucket) missing.push("Terraform state bucket");
+  if (!settings.stateKmsKeyArn) missing.push("state encryption key");
   return missing;
 }
 
@@ -530,22 +229,184 @@ function roleNameFrom(roleArn: string | null, projectName: string): string {
     : `terrablox-${slugify(projectName)}-deploy`;
 }
 
+/** The stack that owns the state, so it can outlive the role that writes it. */
+export function stateStackName(projectName: string): string {
+  return `terrablox-${slugify(projectName)}-state`;
+}
+
+/** An alias is what a person reads in the console; the ARN is what policies use. */
+export function defaultKmsAlias(projectName: string): string {
+  return `alias/terrablox-${slugify(projectName)}-state`;
+}
+
 /**
- * The account-side prerequisites as one CloudFormation stack.
+ * The identity half of the prerequisites: the OIDC trust and the deploy role.
  *
- * The pipeline can only assume a role that somebody created first, and doing
- * that by hand in the console is where projects stall and where over-permissive
- * roles get made. Handing out a stack keeps that first step reviewable, exactly
- * repeatable and removable, and it keeps TerraBlox out of the account: the user
- * runs it with their own credentials, so this app still holds none.
+ * Split from the state stack on purpose. The two have opposite lifetimes — a
+ * role can be deleted and rebuilt at will, while deleting the state bucket makes
+ * Terraform forget about infrastructure that is still running. Keeping them in
+ * one stack meant every change to either put the other at risk.
+ *
+ * The role's state permissions are therefore written against names rather than
+ * `!GetAtt`: this stack may well be created before the bucket exists.
  *
  * `\${` escapes are CloudFormation's own `!Sub` variables, not interpolation.
  */
 export function renderBootstrapTemplate(context: PipelineContext): string {
   const roleName = roleNameFrom(context.awsRoleArn, context.projectName);
-  const bucket = context.stateBucket ?? "<set the state bucket in TerraBlox>";
+  const bucket = context.stateBucket ?? "";
 
-  const lockTableResource = context.stateLockTable
+  // Without a bucket name there is nothing to scope to yet, and a policy naming
+  // an empty ARN is invalid. The role is still useful: it can be created first
+  // and updated once the state stack has run.
+  const statePolicy = bucket
+    ? `
+      Policies:
+        - PolicyName: terraform-state
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:\${AWS::Partition}:s3:::${bucket}"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub "arn:\${AWS::Partition}:s3:::${bucket}/${stateKey(context.projectName)}"
+              # The state is encrypted with a customer-managed key, so writing it
+              # needs the key as well as the object. Scoped by ViaService rather
+              # than by key ARN because this stack does not know the key id yet.
+              - Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:ReEncrypt*
+                  - kms:GenerateDataKey*
+                  - kms:DescribeKey
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub "s3.\${AWS::Region}.amazonaws.com"${
+                      context.stateLockTable
+                        ? `
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !Sub "arn:\${AWS::Partition}:dynamodb:\${AWS::Region}:\${AWS::AccountId}:table/${context.stateLockTable}"`
+                        : ""
+                    }`
+    : "";
+
+  return `AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  TerraBlox deployment role for ${context.projectName}
+  (${context.repoFullName}). Creates the GitHub OIDC trust and the role that
+  GitHub Actions assumes to run Terraform. Managed by TerraBlox.
+
+Parameters:
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ["yes", "no"]
+    Default: "yes"
+    Description: >-
+      An account can hold only one identity provider per URL. Set this to "no"
+      if another stack already registered ${GITHUB_OIDC_PROVIDER}.
+
+  PermissionsPolicyArn:
+    Type: String
+    Default: ${DEPLOY_PERMISSIONS_POLICY_ARN}
+    Description: >-
+      What the role may do besides reading and writing state. Administrator by
+      default, because Terraform can be asked to create anything and a narrower
+      role fails part-way through an apply. This also means anyone who can push
+      to ${context.repoFullName}, or start a workflow in it, can do anything in
+      this account. Replace it with a policy scoped to what this project really
+      deploys once that list has settled.
+
+Conditions:
+  WithOidcProvider: !Equals [!Ref CreateOidcProvider, "yes"]
+
+Resources:
+  GithubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: WithOidcProvider
+    Properties:
+      Url: https://${GITHUB_OIDC_PROVIDER}
+      ClientIdList:
+        - sts.amazonaws.com
+      # AWS verifies GitHub's certificate chain itself, but the field is still
+      # required, so this is GitHub's long-standing root thumbprint.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: ${roleName}
+      Description: Assumed by GitHub Actions to run Terraform for ${context.projectName}.
+      # One hour is longer than a healthy apply and short enough that a leaked
+      # token expires before it is useful.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - WithOidcProvider
+                - !Ref GithubOidcProvider
+                - !Sub "arn:\${AWS::Partition}:iam::\${AWS::AccountId}:oidc-provider/${GITHUB_OIDC_PROVIDER}"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "${GITHUB_OIDC_PROVIDER}:aud": sts.amazonaws.com
+              # Scoped to this repository and to the deployment branch, the only
+              # ref a manually started run can use. Pull requests are left out
+              # on purpose so a fork's PR can never assume this role.
+              StringLike:
+                "${GITHUB_OIDC_PROVIDER}:sub":
+                  - "repo:${context.repoFullName}:ref:refs/heads/${context.branch}"
+                  - "repo:${context.repoFullName}:environment:production"
+      ManagedPolicyArns:
+        - !Ref PermissionsPolicyArn${statePolicy}
+
+Outputs:
+  DeployRoleArn:
+    Description: Value for the "Deployment role ARN" field in TerraBlox.
+    Value: !GetAtt DeployRole.Arn
+`;
+}
+
+/**
+ * The Terraform state backend as its own stack: a KMS key, the bucket it
+ * encrypts, and the lock table.
+ *
+ * Its own key rather than S3's default encryption, because the two answer
+ * different questions. SSE-S3 protects the bytes at rest from AWS's side; a
+ * customer-managed key makes reading the state an auditable, revocable grant —
+ * every read shows up in CloudTrail against a key the account owns, and taking
+ * the grant away locks everyone out including this app. Terraform state holds
+ * generated passwords and private keys in clear text, which is the kind of
+ * material that deserves that.
+ *
+ * Everything here is `Retain`. Deleting the state does not delete the
+ * infrastructure it tracks, it only makes Terraform forget about it — and a key
+ * that is gone makes the existing objects unreadable forever.
+ */
+export function renderStateTemplate(context: PipelineContext): string {
+  const bucket = context.stateBucket;
+  if (!bucket) {
+    throw new Error("The state stack needs a bucket name.");
+  }
+
+  const alias = defaultKmsAlias(context.projectName);
+  const roleName = roleNameFrom(context.awsRoleArn, context.projectName);
+
+  const lockTable = context.stateLockTable
     ? `
   # Without a lock table two applies can write the state at the same time and
   # the loser's resources become invisible to Terraform.
@@ -565,67 +426,64 @@ export function renderBootstrapTemplate(context: PipelineContext): string {
 `
     : "";
 
-  const lockStatement = context.stateLockTable
-    ? `
-              - Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                Resource: !GetAtt LockTable.Arn`
-    : "";
-
   const lockOutput = context.stateLockTable
     ? `
 
   LockTableName:
-    Description: Value for the "Lock table" field in TerraBlox.
+    Description: The DynamoDB table that holds the state lock.
     Value: !Ref LockTable`
     : "";
 
   return `AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  TerraBlox deployment prerequisites for ${context.projectName}
-  (${context.repoFullName}). Creates the GitHub OIDC trust, the deployment role
-  and the Terraform state backend. Managed by TerraBlox.
-
-Parameters:
-  CreateOidcProvider:
-    Type: String
-    AllowedValues: ["yes", "no"]
-    Default: "yes"
-    Description: >-
-      An account can hold only one identity provider per URL. Set this to "no"
-      if another stack already registered token.actions.githubusercontent.com.
-
-  PermissionsPolicyArn:
-    Type: String
-    Default: arn:aws:iam::aws:policy/ReadOnlyAccess
-    Description: >-
-      What the role may do besides reading and writing state. The default is
-      enough for "terraform plan" and deliberately not enough for "apply" —
-      replace it with a policy scoped to what this project actually deploys.
-
-Conditions:
-  WithOidcProvider: !Equals [!Ref CreateOidcProvider, "yes"]
+  TerraBlox Terraform state backend for ${context.projectName}
+  (${context.repoFullName}). Creates the KMS key, the encrypted state bucket and
+  the lock table. Kept separate from the deployment role because deleting state
+  loses track of running infrastructure. Managed by TerraBlox.
 
 Resources:
-  GithubOidcProvider:
-    Type: AWS::IAM::OIDCProvider
-    Condition: WithOidcProvider
+  StateKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      Url: https://${GITHUB_OIDC_PROVIDER}
-      ClientIdList:
-        - sts.amazonaws.com
-      # AWS verifies GitHub's certificate chain itself, but the field is still
-      # required, so this is GitHub's long-standing root thumbprint.
-      ThumbprintList:
-        - 6938fd4d98bab03faadb97b34396831e3780aea1
+      Description: Encrypts the Terraform state for ${context.projectName}.
+      EnableKeyRotation: true
+      # Long enough to notice a mistake, which is the only reason this window
+      # exists: a deleted key makes every existing state version unreadable.
+      PendingWindowInDays: 30
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          # Without this the key is unmanageable: KMS does not fall back to IAM
+          # for the key itself, so locking out the account root is permanent.
+          - Sid: AllowAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:\${AWS::Partition}:iam::\${AWS::AccountId}:root"
+            Action: "kms:*"
+            Resource: "*"
+          # The pipeline writes the state through this key.
+          - Sid: AllowDeployRole
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:\${AWS::Partition}:iam::\${AWS::AccountId}:role/${roleName}"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+
+  StateKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: ${alias}
+      TargetKeyId: !Ref StateKey
 
   StateBucket:
     Type: AWS::S3::Bucket
-    # Deleting the state does not delete the infrastructure it tracks, it only
-    # makes Terraform forget about it. Keep the bucket even if the stack goes.
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -637,7 +495,11 @@ Resources:
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !GetAtt StateKey.Arn
+            # Without a bucket key every object costs a separate KMS call, which
+            # a state file read on every page load would notice.
+            BucketKeyEnabled: true
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -662,70 +524,44 @@ Resources:
             Condition:
               Bool:
                 aws:SecureTransport: false
-${lockTableResource}
-  DeployRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: ${roleName}
-      Description: Assumed by GitHub Actions to run Terraform for ${context.projectName}.
-      # One hour is longer than a healthy apply and short enough that a leaked
-      # token expires before it is useful.
-      MaxSessionDuration: 3600
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !If
-                - WithOidcProvider
-                - !Ref GithubOidcProvider
-                - !Sub "arn:\${AWS::Partition}:iam::\${AWS::AccountId}:oidc-provider/${GITHUB_OIDC_PROVIDER}"
-            Action: sts:AssumeRoleWithWebIdentity
+          # An unencrypted PUT would leave a version of the state in the clear,
+          # which the bucket default cannot prevent on its own.
+          - Sid: DenyUnencryptedWrites
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub "\${StateBucket.Arn}/*"
             Condition:
-              StringEquals:
-                "${GITHUB_OIDC_PROVIDER}:aud": sts.amazonaws.com
-              # Scoped to this repository and these refs, so neither another
-              # repository nor a fork's pull request can assume the role.
-              StringLike:
-                "${GITHUB_OIDC_PROVIDER}:sub":
-                  - "repo:${context.repoFullName}:ref:refs/heads/${context.branch}"
-                  - "repo:${context.repoFullName}:pull_request"
-                  - "repo:${context.repoFullName}:environment:production"
-      ManagedPolicyArns:
-        - !Ref PermissionsPolicyArn
-      Policies:
-        - PolicyName: terraform-state
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action: s3:ListBucket
-                Resource: !GetAtt StateBucket.Arn
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:DeleteObject
-                Resource: !Sub "\${StateBucket.Arn}/${stateKey(context.projectName)}"${lockStatement}
-
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+${lockTable}
 Outputs:
-  DeployRoleArn:
-    Description: Value for the "Deployment role ARN" field in TerraBlox.
-    Value: !GetAtt DeployRole.Arn
+  ${STATE_BUCKET_OUTPUT_KEY}:
+    Description: The bucket holding the Terraform state.
+    Value: !Ref StateBucket
 
-  StateBucketName:
-    Description: Value for the "State bucket" field in TerraBlox.
-    Value: !Ref StateBucket${lockOutput}
+  ${KMS_KEY_OUTPUT_KEY}:
+    Description: The key the state is encrypted with. Reading it needs kms:Decrypt here.
+    Value: !GetAtt StateKey.Arn${lockOutput}
 `;
 }
 
-/** The one command that turns the template into the prerequisites. */
+/** The one command that turns a template into the thing it describes. */
 export function renderBootstrapCommand(context: PipelineContext): string {
   return [
     "aws cloudformation deploy \\",
     `  --stack-name ${bootstrapStackName(context.projectName)} \\`,
-    "  --template-file terrablox-bootstrap.yml \\",
+    "  --template-file terrablox-role.yml \\",
     "  --capabilities CAPABILITY_NAMED_IAM \\",
+    `  --region ${context.awsRegion}`,
+  ].join("\n");
+}
+
+export function renderStateCommand(context: PipelineContext): string {
+  return [
+    "aws cloudformation deploy \\",
+    `  --stack-name ${stateStackName(context.projectName)} \\`,
+    "  --template-file terrablox-state.yml \\",
     `  --region ${context.awsRegion}`,
   ].join("\n");
 }

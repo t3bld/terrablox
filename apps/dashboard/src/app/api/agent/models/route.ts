@@ -3,16 +3,21 @@ import { NextResponse } from "next/server";
 import {
   COPILOT_MODEL,
   COPILOT_REASONING_EFFORT,
-  copilotClient,
+  listCopilotModels,
 } from "@/lib/agent/copilot";
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import { FALLBACK_MODELS } from "@/lib/agent/runtime-options";
+import {
+  getCurrentUserId,
+  getUserGithubToken,
+} from "@/lib/auth/server-helpers";
 
 /**
- * The models the runtime reports, with the efforts each one accepts.
+ * The models this user may run a turn on, with the efforts each one accepts.
  *
- * The shared client deliberately holds no GitHub token — identity travels on
- * the session — so this can legitimately come back empty. The UI treats an
- * empty list as "ask the user to type an id", not as "there are no models".
+ * Listed with their own GitHub token, because the answer is their Copilot
+ * entitlement and nobody else's. When it cannot be listed — no token, no seat, a
+ * runtime that will not start — a small known list stands in, so the dropdown
+ * offers something real instead of appearing to say there are no models.
  */
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -25,23 +30,13 @@ export async function GET() {
     reasoningEffort: COPILOT_REASONING_EFFORT,
   };
 
-  try {
-    const models = await copilotClient().listModels();
+  const token = await getUserGithubToken();
+  const listed = token ? await listCopilotModels(token) : null;
 
-    return NextResponse.json({
-      defaults,
-      models: models
-        .filter((model) => model.policy?.state !== "disabled")
-        .map((model) => ({
-          id: model.id,
-          name: model.name,
-          reasoningEfforts: model.supportedReasoningEfforts ?? [],
-          multiplier: model.billing?.multiplier ?? null,
-        })),
-    });
-  } catch (error) {
-    // Not an error the user caused or can fix, so the page degrades instead.
-    console.error("[agent] could not list models", error);
-    return NextResponse.json({ defaults, models: [] });
-  }
+  return NextResponse.json({
+    defaults,
+    models: listed && listed.length > 0 ? listed : FALLBACK_MODELS,
+    /** False when the list is the fallback, so the UI can say so if it wants. */
+    fromRuntime: Boolean(listed && listed.length > 0),
+  });
 }

@@ -5,7 +5,6 @@ import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { useEffect } from "react";
-import { AwsAccountsCard } from "@/components/account/aws-accounts-card";
 import { InfracostCard } from "@/components/account/infracost-card";
 import { AppSidebar } from "@/components/app-sidebar";
 import { GithubAccountCard } from "@/components/github-account-card";
@@ -57,7 +56,7 @@ export default function AccountPage() {
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <Card>
               <CardHeader>
-                <CardTitle>Your profile</CardTitle>
+                <CardTitle>Your Profile</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="flex items-start gap-4">
@@ -90,11 +89,11 @@ export default function AccountPage() {
               </CardContent>
             </Card>
 
+            {/* No AWS card. Which account to deploy into belongs to a project,
+                not to a person — two projects usually mean two accounts — so the
+                connect flow lives in each project's Deploy and State tabs. */}
             <GithubAccountCard />
             <InfracostCard />
-            <div className="lg:col-span-3">
-              <AwsAccountsCard />
-            </div>
           </div>
         </main>
       </SidebarInset>

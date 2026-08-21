@@ -53,6 +53,23 @@ export async function resolveTerraBloxPrincipal(): Promise<string | null> {
 }
 
 /**
+ * Whether this instance can assume anything at all, answered before the user
+ * invests a device login in finding out.
+ *
+ * The role a connection creates has to name a principal in its trust policy,
+ * so an instance without an AWS identity of its own cannot produce a usable
+ * connection — a fact worth stating on the settings page rather than at the
+ * end of the flow.
+ */
+export async function describeAppIdentity(): Promise<{
+  configured: boolean;
+  principalArn: string | null;
+}> {
+  const principalArn = await resolveTerraBloxPrincipal();
+  return { configured: principalArn !== null, principalArn };
+}
+
+/**
  * A trust policy names the role, not the momentary session.
  *
  * Under a task or instance role, GetCallerIdentity answers with an assumed-role
@@ -123,6 +140,14 @@ export interface AssumedIdentity {
   userId: string;
 }
 
+/** A short-lived session, in the shape every AWS SDK client accepts. */
+export interface AwsSessionCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+  expiration: Date | null;
+}
+
 /** Turns AWS's wording into something a user can act on. */
 function describeFailure(error: unknown): AwsConnectionError {
   const name =
@@ -150,19 +175,79 @@ function describeFailure(error: unknown): AwsConnectionError {
   );
 }
 
-/**
- * Assumes the connected role and reports who we became.
- *
- * Also the verification step: if this succeeds, the trust policy and the
- * external ID line up, which is the only proof that matters.
- */
-export async function assumeConnection(params: {
+export interface AssumeConnectionParams {
   roleArn: string;
   externalId: string;
   region: string;
   /** Ends up in CloudTrail on the customer's side, so keep it identifying. */
   sessionSuffix: string;
-}): Promise<AssumedIdentity> {
+  /**
+   * Anything the app does on its own initiative reads; only an action the user
+   * asked for by name may write, and it has to say so here.
+   */
+  access?: "read" | "write";
+  /**
+   * An inline session policy, used instead of the read-only cap.
+   *
+   * Only for reads that the managed `ReadOnlyAccess` policy cannot express.
+   * Reading the Terraform state is the case this exists for: the object is
+   * encrypted with a customer-managed key, and `ReadOnlyAccess` deliberately
+   * excludes `kms:Decrypt`, so a capped session gets `AccessDenied` on every
+   * `GetObject`. A policy naming that one object and that one key is narrower
+   * than the cap it replaces, not wider — which is the only reason this is
+   * allowed to exist.
+   */
+  sessionPolicy?: string;
+}
+
+/**
+ * A session that may read exactly one object, decrypting it with exactly one key.
+ *
+ * Written out rather than assembled from `ReadOnlyAccess` because the two
+ * cannot be combined: session policies intersect, so adding `kms:Decrypt`
+ * alongside the managed policy would still be denied by it.
+ */
+export function stateReadPolicy(params: {
+  bucket: string;
+  key: string;
+  kmsKeyArn: string | null;
+}): string {
+  const statements: unknown[] = [
+    {
+      Effect: "Allow",
+      Action: ["s3:GetObject", "s3:GetObjectVersion"],
+      Resource: `arn:aws:s3:::${params.bucket}/${params.key}`,
+    },
+    {
+      Effect: "Allow",
+      Action: "s3:ListBucket",
+      Resource: `arn:aws:s3:::${params.bucket}`,
+    },
+  ];
+
+  // Absent on a bucket that still uses S3-managed encryption, where the object
+  // needs no key of its own.
+  if (params.kmsKeyArn) {
+    statements.push({
+      Effect: "Allow",
+      Action: ["kms:Decrypt", "kms:DescribeKey"],
+      Resource: params.kmsKeyArn,
+    });
+  }
+
+  return JSON.stringify({ Version: "2012-10-17", Statement: statements });
+}
+
+/**
+ * Assumes the connected role and hands back the session itself.
+ *
+ * Separate from {@link assumeConnection} because callers that want to *read
+ * something* need the credentials, not just the identity, and re-implementing
+ * the read-only cap per caller is how that cap eventually gets forgotten.
+ */
+export async function assumeConnectionSession(
+  params: AssumeConnectionParams,
+): Promise<AwsSessionCredentials> {
   if (!isValidRoleArn(params.roleArn)) {
     throw new AwsConnectionError(
       "That is not a valid IAM role ARN.",
@@ -184,7 +269,19 @@ export async function assumeConnection(params: {
         // Truncated because AWS rejects session names over 64 characters.
         RoleSessionName: `terrablox-${params.sessionSuffix}`.slice(0, 64),
         DurationSeconds: SESSION_DURATION_SECONDS,
-        PolicyArns: [{ arn: READ_ONLY_POLICY_ARN }],
+        // An explicit policy replaces the cap rather than joining it: session
+        // policies intersect, so the two together would deny what the caller
+        // asked for.
+        ...(params.sessionPolicy
+          ? { Policy: params.sessionPolicy }
+          : {
+              // A write session is still bounded by whatever the customer's role
+              // allows; dropping the cap only stops this app from vetoing itself.
+              PolicyArns:
+                params.access === "write"
+                  ? undefined
+                  : [{ arn: READ_ONLY_POLICY_ARN }],
+            }),
       }),
     );
 
@@ -200,12 +297,36 @@ export async function assumeConnection(params: {
       );
     }
 
+    return {
+      accessKeyId: credentials.AccessKeyId,
+      secretAccessKey: credentials.SecretAccessKey,
+      sessionToken: credentials.SessionToken,
+      expiration: credentials.Expiration ?? null,
+    };
+  } catch (error) {
+    if (error instanceof AwsConnectionError) throw error;
+    throw describeFailure(error);
+  }
+}
+
+/**
+ * Assumes the connected role and reports who we became.
+ *
+ * Also the verification step: if this succeeds, the trust policy and the
+ * external ID line up, which is the only proof that matters.
+ */
+export async function assumeConnection(
+  params: AssumeConnectionParams,
+): Promise<AssumedIdentity> {
+  const credentials = await assumeConnectionSession(params);
+
+  try {
     const scoped = new STSClient({
       region: params.region,
       credentials: {
-        accessKeyId: credentials.AccessKeyId,
-        secretAccessKey: credentials.SecretAccessKey,
-        sessionToken: credentials.SessionToken,
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+        sessionToken: credentials.sessionToken,
       },
     });
 

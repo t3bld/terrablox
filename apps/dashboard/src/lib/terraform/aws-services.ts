@@ -17,7 +17,7 @@
  */
 
 /** Types whose prefix would name the wrong service. */
-const SERVICE_BY_TYPE: Record<string, string> = {
+export const SERVICE_BY_TYPE: Record<string, string> = {
   // Not CloudWatch, despite the `aws_cloudwatch_` prefix.
   aws_cloudwatch_event_rule: "EventBridge",
   aws_cloudwatch_event_target: "EventBridge",
@@ -29,6 +29,12 @@ const SERVICE_BY_TYPE: Record<string, string> = {
   // Billed and drawn as VPC, but each carries its own prefix.
   aws_flow_log: "VPC",
   aws_default_security_group: "VPC",
+  // Without these the `default` prefix falls through to the title-caser and
+  // names a service "Default", which is not a thing.
+  aws_default_route_table: "VPC",
+  aws_default_network_acl: "VPC",
+  aws_default_vpc: "VPC",
+  aws_default_subnet: "VPC",
   aws_main_route_table_association: "VPC",
   aws_ec2_managed_prefix_list: "VPC",
 
@@ -36,12 +42,15 @@ const SERVICE_BY_TYPE: Record<string, string> = {
   aws_ec2_transit_gateway_vpc_attachment: "Transit Gateway",
   aws_ec2_transit_gateway_route_table: "Transit Gateway",
 
-  aws_vpn_gateway: "Site-to-Site VPN",
-  aws_vpn_connection: "Site-to-Site VPN",
+  // The on-premises end of a Site-to-Site VPN. Its `customer` prefix would
+  // otherwise be title-cased into a service called "Customer".
+  aws_customer_gateway: "Site-to-Site VPN",
+  // An EBS volume attached to an instance. `volume` alone names nothing.
+  aws_volume_attachment: "EC2",
 };
 
 /** `aws_<prefix>_...` -> service. Covers the long tail on its own. */
-const SERVICE_BY_PREFIX: Record<string, string> = {
+export const SERVICE_BY_PREFIX: Record<string, string> = {
   // ---- Networking -------------------------------------------------------
   vpc: "VPC",
   subnet: "VPC",
@@ -53,6 +62,34 @@ const SERVICE_BY_PREFIX: Record<string, string> = {
   security: "VPC",
   dx: "Direct Connect",
   globalaccelerator: "Global Accelerator",
+  /**
+   * Everything below this line exists because of the same failure mode.
+   *
+   * An unmapped prefix falls through to {@link titleCasePrefix}, which produces a
+   * plausible-looking name — "RAM", "Appsync", "Networkfirewall", "VPN" — that no
+   * icon is keyed under, because icons are keyed by service label. The name then
+   * reads as deliberate while the picture beside it is silently missing, which is
+   * the worst of the three possible outcomes: a wrong name would at least be
+   * visible. Every prefix that appears in a real module belongs here.
+   */
+  ram: "Resource Access Manager",
+  vpn: "Site-to-Site VPN",
+  appsync: "AppSync",
+  apprunner: "App Runner",
+  appconfig: "AppConfig",
+  networkfirewall: "Network Firewall",
+  dms: "DMS",
+  // Folded into their parent service, the way `s3control` and `elasticsearch`
+  // already are: these are variants of one thing to a reader looking at a
+  // diagram, and each new label is another icon to keep in step.
+  opensearchserverless: "OpenSearch",
+  mskconnect: "MSK",
+  s3vectors: "S3",
+  emrserverless: "EMR",
+  emrcontainers: "EMR",
+  scheduler: "EventBridge",
+  pipes: "EventBridge",
+  rolesanywhere: "IAM",
 
   // ---- Compute ----------------------------------------------------------
   instance: "EC2",
@@ -173,18 +210,20 @@ const SERVICE_BY_PREFIX: Record<string, string> = {
  * and drawing it with the CloudWatch icon its resource type suggests would
  * label one box two different things.
  */
-const ICON_BY_SERVICE: Record<string, string> = {
+export const ICON_BY_SERVICE: Record<string, string> = {
   // ---- Networking -------------------------------------------------------
   VPC: "vpc",
   "Transit Gateway": "transit-gateway",
-  "Site-to-Site VPN": "vpn-gateway",
+  "Site-to-Site VPN": "siteto-site-vpn",
   "Direct Connect": "direct-connect",
   "Global Accelerator": "global-accelerator",
+  "Resource Access Manager": "resource-access-manager",
 
   // ---- Compute ----------------------------------------------------------
   EC2: "ec2",
   "EC2 Auto Scaling": "ec2-auto-scaling",
   "Application Auto Scaling": "application-auto-scaling",
+  "App Runner": "app-runner",
   ECS: "ecs",
   EKS: "eks",
   ECR: "elastic-container-registry",
@@ -200,6 +239,7 @@ const ICON_BY_SERVICE: Record<string, string> = {
 
   // ---- Databases --------------------------------------------------------
   RDS: "rds",
+  DMS: "database-migration-service",
   DocumentDB: "document-db",
   DynamoDB: "dynamodb",
   ElastiCache: "elasticache",
@@ -226,6 +266,7 @@ const ICON_BY_SERVICE: Record<string, string> = {
   EventBridge: "event-bridge",
   "Amazon MQ": "mq",
   SES: "simple-email-service",
+  AppSync: "app-sync",
 
   // ---- Observability ----------------------------------------------------
   CloudWatch: "cloudwatch",
@@ -249,6 +290,7 @@ const ICON_BY_SERVICE: Record<string, string> = {
   Inspector: "inspector",
   Macie: "macie",
   Shield: "shield",
+  "Network Firewall": "network-firewall",
   Organizations: "organizations",
 
   // ---- DNS and discovery ------------------------------------------------
@@ -270,6 +312,7 @@ const ICON_BY_SERVICE: Record<string, string> = {
   CodeDeploy: "code-deploy",
   CloudFormation: "cloud-formation",
   "Service Catalog": "service-catalog",
+  AppConfig: "app-config",
 };
 
 /** Undefined for a service with no vendored icon; the caller draws a fallback. */

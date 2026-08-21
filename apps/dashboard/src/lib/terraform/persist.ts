@@ -51,6 +51,7 @@ export async function persistAnalysis(
         providerName: r.provider,
         version: provider?.version ?? null,
         sourceFile: r.file,
+        conditionalOn: r.conditionalOn,
         resourceUrl: resourceDocsUrl({
           resourceType: r.type,
           kind: r.kind,

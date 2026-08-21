@@ -25,7 +25,7 @@ export default function ProjectDetailLoading() {
         />
 
         <div className="flex min-h-0 flex-1">
-          <aside className="hidden w-56 shrink-0 space-y-2 border-r p-3 md:block">
+          <aside className="hidden w-64 shrink-0 space-y-2 border-r p-3 md:block">
             <Skeleton className="h-9 w-full" />
             {[1, 2, 3, 4].map((i) => (
               <Skeleton key={i} className="h-10 w-full" />

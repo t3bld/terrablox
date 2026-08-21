@@ -4,7 +4,13 @@ import type { MCPServerConfig } from "@github/copilot-sdk";
 import { prisma } from "@terrablox/database";
 
 import { decryptSecret, encryptSecret } from "@/lib/crypto/secret-box";
-import { isKnownSkill } from "./skills";
+import { isKnownKnowledge } from "./knowledge";
+import {
+  REASONING_EFFORTS,
+  type ReasoningEffortValue,
+  TURN_TIMEOUT_MAX_SECONDS,
+  TURN_TIMEOUT_MIN_SECONDS,
+} from "./runtime-options";
 import { isKnownTool } from "./tool-catalogue";
 
 /**
@@ -18,16 +24,15 @@ import { isKnownTool } from "./tool-catalogue";
 /** Long enough for real house rules, short enough not to crowd out the graph. */
 export const MAX_INSTRUCTIONS_LENGTH = 4000;
 
-/** The levels the Copilot SDK defines. Which of them a model accepts varies. */
-export const REASONING_EFFORTS = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
-
-export type ReasoningEffortValue = (typeof REASONING_EFFORTS)[number];
+// Re-exported so server code has one import for "agent settings" and does not
+// have to know which constants happen to be safe for the browser.
+export {
+  DEFAULT_TURN_TIMEOUT_SECONDS,
+  REASONING_EFFORTS,
+  type ReasoningEffortValue,
+  TURN_TIMEOUT_MAX_SECONDS,
+  TURN_TIMEOUT_MIN_SECONDS,
+} from "./runtime-options";
 
 export class AgentSettingsError extends Error {}
 
@@ -43,7 +48,8 @@ export interface McpServerView {
 
 export interface AgentSettingsView {
   instructions: string;
-  skills: string[];
+  /** Knowledge source ids withheld from the agent. Empty means all available. */
+  disabledKnowledge: string[];
   mcpServers: McpServerView[];
   /** Null means "auto": Copilot picks what the user is entitled to. */
   model: string | null;
@@ -51,6 +57,10 @@ export interface AgentSettingsView {
   reasoningEffort: ReasoningEffortValue | null;
   /** Tool names the agent may not call. */
   disabledTools: string[];
+  /** How long a turn may run, in seconds. Null → default (300s). */
+  turnTimeout: number | null;
+  /** Whether the agent may delete modules and variables. Off by default. */
+  allowDestructive: boolean;
 }
 
 export async function getAgentSettings(
@@ -66,14 +76,38 @@ export async function getAgentSettings(
 
   return {
     instructions: settings?.instructions ?? "",
-    // Filter on read as well as on write: a skill we retired should stop
-    // applying immediately, not once someone next saves their settings.
-    skills: (settings?.skills ?? []).filter(isKnownSkill),
+    // Filtered on read as well as on write: an id we retired must stop
+    // withholding anything immediately, not once someone next saves.
+    disabledKnowledge: (settings?.disabledKnowledge ?? []).filter(
+      isKnownKnowledge,
+    ),
     mcpServers: servers.map(toServerView),
     model: settings?.model ?? null,
     reasoningEffort: asReasoningEffort(settings?.reasoningEffort),
     disabledTools: settings?.disabledTools ?? [],
+    turnTimeout: settings?.turnTimeout ?? null,
+    // A user who has never opened the settings gets the safe answer, which is the
+    // same one the column defaults to.
+    allowDestructive: settings?.allowDestructive ?? false,
   };
+}
+
+/**
+ * Allows or forbids the destructive operations, leaving everything else alone.
+ *
+ * Its own function rather than a field on {@link setAgentRuntime}: the runtime
+ * choices are about how well the agent works, and this one is about what it is
+ * permitted to destroy. Sharing a writer would let a dropdown change save it.
+ */
+export async function setAgentAllowDestructive(
+  userId: string,
+  allowDestructive: boolean,
+): Promise<void> {
+  await prisma.agentSettings.upsert({
+    where: { userId },
+    create: { userId, instructions: "", allowDestructive },
+    update: { allowDestructive },
+  });
 }
 
 /** Replaces the deny list, leaving every other setting untouched. */
@@ -90,7 +124,7 @@ export async function setAgentDisabledTools(
   });
 }
 
-function asReasoningEffort(
+export function asReasoningEffort(
   value: string | null | undefined,
 ): ReasoningEffortValue | null {
   return REASONING_EFFORTS.includes(value as ReasoningEffortValue)
@@ -98,9 +132,97 @@ function asReasoningEffort(
     : null;
 }
 
+/**
+ * A turn timeout in seconds, or null for the default.
+ *
+ * Out-of-range values are rejected rather than clamped: a clamp would silently
+ * store something other than what the caller sent, and this is the one setting
+ * where a wrong number is invisible until a turn dies.
+ */
+export function asTurnTimeout(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+
+  const seconds = Number(value);
+
+  if (
+    !Number.isFinite(seconds) ||
+    seconds < TURN_TIMEOUT_MIN_SECONDS ||
+    seconds > TURN_TIMEOUT_MAX_SECONDS
+  ) {
+    throw new AgentSettingsError(
+      `A turn timeout must be between ${TURN_TIMEOUT_MIN_SECONDS} and ${TURN_TIMEOUT_MAX_SECONDS} seconds.`,
+    );
+  }
+
+  return Math.round(seconds);
+}
+
+/**
+ * Replaces the runtime choices — model, thinking effort, turn timeout.
+ *
+ * Each field is written only when the caller mentions it, so the settings screen
+ * can save one dropdown without having to hold the other two. Null is a value in
+ * its own right here and means "let the default decide", which is why presence is
+ * tested with `in` rather than by checking for null.
+ */
+export async function setAgentRuntime(
+  userId: string,
+  input: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+    turnTimeout?: number | string | null;
+  },
+): Promise<void> {
+  const data: {
+    model?: string | null;
+    reasoningEffort?: string | null;
+    turnTimeout?: number | null;
+  } = {};
+
+  if ("model" in input) {
+    const model = typeof input.model === "string" ? input.model.trim() : "";
+
+    // An identifier, not prose. The cap is defence against a request body being
+    // used to write arbitrary length into a column the model id is read from.
+    if (model.length > 200) {
+      throw new AgentSettingsError("That model id is not valid.");
+    }
+
+    data.model = model || null;
+  }
+
+  if ("reasoningEffort" in input) {
+    const effort = asReasoningEffort(
+      typeof input.reasoningEffort === "string" ? input.reasoningEffort : null,
+    );
+
+    // Distinguishes "auto" from a typo: an unrecognised level would otherwise be
+    // stored as null and look like a deliberate reset.
+    if (input.reasoningEffort && !effort) {
+      throw new AgentSettingsError(
+        `Thinking effort must be one of ${REASONING_EFFORTS.join(", ")}.`,
+      );
+    }
+
+    data.reasoningEffort = effort;
+  }
+
+  if ("turnTimeout" in input) {
+    data.turnTimeout = asTurnTimeout(input.turnTimeout);
+  }
+
+  if (Object.keys(data).length === 0) return;
+
+  await prisma.agentSettings.upsert({
+    where: { userId },
+    create: { userId, instructions: "", ...data },
+    update: data,
+  });
+}
+
 export async function saveAgentSettings(
   userId: string,
-  input: { instructions: string; skills: string[] },
+  input: { instructions: string },
 ): Promise<void> {
   const instructions = input.instructions.trim();
 
@@ -110,32 +232,30 @@ export async function saveAgentSettings(
     );
   }
 
-  const skills = [...new Set(input.skills)].filter(isKnownSkill);
-
   await prisma.agentSettings.upsert({
     where: { userId },
-    create: { userId, instructions, skills },
-    update: { instructions, skills },
+    create: { userId, instructions },
+    update: { instructions },
   });
 }
 
 /**
- * Switches skills without touching the instructions.
+ * Replaces the knowledge deny list, leaving every other setting untouched.
  *
- * The context view toggles one skill at a time and never loads the instruction
+ * The context view toggles one source at a time and never loads the instruction
  * text, so it must not be able to send an empty one and wipe what the user
  * wrote on the settings tab.
  */
-export async function setAgentSkills(
+export async function setAgentDisabledKnowledge(
   userId: string,
-  skills: string[],
+  ids: string[],
 ): Promise<void> {
-  const selected = [...new Set(skills)].filter(isKnownSkill);
+  const disabledKnowledge = [...new Set(ids)].filter(isKnownKnowledge);
 
   await prisma.agentSettings.upsert({
     where: { userId },
-    create: { userId, instructions: "", skills: selected },
-    update: { skills: selected },
+    create: { userId, instructions: "", disabledKnowledge },
+    update: { disabledKnowledge },
   });
 }
 

@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 
+import { AGENT_KNOWLEDGE } from "@/lib/agent/knowledge";
 import {
   AgentSettingsError,
   getAgentSettings,
   saveAgentSettings,
+  setAgentAllowDestructive,
+  setAgentDisabledKnowledge,
   setAgentDisabledTools,
-  setAgentSkills,
+  setAgentRuntime,
 } from "@/lib/agent/settings-service";
-import { AGENT_SKILLS } from "@/lib/agent/skills";
 import { PROJECT_AGENT_TOOLS } from "@/lib/agent/tool-catalogue";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 
@@ -16,7 +18,7 @@ import { getCurrentUserId } from "@/lib/auth/server-helpers";
  *
  * Catalogue and selection travel together because the UI cannot render one
  * without the other, and shipping them separately would let the page show
- * checkboxes for skills that no longer exist.
+ * switches for sources that no longer exist.
  */
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -28,18 +30,19 @@ export async function GET() {
 
   return NextResponse.json({
     ...settings,
-    // Content is deliberately not sent: it is long, and the description is what
-    // a user needs to decide.
-    catalogue: AGENT_SKILLS.map(({ id, name, description }) => ({
+    catalogue: AGENT_KNOWLEDGE.map(({ id, name, description }) => ({
       id,
       name,
       description,
     })),
-    toolCatalogue: PROJECT_AGENT_TOOLS.map(({ name, label, summary }) => ({
-      name,
-      label,
-      summary,
-    })),
+    toolCatalogue: PROJECT_AGENT_TOOLS.map(
+      ({ name, group, label, summary }) => ({
+        name,
+        group,
+        label,
+        summary,
+      }),
+    ),
   });
 }
 
@@ -49,7 +52,7 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { instructions?: unknown; skills?: unknown };
+  let body: { instructions?: unknown };
 
   try {
     body = await request.json();
@@ -59,12 +62,9 @@ export async function PUT(request: Request) {
 
   const instructions =
     typeof body.instructions === "string" ? body.instructions : "";
-  const skills = Array.isArray(body.skills)
-    ? body.skills.filter((id): id is string => typeof id === "string")
-    : [];
 
   try {
-    await saveAgentSettings(userId, { instructions, skills });
+    await saveAgentSettings(userId, { instructions });
     return NextResponse.json(await getAgentSettings(userId));
   } catch (error) {
     if (error instanceof AgentSettingsError) {
@@ -81,14 +81,30 @@ export async function PUT(request: Request) {
   }
 }
 
-/** Skills or tools only, for views that never hold the instruction text. */
+/**
+ * Everything except the instruction text: the deny lists and the runtime choices.
+ *
+ * Separate from PUT because the views that send these never hold the instructions,
+ * and a PUT carrying an empty string would wipe what the user wrote on the
+ * settings screen.
+ *
+ * Each field is optional and only the ones present are written, so one dropdown
+ * can be saved without the caller having to send the state of the others.
+ */
 export async function PATCH(request: Request) {
   const userId = await getCurrentUserId();
   if (!userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { skills?: unknown; disabledTools?: unknown };
+  let body: {
+    disabledKnowledge?: unknown;
+    disabledTools?: unknown;
+    model?: unknown;
+    reasoningEffort?: unknown;
+    turnTimeout?: unknown;
+    allowDestructive?: unknown;
+  };
 
   try {
     body = await request.json();
@@ -101,24 +117,77 @@ export async function PATCH(request: Request) {
       ? value.filter((entry): entry is string => typeof entry === "string")
       : null;
 
-  const skills = strings(body.skills);
+  const disabledKnowledge = strings(body.disabledKnowledge);
   const disabledTools = strings(body.disabledTools);
 
-  if (!skills && !disabledTools) {
+  // Read with `in` rather than by truthiness: null is a real value for all three
+  // and means "use the default", which is not the same as "not mentioned".
+  const runtime: Parameters<typeof setAgentRuntime>[1] = {};
+  if ("model" in body) runtime.model = body.model as string | null;
+  if ("reasoningEffort" in body) {
+    runtime.reasoningEffort = body.reasoningEffort as string | null;
+  }
+  if ("turnTimeout" in body) {
+    runtime.turnTimeout = body.turnTimeout as number | string | null;
+  }
+
+  const hasRuntime = Object.keys(runtime).length > 0;
+
+  // Only a real boolean, so a truthy string cannot grant a permission.
+  const allowDestructive =
+    typeof body.allowDestructive === "boolean" ? body.allowDestructive : null;
+
+  if (
+    !disabledKnowledge &&
+    !disabledTools &&
+    !hasRuntime &&
+    allowDestructive === null
+  ) {
     return NextResponse.json(
-      { error: "Send `skills` or `disabledTools` as an array." },
+      {
+        error:
+          "Send `disabledKnowledge`, `disabledTools`, `allowDestructive`, `model`, `reasoningEffort` or `turnTimeout`.",
+      },
       { status: 400 },
     );
   }
 
   try {
-    if (skills) await setAgentSkills(userId, skills);
+    if (disabledKnowledge) {
+      await setAgentDisabledKnowledge(userId, disabledKnowledge);
+    }
     if (disabledTools) await setAgentDisabledTools(userId, disabledTools);
+    if (allowDestructive !== null) {
+      await setAgentAllowDestructive(userId, allowDestructive);
+    }
+    if (hasRuntime) await setAgentRuntime(userId, runtime);
     return NextResponse.json(await getAgentSettings(userId));
   } catch (error) {
+    // A rejected value is the caller's fault, not a server fault, and the message
+    // names the allowed range — worth returning as 400 rather than burying in the
+    // 500 branch below.
+    if (error instanceof AgentSettingsError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
     console.error("[agent] failed to toggle setting", error);
+
+    // The reason is returned rather than hidden behind "check the log". This is
+    // a self-hosted tool whose operator is the person reading the message, and
+    // the two realistic failures here — a pending migration and a stale Prisma
+    // client — are both invisible from the UI but obvious from the text.
+    const reason = error instanceof Error ? error.message : String(error);
+    const pendingMigration =
+      /disabledKnowledge|disabled_knowledge|Unknown argument|column .* does not exist/i.test(
+        reason,
+      );
+
     return NextResponse.json(
-      { error: "Could not change that. Check the server log." },
+      {
+        error: pendingMigration
+          ? "The database is missing the agent knowledge column. Run: pnpm db:migrate && pnpm db:generate, then restart the dev server."
+          : `Could not change that: ${reason}`,
+      },
       { status: 500 },
     );
   }

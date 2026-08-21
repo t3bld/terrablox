@@ -3,8 +3,10 @@
 import {
   ProjectCanvas,
   type ProjectCanvasConnection,
+  type ProjectCanvasEdge,
   type ProjectCanvasNode,
 } from "@terrablox/graph";
+import { Dialog, DialogContent, DialogTitle } from "@terrablox/ui/dialog";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import {
@@ -13,6 +15,7 @@ import {
   GitCommit,
   History,
   Layers,
+  Network,
   PanelRightOpen,
   Rocket,
   Wallet,
@@ -27,15 +30,19 @@ import {
   TabsNav,
   tabPanelProps,
 } from "@/components/layout/tabs-nav";
+import { AwsProjectGate } from "@/components/project-detail/aws-project-gate";
 import { ChatPanel } from "@/components/project-detail/chat-panel";
 import { CostPanel } from "@/components/project-detail/cost-panel";
 import { DeployPanel } from "@/components/project-detail/deploy-panel";
 import { HistoryPanel } from "@/components/project-detail/history-panel";
 import { IntegrationGate } from "@/components/project-detail/integration-gate";
+import { LocalInspector } from "@/components/project-detail/local-inspector";
 import { ModuleInspector } from "@/components/project-detail/module-inspector";
 import { ModuleLibrary } from "@/components/project-detail/module-library";
+import { ProjectArchitectureView } from "@/components/project-detail/project-architecture-view";
 import { StatePanel } from "@/components/project-detail/state-panel";
 import { useIntegrationStatus } from "@/lib/integrations/use-integration-status";
+import { canvasNodeId } from "@/lib/projects/locals";
 import type {
   ProjectDto,
   ProjectGraph,
@@ -45,7 +52,33 @@ import type {
 
 type ProjectTab = "code" | "deploy" | "state" | "costs" | "history";
 
-const AWS_REASON = "Connect an AWS account in Account settings to use this tab";
+/**
+ * How much of the same graph is drawn: the modules a project wires together,
+ * or the AWS services those modules deploy. One canvas, two zoom levels — a
+ * second tab would suggest two different things to keep in sync.
+ */
+type GraphLevel = "detail" | "architecture";
+
+const GRAPH_LEVELS: {
+  value: GraphLevel;
+  label: string;
+  icon: typeof Workflow;
+  hint: string;
+}[] = [
+  {
+    value: "detail",
+    label: "Detail",
+    icon: Workflow,
+    hint: "Module blocks, their inputs and the wires between them",
+  },
+  {
+    value: "architecture",
+    label: "Architecture",
+    icon: Network,
+    hint: "The AWS services these modules deploy, and how they connect",
+  },
+];
+
 const INFRACOST_REASON =
   "Connect Infracost in Account settings to use this tab";
 
@@ -64,35 +97,39 @@ export default function ProjectDetailPage({
   const [error, setError] = useState<string | null>(null);
   const [lastCommit, setLastCommit] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  /**
+   * Modules dropped on the canvas whose commit has not come back yet.
+   *
+   * Separate from `graph` on purpose — see `mutate`. A list rather than a single
+   * entry because nothing stops a user from dropping a second module while the
+   * first one is still being written.
+   */
+  const [pending, setPending] = useState<
+    Array<{
+      id: string;
+      label: string;
+      position: { x: number; y: number } | null;
+    }>
+  >([]);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [graphLevel, setGraphLevel] = useState<GraphLevel>("detail");
   const {
     status: integrations,
     loading: integrationsLoading,
     refresh: refreshIntegrations,
   } = useIntegrationStatus();
 
-  const awsReady = integrations?.aws.connected ?? false;
   const infracostReady = integrations?.infracost.connected ?? false;
 
-  // Locks are only shown once the answer is known, so a slow request cannot
-  // make a connected account look missing.
+  // Deploy and State are never locked: connecting AWS now happens inside them,
+  // so a lock would hide the only place the connection can be made. Costs still
+  // locks, because an Infracost key is set up on the account page.
   const tabs = useMemo<TabDefinition<ProjectTab>[]>(
     () => [
       { value: "code", label: "Code", icon: Workflow },
-      {
-        value: "deploy",
-        label: "Deploy",
-        icon: Rocket,
-        locked: !integrationsLoading && !awsReady,
-        lockedReason: AWS_REASON,
-      },
-      {
-        value: "state",
-        label: "State",
-        icon: Layers,
-        locked: !integrationsLoading && !awsReady,
-        lockedReason: AWS_REASON,
-      },
+      { value: "history", label: "History", icon: History },
+      { value: "deploy", label: "Deploy", icon: Rocket },
+      { value: "state", label: "State", icon: Layers },
       {
         value: "costs",
         label: "Costs",
@@ -100,9 +137,8 @@ export default function ProjectDetailPage({
         locked: !integrationsLoading && !infracostReady,
         lockedReason: INFRACOST_REASON,
       },
-      { value: "history", label: "History", icon: History },
     ],
-    [awsReady, infracostReady, integrationsLoading],
+    [infracostReady, integrationsLoading],
   );
 
   useEffect(() => {
@@ -144,14 +180,44 @@ export default function ProjectDetailPage({
   }, [projectId]);
 
   /**
-   * Every graph edit goes through here, so the canvas always shows the state
-   * the repository is actually in rather than an optimistic guess that a failed
-   * commit would leave behind.
+   * Every graph edit goes through here. The canvas is redrawn from what the
+   * server committed, so a failed commit cannot leave a change on screen that
+   * is not in the repository.
+   *
+   * `optimisticLabel` is the one exception, and only for adding a module: the
+   * commit is a round trip to the GitHub API, and until it returned the canvas
+   * showed nothing at all — a drop looked like it had been ignored. A greyed
+   * placeholder appears at once and is replaced by the committed graph, or
+   * removed again if the commit fails. It is a placeholder rather than a real
+   * node because the block's name and ports are the server's to decide.
    */
   const mutate = useCallback(
-    async (mutation: ProjectGraphMutation) => {
+    async (
+      mutation: ProjectGraphMutation,
+      options?: { optimisticLabel?: string },
+    ) => {
       setBusy(true);
       setError(null);
+
+      const placeholderId =
+        mutation.action === "add-module" && options?.optimisticLabel
+          ? `pending:${Date.now()}`
+          : null;
+
+      if (placeholderId && mutation.action === "add-module") {
+        // Kept out of `graph`, which stays exactly what the server committed.
+        // A fake node in there would reach the inspector, the gap list and the
+        // input pickers, all of which would be describing a block that does not
+        // exist yet.
+        setPending((current) => [
+          ...current,
+          {
+            id: placeholderId,
+            label: options?.optimisticLabel ?? "Module",
+            position: mutation.position ?? null,
+          },
+        ]);
+      }
 
       try {
         const response = await fetch(`/api/projects/${projectId}/graph`, {
@@ -167,19 +233,22 @@ export default function ProjectDetailPage({
         setGraph(result.graph);
         setLastCommit(result.commit?.sha.slice(0, 7) ?? null);
 
-        // A module that just appeared is the one the user is about to
+        // A node that just appeared is the one the user is about to
         // configure, so the inspector follows it. This covers renames too,
         // where the old label no longer exists.
-        const before = new Set(graph?.nodes.map((node) => node.id) ?? []);
+        const before = new Set(
+          (graph?.nodes ?? []).map((node) => canvasNodeId(node)),
+        );
         const appeared = result.graph.nodes.filter(
-          (node) => !before.has(node.id),
+          (node) => !before.has(canvasNodeId(node)),
         );
 
-        if (appeared.length === 1) {
-          setSelectedNodeId(appeared[0]?.id ?? null);
+        if (appeared.length === 1 && appeared[0]) {
+          setSelectedNodeId(canvasNodeId(appeared[0]));
         } else {
           setSelectedNodeId((current) =>
-            current && result.graph.nodes.some((node) => node.id === current)
+            current &&
+            result.graph.nodes.some((node) => canvasNodeId(node) === current)
               ? current
               : null,
           );
@@ -188,6 +257,14 @@ export default function ProjectDetailPage({
         setError(err instanceof Error ? err.message : "Change failed");
       } finally {
         setBusy(false);
+        // Dropped on both paths: on success the committed graph now contains the
+        // real node, and on failure nothing was committed, so leaving the
+        // placeholder would claim a module that is not in the repository.
+        if (placeholderId) {
+          setPending((current) =>
+            current.filter((entry) => entry.id !== placeholderId),
+          );
+        }
       }
     },
     [projectId, graph],
@@ -206,20 +283,61 @@ export default function ProjectDetailPage({
     [projectId],
   );
 
+  /**
+   * Modules only.
+   *
+   * Values are deliberately absent: they are drawn nowhere and reached from the
+   * input that reads them. A value as a node cost a box and two handles to say
+   * something the input row says better, and it made a six-module project read as
+   * a twenty-node system. The graph still knows about them — every input picker
+   * is built from the same nodes.
+   */
   const canvasNodes = useMemo<ProjectCanvasNode[]>(
-    () =>
-      (graph?.nodes ?? []).map((node) => ({
-        id: node.id,
-        label: node.label,
-        moduleName: node.moduleName,
-        version: node.version,
-        source: node.source,
-        linked: node.moduleId !== null,
-        inputs: node.inputs,
-        outputs: node.outputs,
-        setArguments: node.setArguments,
-        position: node.position,
+    () => [
+      ...(graph?.nodes ?? [])
+        .filter((node) => node.kind === "module")
+        .map((node) => ({
+          id: node.id,
+          name: node.id,
+          label: node.label,
+          moduleName: node.moduleName,
+          version: node.version,
+          source: node.source,
+          linked: node.moduleId !== null,
+          inputs: node.inputs,
+          outputs: node.outputs,
+          setArguments: node.setArguments,
+          position: node.position,
+        })),
+      // Modules whose commit is still running, drawn where they were dropped.
+      ...pending.map((entry) => ({
+        id: entry.id,
+        name: entry.id,
+        label: entry.label,
+        inputs: [],
+        outputs: [],
+        position: entry.position,
+        pending: true,
       })),
+    ],
+    [graph, pending],
+  );
+
+  // Module-to-module wiring only. An edge with a value at either end would now
+  // point at a node that is not on the canvas.
+  const canvasEdges = useMemo<ProjectCanvasEdge[]>(
+    () =>
+      (graph?.edges ?? [])
+        .filter(
+          (edge) =>
+            edge.sourceKind === "module" && edge.targetKind === "module",
+        )
+        .map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          links: edge.links,
+        })),
     [graph],
   );
 
@@ -231,7 +349,9 @@ export default function ProjectDetailPage({
   );
 
   const selectedNode = useMemo(
-    () => graph?.nodes.find((node) => node.id === selectedNodeId) ?? null,
+    () =>
+      graph?.nodes.find((node) => canvasNodeId(node) === selectedNodeId) ??
+      null,
     [graph, selectedNodeId],
   );
 
@@ -312,46 +432,36 @@ export default function ProjectDetailPage({
         {tab === "deploy" ? (
           <div
             {...tabPanelProps("project", "deploy")}
-            className="min-h-0 flex-1 overflow-y-auto"
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
           >
-            {integrationsLoading ? (
-              <Skeleton className="m-6 h-64" />
-            ) : awsReady ? (
+            <AwsProjectGate
+              blocked={[
+                "Generating the GitHub Actions pipeline for this project",
+                "Starting a plan or an apply from here",
+                "Reading which role and state bucket the pipeline should use",
+              ]}
+              explanation="Deployments run in your own AWS account. TerraBlox never holds AWS keys, so this project needs an account of its own to know where to deploy."
+              projectId={projectId}
+            >
               <DeployPanel projectId={projectId} project={project} />
-            ) : (
-              <IntegrationGate
-                blocked={[
-                  "Generating the GitHub Actions pipeline for this project",
-                  "Starting a plan or an apply from here",
-                  "Reading which role and state bucket the pipeline should use",
-                ]}
-                explanation="Deployments run in your own AWS account. TerraBlox never holds AWS keys, so it needs the account you connected to know where to deploy."
-                onRecheck={() => void refreshIntegrations()}
-                provider="AWS"
-              />
-            )}
+            </AwsProjectGate>
           </div>
         ) : tab === "state" ? (
           <div
             {...tabPanelProps("project", "state")}
-            className="min-h-0 flex-1 overflow-y-auto"
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
           >
-            {integrationsLoading ? (
-              <Skeleton className="m-6 h-64" />
-            ) : awsReady ? (
+            <AwsProjectGate
+              blocked={[
+                "The inventory of what is really running",
+                "Links into the AWS console for each resource",
+                "Refreshing the snapshot after an apply",
+              ]}
+              explanation="This tab shows what exists in this project's AWS account, which only means something once one is connected."
+              projectId={projectId}
+            >
               <StatePanel projectId={projectId} />
-            ) : (
-              <IntegrationGate
-                blocked={[
-                  "The inventory of what is really running",
-                  "Links into the AWS console for each resource",
-                  "Refreshing the snapshot after an apply",
-                ]}
-                explanation="This tab shows what exists in your AWS account, which only means something once an account is connected."
-                onRecheck={() => void refreshIntegrations()}
-                provider="AWS"
-              />
-            )}
+            </AwsProjectGate>
           </div>
         ) : tab === "costs" ? (
           <div
@@ -387,71 +497,95 @@ export default function ProjectDetailPage({
             {...tabPanelProps("project", "code")}
             className="flex min-h-0 flex-1"
           >
-            <aside className="hidden w-56 shrink-0 border-r md:block">
+            {/* The library only. Values used to be listed underneath, which made
+                this column a mixed inventory of "things to add" and "things that
+                exist" — two different questions sharing one scroll. */}
+            <aside className="hidden w-64 shrink-0 overflow-y-auto border-r md:block">
               <ModuleLibrary
                 disabled={busy || loading}
                 suggestions={suggestions}
-                onAdd={(moduleId) =>
-                  void mutate({ action: "add-module", moduleId })
+                onAdd={(moduleId, name) =>
+                  void mutate(
+                    { action: "add-module", moduleId },
+                    { optimisticLabel: name },
+                  )
                 }
               />
             </aside>
 
-            <main className="min-w-0 flex-1 p-3">
+            <main className="relative min-w-0 flex-1 p-3">
+              {/* Sits on the canvas rather than above it: the level belongs to
+                  the drawing, and the drawing already owns the whole area. */}
+              <div className="absolute top-5 left-5 z-10 flex items-center rounded-lg border bg-background/95 p-0.5 shadow-sm backdrop-blur">
+                {GRAPH_LEVELS.map((level) => (
+                  <button
+                    key={level.value}
+                    type="button"
+                    aria-pressed={graphLevel === level.value}
+                    onClick={() => setGraphLevel(level.value)}
+                    title={level.hint}
+                    className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-xs transition-colors ${
+                      graphLevel === level.value
+                        ? "bg-secondary text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <level.icon className="h-3.5 w-3.5 shrink-0" />
+                    {level.label}
+                  </button>
+                ))}
+              </div>
+
               {loading ? (
                 <Skeleton className="h-full w-full" />
+              ) : graphLevel === "architecture" ? (
+                <ProjectArchitectureView
+                  projectId={projectId}
+                  graph={graph}
+                  onSelectModule={(name) => setSelectedNodeId(name)}
+                />
               ) : (
                 <ProjectCanvas
                   nodes={canvasNodes}
-                  edges={graph?.edges ?? []}
+                  edges={canvasEdges}
                   busy={busy}
                   selectedNodeId={selectedNodeId}
-                  onNodeClick={(node) => {
-                    setSelectedNodeId(node.id);
-                    setPanelOpen(true);
-                  }}
+                  onNodeClick={(node) => setSelectedNodeId(node.id)}
                   onConnect={handleConnect}
                   onDisconnect={(link) =>
                     void mutate({ action: "disconnect", ...link })
                   }
-                  onRemoveNode={(name) =>
+                  onRemoveNode={({ name }) =>
                     void mutate({ action: "remove-module", name })
                   }
-                  onDropModule={(moduleId, position) =>
-                    void mutate({ action: "add-module", moduleId, position })
+                  onDropModule={(moduleId, position, name) =>
+                    void mutate(
+                      { action: "add-module", moduleId, position },
+                      { optimisticLabel: name ?? "Module" },
+                    )
                   }
                   onPositionsChange={savePositions}
                 />
               )}
             </main>
 
+            {/* The agent keeps the whole column. A module used to take the top
+                half of it, which left both cramped: the conversation lost half
+                its height exactly when a module was open to ask about, and the
+                module got a 384px column to lay out a dozen inputs in. */}
             <aside
               className={`hidden shrink-0 border-l lg:block ${
                 panelOpen ? "w-96" : "w-10"
               }`}
             >
-              {/* Everything stays mounted while collapsed: a half-written
-                  message to the agent must survive a detour to a module. */}
+              {/* Stays mounted while collapsed: a half-written message to the
+                  agent must survive a detour to a module. */}
               <div className={panelOpen ? "h-full" : "hidden"}>
-                <div className={selectedNode ? "h-full" : "hidden"}>
-                  {selectedNode && graph ? (
-                    <ModuleInspector
-                      node={selectedNode}
-                      graph={graph}
-                      busy={busy}
-                      onMutate={(mutation) => void mutate(mutation)}
-                      onClose={() => setSelectedNodeId(null)}
-                      onCollapse={() => setPanelOpen(false)}
-                    />
-                  ) : null}
-                </div>
-                <div className={selectedNode ? "hidden" : "h-full"}>
-                  <ChatPanel
-                    projectId={projectId}
-                    onGraphChanged={setGraph}
-                    onCollapse={() => setPanelOpen(false)}
-                  />
-                </div>
+                <ChatPanel
+                  projectId={projectId}
+                  onGraphChanged={setGraph}
+                  onCollapse={() => setPanelOpen(false)}
+                />
               </div>
 
               <button
@@ -464,12 +598,77 @@ export default function ProjectDetailPage({
               >
                 <PanelRightOpen className="h-4 w-4 shrink-0" />
                 <span className="truncate text-xs [writing-mode:vertical-rl]">
-                  {selectedNode ? selectedNode.label : "Agent"}
+                  Agent
                 </span>
               </button>
             </aside>
           </div>
         )}
+
+        {/* Details as a dialog rather than a docked panel: a module's inputs are
+            a form, and a form wants width. Selection is still the graph's, so
+            closing the dialog is the same thing as deselecting. */}
+        <Dialog
+          onOpenChange={(open) => {
+            if (!open) setSelectedNodeId(null);
+          }}
+          open={selectedNode !== null}
+        >
+          <DialogContent className="max-h-[90vh] w-[95vw] max-w-4xl overflow-hidden p-0">
+            {/* The panel below shows the name as a heading it can also rename, so
+                this exists only to give the dialog its accessible name. */}
+            <DialogTitle className="sr-only">
+              {selectedNode
+                ? selectedNode.kind === "local"
+                  ? `Value ${selectedNode.id}`
+                  : `Module ${selectedNode.label}`
+                : "Details"}
+            </DialogTitle>
+
+            {/* A fixed height rather than `h-full`: both panels are built as a
+                header plus a scrolling body, and that needs something to scroll
+                inside. */}
+            {selectedNode && graph ? (
+              <div className="h-[80vh]">
+                {selectedNode.kind === "local" ? (
+                  <LocalInspector
+                    busy={busy}
+                    graph={graph}
+                    node={selectedNode}
+                    onRemove={() => {
+                      void mutate({
+                        action: "remove-local",
+                        name: selectedNode.id,
+                      });
+                      setSelectedNodeId(null);
+                    }}
+                    onRename={(newName) =>
+                      void mutate({
+                        action: "rename-local",
+                        name: selectedNode.id,
+                        newName,
+                      })
+                    }
+                    onSetValue={(value) =>
+                      void mutate({
+                        action: "set-local",
+                        name: selectedNode.id,
+                        value,
+                      })
+                    }
+                  />
+                ) : (
+                  <ModuleInspector
+                    busy={busy}
+                    graph={graph}
+                    node={selectedNode}
+                    onMutate={(mutation) => void mutate(mutation)}
+                  />
+                )}
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
       </SidebarInset>
     </SidebarProvider>
   );

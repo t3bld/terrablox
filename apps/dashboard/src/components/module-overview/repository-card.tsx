@@ -14,6 +14,7 @@ import {
 import { Boxes, ChevronDown, GitBranch, Layers } from "lucide-react";
 import Link from "next/link";
 
+import { ModuleIcon } from "@/components/module-icon";
 import type { RepositoryDto } from "./types";
 
 interface RepositoryCardProps {
@@ -32,8 +33,8 @@ function shortRepoLabel(url: string | null): string | null {
 }
 
 export function RepositoryCard({ repository }: RepositoryCardProps) {
-  const latest = repository.latestVersion;
-  if (!latest) return null;
+  const current = repository.defaultVersion;
+  if (!current) return null;
 
   const repoLabel = shortRepoLabel(repository.url);
   const hasMultipleVersions = repository.versionCount > 1;
@@ -41,13 +42,22 @@ export function RepositoryCard({ repository }: RepositoryCardProps) {
   return (
     <Card className="relative flex h-full flex-col transition-colors hover:bg-muted/40">
       <CardContent className="flex flex-1 flex-col gap-3 p-4">
-        <div className="flex items-start justify-between gap-2">
+        <div className="flex items-start gap-3">
+          <ModuleIcon
+            icon={{
+              sourceId: repository.sourceId,
+              iconMode: repository.iconMode,
+              hasIcon: repository.hasIcon,
+              iconName: repository.iconName,
+            }}
+          />
+
           <div className="min-w-0 flex-1">
             {/* Stretched link: covers the card without nesting the interactive
                 controls below inside an anchor. */}
             <Link
               className="block truncate font-medium after:absolute after:inset-0 after:rounded-lg focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-ring"
-              href={`/modules/${encodeURIComponent(latest.id)}`}
+              href={`/modules/${encodeURIComponent(current.id)}`}
             >
               {repository.name}
             </Link>
@@ -65,20 +75,23 @@ export function RepositoryCard({ repository }: RepositoryCardProps) {
           </p>
         ) : null}
 
+        {/* Every chip in this row is pinned to the same height. The version
+            picker is a Button and the rest are Badges; the two components pad
+            differently, so left to their defaults the row came out uneven. */}
         <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
           {hasMultipleVersions ? (
             <div className="relative z-10">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
-                    className="h-7 gap-1.5 px-2 font-mono text-xs"
+                    className="h-6 gap-1.5 px-2 font-mono text-xs"
                     onClick={(e) => e.preventDefault()}
                     size="sm"
                     type="button"
                     variant="secondary"
                   >
                     <GitBranch className="h-3.5 w-3.5" />
-                    {latest.versionTag ?? "(no ref)"}
+                    {current.versionTag ?? "(no ref)"}
                     <ChevronDown className="h-3.5 w-3.5 opacity-60" />
                   </Button>
                 </DropdownMenuTrigger>
@@ -98,9 +111,9 @@ export function RepositoryCard({ repository }: RepositoryCardProps) {
                         className="justify-between font-mono text-xs"
                       >
                         {version.versionTag ?? "(no ref)"}
-                        {version.id === latest.id ? (
+                        {version.id === current.id ? (
                           <span className="ml-2 font-sans text-[10px] uppercase tracking-wide text-muted-foreground">
-                            latest
+                            default
                           </span>
                         ) : null}
                       </Link>
@@ -110,22 +123,22 @@ export function RepositoryCard({ repository }: RepositoryCardProps) {
               </DropdownMenu>
             </div>
           ) : (
-            <Badge className="gap-1.5 font-mono" variant="secondary">
+            <Badge className="h-6 gap-1.5 px-2 font-mono" variant="secondary">
               <GitBranch className="h-3.5 w-3.5" />
-              {latest.versionTag ?? "(no ref)"}
+              {current.versionTag ?? "(no ref)"}
             </Badge>
           )}
 
-          {latest.submoduleCount > 0 ? (
-            <Badge className="gap-1.5" variant="outline">
+          {current.submoduleCount > 0 ? (
+            <Badge className="h-6 gap-1.5 px-2" variant="outline">
               <Layers className="h-3.5 w-3.5" />
-              {latest.submoduleCount} submodule
-              {latest.submoduleCount === 1 ? "" : "s"}
+              {current.submoduleCount} submodule
+              {current.submoduleCount === 1 ? "" : "s"}
             </Badge>
           ) : null}
 
           {hasMultipleVersions ? (
-            <Badge className="gap-1.5" variant="outline">
+            <Badge className="h-6 gap-1.5 px-2" variant="outline">
               <Boxes className="h-3.5 w-3.5" />
               {repository.versionCount} versions
             </Badge>

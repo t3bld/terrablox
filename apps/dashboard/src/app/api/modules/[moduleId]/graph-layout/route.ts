@@ -3,15 +3,22 @@ import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { parseGraphLayout } from "@/lib/graph-layout";
+import { visibleToUser } from "@/lib/modules/ownership";
 
 /**
- * Confirms the module belongs to the session user. Ownership is never taken
- * from the request: a client-supplied id would let any caller read or overwrite
- * another user's layout.
+ * Confirms the session user may read this module. Never taken from the request:
+ * a client-supplied id would let any caller read or overwrite another user's
+ * layout.
+ *
+ * Visibility rather than ownership, because a layout belongs to the person who
+ * dragged the nodes, not to the module. A shipped module has to be arrangeable
+ * too, and the layout row stays private either way — it is keyed by
+ * `(userId, moduleId, graph)`, so two users arranging the same shipped module
+ * keep separate rows.
  */
-async function findOwnedModule(userId: string, moduleId: string) {
+async function findVisibleModule(userId: string, moduleId: string) {
   return database.terraformModule.findFirst({
-    where: { id: moduleId, userId },
+    where: { id: moduleId, ...visibleToUser(userId) },
     select: { id: true },
   });
 }
@@ -55,7 +62,7 @@ async function resolveRequest(req: Request, { params }: RouteContext) {
     };
   }
 
-  if (!(await findOwnedModule(userId, moduleId))) {
+  if (!(await findVisibleModule(userId, moduleId))) {
     return {
       error: NextResponse.json({ error: "Module not found" }, { status: 404 }),
     };

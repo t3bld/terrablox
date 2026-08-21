@@ -2,11 +2,27 @@
 
 import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@terrablox/ui/dropdown-menu";
 import { Input } from "@terrablox/ui/input";
 import { cn } from "@terrablox/ui/lib/utils";
-import { ArrowUpRight, Check, ChevronDown, Copy, Search } from "lucide-react";
+import {
+  ArrowUpRight,
+  Check,
+  ChevronDown,
+  Copy,
+  Filter,
+  Search,
+  X,
+} from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
+
+import { isConventionalResourceName } from "@/lib/terraform/resource-label";
 
 /**
  * Building blocks shared by the tabs that render long, searchable lists of
@@ -48,7 +64,14 @@ export function CopyButton({ value, label }: { value: string; label: string }) {
   );
 }
 
-export function TypeBadge({ type }: { type: string | null }) {
+export function TypeBadge({
+  type,
+  title,
+}: {
+  type: string | null;
+  /** Overrides the tooltip, e.g. to say the type was inferred rather than declared. */
+  title?: string;
+}) {
   if (!type) return null;
 
   const isComplex = /^(object|list|map|set|tuple)\b/.test(type);
@@ -59,33 +82,126 @@ export function TypeBadge({ type }: { type: string | null }) {
         "rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground",
         isComplex && "block max-w-full truncate whitespace-nowrap",
       )}
-      title={type}
+      title={title ?? type}
     >
       {type}
     </code>
   );
 }
 
+/**
+ * The app's one search bar: field, result count and filters in a single border.
+ *
+ * Shaped after the modules overview, and now shared with it in spirit rather than
+ * by copy — a second search bar that looked almost the same was the kind of
+ * difference a reader has to stop and account for. Everything after the input is
+ * passed in, because what counts as a filter differs per list.
+ */
 export function SearchField({
   value,
   onChange,
   placeholder,
+  count,
+  children,
 }: {
   value: string;
   onChange: (next: string) => void;
   placeholder: string;
+  /** e.g. "12 inputs". Sits between the clear button and the filters. */
+  count?: React.ReactNode;
+  /** Trailing controls, typically a {@link FilterPopover}. */
+  children?: React.ReactNode;
 }) {
   return (
-    <div className="relative flex-1 rounded-md border border-input bg-background focus-within:border-primary">
-      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+    <div className="flex w-full items-center gap-2 rounded-md border border-input bg-background px-2 py-1.5 focus-within:border-primary">
+      <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
       <Input
-        className="border-0 pl-9 focus-visible:ring-0 focus-visible:ring-offset-0"
+        aria-label={placeholder}
+        className="h-8 min-w-0 flex-1 border-0 px-0 focus-visible:ring-0 focus-visible:ring-offset-0"
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        type="search"
         value={value}
       />
+
+      {value.trim() ? (
+        <Button
+          aria-label="Clear search"
+          className="h-8 w-8"
+          onClick={() => onChange("")}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          <X className="h-4 w-4" />
+        </Button>
+      ) : null}
+
+      {count ? (
+        <span className="shrink-0 text-sm tabular-nums text-muted-foreground">
+          {count}
+        </span>
+      ) : null}
+
+      {children}
     </div>
+  );
+}
+
+/**
+ * The filter popup that belongs in a {@link SearchField}.
+ *
+ * A trigger that counts what is active, and a panel with its own header and a way
+ * out of every filter at once. The count on the trigger is the part that matters:
+ * a filtered list that looks unfiltered is how people conclude their data is
+ * missing.
+ */
+export function FilterPopover({
+  activeCount,
+  canClear,
+  onClearAll,
+  children,
+}: {
+  activeCount: number;
+  canClear: boolean;
+  onClearAll: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          className="gap-2"
+          size="sm"
+          type="button"
+          variant={activeCount ? "secondary" : "outline"}
+        >
+          <Filter className="h-4 w-4" />
+          Filters
+          {activeCount ? (
+            <span className="ml-1 rounded bg-muted px-1.5 py-0.5 text-xs">
+              {activeCount}
+            </span>
+          ) : null}
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-[340px] p-0">
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <DropdownMenuLabel className="p-0">Filters</DropdownMenuLabel>
+          <Button
+            className="h-7 px-2 text-xs"
+            disabled={!canClear}
+            onClick={onClearAll}
+            size="sm"
+            type="button"
+            variant="ghost"
+          >
+            Clear all
+          </Button>
+        </div>
+
+        <div className="space-y-4 p-4">{children}</div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -214,5 +330,56 @@ export function LinkRow({
         </Link>
       )}
     </div>
+  );
+}
+
+/**
+ * The block labels of one folded resource type, e.g. `this, ignore_value`.
+ *
+ * Conventional labels are drawn faintly rather than left out. Leaving them out
+ * is what made a type badged `2` list a single name: the reader counts one line
+ * against the count beside it and concludes the page lost something, when the
+ * truth is that the second block is called `this`. Drawn plainly they would
+ * instead lend a label nobody chose the same weight as one somebody did.
+ *
+ * The tooltip is on the faint label rather than the line, so the convention is
+ * explained exactly where a reader stops to wonder about it.
+ */
+export function ResourceNames({
+  names,
+  resourceType,
+  className,
+}: {
+  /** Already ordered; see `sortResourceNames`. */
+  names: readonly string[];
+  /** Named in the tooltip, so the explanation is about this type and not in general. */
+  resourceType: string;
+  className?: string;
+}) {
+  if (names.length === 0) return null;
+
+  return (
+    <p
+      className={cn(
+        "mt-1 break-words font-mono text-muted-foreground text-xs",
+        className,
+      )}
+    >
+      {names.map((name, index) => (
+        <span key={name}>
+          {index > 0 ? ", " : ""}
+          {isConventionalResourceName(name) ? (
+            <span
+              className="opacity-60"
+              title={`"${name}" is the conventional label for a module's main ${resourceType} — it distinguishes nothing, but it is the label in the code`}
+            >
+              {name}
+            </span>
+          ) : (
+            name
+          )}
+        </span>
+      ))}
+    </p>
   );
 }

@@ -86,7 +86,26 @@ export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
     role: "service",
     icon: "vpn-gateway",
     label: "VPN Gateway",
+    group: "site-to-site-vpn",
   },
+  /**
+   * The tunnel itself, and the reason a VPN module is worth drawing at all.
+   *
+   * Grouped with the gateway rather than drawn beside it: a module that declares
+   * four `aws_vpn_connection` blocks for four tunnel configurations is describing
+   * one link to one other network, not four services. Modules that attach to an
+   * existing gateway declare only the connection, which is why this needs its own
+   * entry — without it such a module drew nothing at all.
+   */
+  aws_vpn_connection: {
+    role: "service",
+    icon: "siteto-site-vpn",
+    label: "Site-to-Site VPN",
+    group: "site-to-site-vpn",
+  },
+  // A route over an existing tunnel, and the propagation of it. Both configure
+  // the connection above rather than standing next to it.
+  aws_vpn_connection_route: { role: "omit" },
   aws_eip: { role: "service", icon: "elastic-ip", label: "Elastic IP" },
 
   // ---- Compute ----------------------------------------------------------
@@ -127,10 +146,20 @@ export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
     label: "Load Balancer",
     group: "load-balancer",
   },
+  aws_elb: {
+    role: "service",
+    icon: "elastic-load-balancing",
+    label: "Load Balancer",
+    group: "load-balancer",
+  },
   aws_lb_listener: { role: "omit" },
   aws_lb_listener_rule: { role: "omit" },
+  aws_lb_listener_certificate: { role: "omit" },
   aws_lb_target_group_attachment: { role: "omit" },
+  aws_lb_trust_store: { role: "omit" },
+  aws_lb_trust_store_revocation: { role: "omit" },
   aws_alb_listener: { role: "omit" },
+  aws_elb_attachment: { role: "omit" },
 
   // ---- Edge and API -----------------------------------------------------
   aws_cloudfront_distribution: {
@@ -186,8 +215,20 @@ export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
     group: "waf",
     global: true,
   },
+  // Everything else in WAFv2 configures the web ACL rather than standing next to
+  // it: rule groups, IP sets and regex pattern sets are matched *by* rules, an
+  // API key belongs to the CAPTCHA integration, and the associations only say
+  // what a web ACL protects. A diagram of any of them is the WAF box again, so
+  // the modules that wrap one draw nothing — deliberately, not for want of a
+  // table entry.
+  aws_wafv2_api_key: { role: "omit" },
+  aws_wafv2_ip_set: { role: "omit" },
+  aws_wafv2_regex_pattern_set: { role: "omit" },
+  aws_wafv2_rule_group: { role: "omit" },
   aws_wafv2_web_acl_association: { role: "omit" },
   aws_wafv2_web_acl_logging_configuration: { role: "omit" },
+  aws_wafv2_web_acl_rule: { role: "omit" },
+  aws_wafv2_web_acl_rule_group_association: { role: "omit" },
 
   // ---- Services reachable through module calls --------------------------
   // Named explicitly where the derived icon would be wrong: EventBridge is not
@@ -222,6 +263,147 @@ export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
   aws_secretsmanager_secret: { role: "service", label: "Secrets Manager" },
   aws_sfn_state_machine: { role: "service", label: "Step Functions" },
   aws_ssm_parameter: { role: "service", label: "Systems Manager" },
+
+  /**
+   * Services with a module of their own in the catalogue.
+   *
+   * Every one of these was missing, and the module named after it drew an empty
+   * canvas as a result — App Runner, AppSync, AppConfig, EMR, MemoryDB, Grafana,
+   * DMS and Global Accelerator all declare the service they exist to build.
+   *
+   * In each case one resource is the service and the rest configure it, so they
+   * share a `group`: an AppSync API with its resolvers, functions and data
+   * sources is one thing on a diagram, the same way an HTTP API is. The grouping
+   * is what keeps a fix here from turning one empty canvas into eight boxes.
+   */
+  aws_apprunner_service: {
+    role: "service",
+    icon: "app-runner",
+    label: "App Runner",
+    group: "app-runner",
+  },
+  aws_apprunner_vpc_connector: { role: "omit" },
+  aws_apprunner_vpc_ingress_connection: { role: "omit" },
+  aws_apprunner_custom_domain_association: { role: "omit" },
+  aws_apprunner_auto_scaling_configuration_version: { role: "omit" },
+  aws_apprunner_observability_configuration: { role: "omit" },
+  aws_apprunner_connection: { role: "omit" },
+
+  aws_appsync_graphql_api: {
+    role: "service",
+    icon: "app-sync",
+    label: "AppSync",
+    group: "appsync",
+    global: true,
+  },
+  aws_appsync_datasource: { role: "omit" },
+  aws_appsync_resolver: { role: "omit" },
+  aws_appsync_function: { role: "omit" },
+  aws_appsync_api_cache: { role: "omit" },
+  aws_appsync_api_key: { role: "omit" },
+  aws_appsync_domain_name: { role: "omit" },
+  aws_appsync_domain_name_api_association: { role: "omit" },
+
+  aws_appconfig_application: {
+    role: "service",
+    icon: "app-config",
+    label: "AppConfig",
+    group: "appconfig",
+    global: true,
+  },
+  aws_appconfig_environment: { role: "omit" },
+  aws_appconfig_configuration_profile: { role: "omit" },
+  aws_appconfig_hosted_configuration_version: { role: "omit" },
+  aws_appconfig_deployment: { role: "omit" },
+  aws_appconfig_deployment_strategy: { role: "omit" },
+
+  aws_emr_cluster: { role: "service", icon: "emr", label: "EMR", group: "emr" },
+  aws_emr_instance_fleet: { role: "omit" },
+  aws_emr_instance_group: { role: "omit" },
+  aws_emr_managed_scaling_policy: { role: "omit" },
+  aws_emr_security_configuration: { role: "omit" },
+
+  aws_memorydb_cluster: {
+    role: "service",
+    icon: "memory-db",
+    label: "MemoryDB",
+    group: "memorydb",
+  },
+  aws_memorydb_subnet_group: { role: "omit" },
+  aws_memorydb_parameter_group: { role: "omit" },
+  aws_memorydb_acl: { role: "omit" },
+  aws_memorydb_user: { role: "omit" },
+
+  aws_grafana_workspace: {
+    role: "service",
+    icon: "managed-grafana",
+    label: "Managed Grafana",
+    group: "grafana",
+  },
+  aws_grafana_workspace_api_key: { role: "omit" },
+  aws_grafana_workspace_saml_configuration: { role: "omit" },
+  aws_grafana_workspace_service_account: { role: "omit" },
+  aws_grafana_workspace_service_account_token: { role: "omit" },
+  aws_grafana_license_association: { role: "omit" },
+  aws_grafana_role_association: { role: "omit" },
+
+  // Two ways to run the same migration: a provisioned instance or a serverless
+  // config. A module offering both declares one of them, so both are the box.
+  aws_dms_replication_instance: {
+    role: "service",
+    icon: "database-migration-service",
+    label: "DMS",
+    group: "dms",
+  },
+  aws_dms_replication_config: {
+    role: "service",
+    icon: "database-migration-service",
+    label: "DMS",
+    group: "dms",
+  },
+  aws_dms_endpoint: { role: "omit" },
+  aws_dms_s3_endpoint: { role: "omit" },
+  aws_dms_replication_task: { role: "omit" },
+  aws_dms_replication_subnet_group: { role: "omit" },
+  aws_dms_event_subscription: { role: "omit" },
+  aws_dms_certificate: { role: "omit" },
+
+  aws_globalaccelerator_accelerator: {
+    role: "service",
+    icon: "global-accelerator",
+    label: "Global Accelerator",
+    group: "global-accelerator",
+    global: true,
+  },
+  aws_globalaccelerator_listener: { role: "omit" },
+  aws_globalaccelerator_endpoint_group: { role: "omit" },
+
+  /**
+   * A hosted zone, and deliberately not grouped.
+   *
+   * Two zones in one module are a public and a private view of the same domain,
+   * or two different domains — either way two answers to "where does this name
+   * resolve", which is the question the box exists to answer. The records inside
+   * stay off the diagram, as they already did.
+   */
+  aws_route53_zone: {
+    role: "service",
+    icon: "route53",
+    label: "Hosted Zone",
+    global: true,
+  },
+  aws_route53_hosted_zone_dnssec: { role: "omit" },
+  aws_route53_key_signing_key: { role: "omit" },
+  aws_route53_vpc_association_authorization: { role: "omit" },
+
+  // Key variants, following `aws_kms_key` above: a key is not a box on an
+  // architecture diagram. A module dedicated to KMS still gets one, because the
+  // fallback in architecture-graph.ts draws a service for a module that would
+  // otherwise be blank.
+  aws_kms_external_key: { role: "omit" },
+  aws_kms_replica_key: { role: "omit" },
+  aws_kms_replica_external_key: { role: "omit" },
+  aws_kms_grant: { role: "omit" },
 
   // ---- Storage and data -------------------------------------------------
   aws_s3_bucket: {
@@ -293,10 +475,18 @@ export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
   aws_iam_role_policy: { role: "omit" },
   aws_iam_policy: { role: "omit" },
   aws_iam_role_policy_attachment: { role: "omit" },
+  // Not a typo of the line above: Terraform has both, and leaving this one out
+  // meant five resources in every Step Functions module were reported as an
+  // *unknown type* rather than as wiring — polluting the one list that is
+  // supposed to name only services the table still owes an entry.
+  aws_iam_policy_attachment: { role: "omit" },
   aws_iam_instance_profile: { role: "omit" },
+  aws_iam_openid_connect_provider: { role: "omit" },
   aws_kms_key: { role: "omit" },
   aws_kms_alias: { role: "omit" },
   aws_lambda_permission: { role: "omit" },
+  aws_lambda_event_source_mapping: { role: "omit" },
+  aws_lambda_function_event_invoke_config: { role: "omit" },
   aws_acm_certificate: { role: "omit" },
   aws_acm_certificate_validation: { role: "omit" },
   aws_route53_record: { role: "omit" },
@@ -306,6 +496,44 @@ export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
   aws_s3_bucket_versioning: { role: "omit" },
   aws_s3_bucket_public_access_block: { role: "omit" },
   aws_s3_bucket_server_side_encryption_configuration: { role: "omit" },
+  aws_s3_object: { role: "omit" },
+  aws_sqs_queue_policy: { role: "omit" },
+  aws_sns_topic_policy: { role: "omit" },
+  aws_ecr_lifecycle_policy: { role: "omit" },
+  aws_ecr_pull_through_cache_rule: { role: "omit" },
+  aws_msk_cluster_policy: { role: "omit" },
+  aws_secretsmanager_secret_rotation: { role: "omit" },
+  // Sharing is how a resource reaches another account, not a service sitting
+  // next to it. All four belong to whatever they share — a Transit Gateway,
+  // usually — and are listed as its supporting resources.
+  aws_ram_resource_share: { role: "omit" },
+  aws_ram_resource_association: { role: "omit" },
+  aws_ram_principal_association: { role: "omit" },
+  aws_ram_resource_share_accepter: { role: "omit" },
+  aws_ec2_tag: { role: "omit" },
+  aws_placement_group: { role: "omit" },
+  aws_vpn_gateway_attachment: { role: "omit" },
+  aws_vpn_gateway_route_propagation: { role: "omit" },
+  aws_vpc_dhcp_options: { role: "omit" },
+  aws_vpc_dhcp_options_association: { role: "omit" },
+  // Placement plumbing: which subnets a database may live in is already said by
+  // drawing the database inside them.
+  aws_db_subnet_group: { role: "omit" },
+  aws_db_parameter_group: { role: "omit" },
+  aws_elasticache_subnet_group: { role: "omit" },
+  aws_redshift_subnet_group: { role: "omit" },
+  // The scaling target and its policy belong to the service that scales.
+  aws_appautoscaling_target: { role: "omit" },
+  aws_appautoscaling_policy: { role: "omit" },
+  aws_eks_access_entry: { role: "omit" },
+  aws_eks_pod_identity_association: { role: "omit" },
+  // The rule is the box; its targets are the arrows leaving it, which the
+  // bridge in `architecture-graph` draws by walking straight through them.
+  aws_cloudwatch_event_target: { role: "omit" },
+  aws_cloudwatch_log_metric_filter: { role: "omit" },
+  aws_cloudwatch_log_delivery: { role: "omit" },
+  aws_cloudwatch_log_delivery_source: { role: "omit" },
+  aws_cloudwatch_log_delivery_destination: { role: "omit" },
 
   // ---- Not AWS at all ---------------------------------------------------
   // Listed so they are omitted knowingly rather than reported as gaps in the
@@ -548,7 +776,13 @@ export function moduleArchitectureEntry(
   const type =
     MODULE_SERVICE_TYPES[token] ??
     // `my-alb` has no `aws-` marker; its last segment still carries the service.
-    MODULE_SERVICE_TYPES[token.slice(token.lastIndexOf("-") + 1)];
+    MODULE_SERVICE_TYPES[token.slice(token.lastIndexOf("-") + 1)] ??
+    // Registry module names carry the service *first* and qualify it after:
+    // `s3-bucket`, `rds-aurora`, `iam-assumable-role`. Tried last so a name
+    // whose trailing segment names the service keeps winning.
+    (token.includes("-")
+      ? MODULE_SERVICE_TYPES[token.slice(0, token.indexOf("-"))]
+      : undefined);
 
   return type ? architectureEntry(type) : null;
 }

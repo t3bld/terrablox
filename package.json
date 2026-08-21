@@ -20,13 +20,17 @@
     "test": "turbo run test",
     "clean": "turbo run clean && rm -rf node_modules",
     "type-check": "turbo run type-check",
+    "db:up": "docker compose -f docker-compose.local.yml up -d",
+    "db:down": "docker compose -f docker-compose.local.yml down",
     "db:push": "pnpm --filter @terrablox/database db:push",
     "db:migrate": "pnpm --filter @terrablox/database db:migrate:deploy",
     "db:reset": "pnpm --filter @terrablox/database db:migrate:reset",
     "db:generate": "pnpm --filter @terrablox/database db:generate",
     "db:studio": "pnpm --filter @terrablox/database db:studio",
-    "db:up": "docker compose -f docker-compose.local.yml up -d",
-    "db:down": "docker compose -f docker-compose.local.yml down"
+    "db:builtin:sync": "node --env-file-if-exists=apps/dashboard/.env --import ./scripts/seed-builtin-modules/register.mjs ./scripts/seed-builtin-modules/main.mts",
+    "db:builtin:status": "node --env-file-if-exists=apps/dashboard/.env --import ./scripts/seed-builtin-modules/register.mjs ./scripts/seed-builtin-modules/status.mts",
+    "db:builtin:relink": "node --env-file-if-exists=apps/dashboard/.env --import ./scripts/seed-builtin-modules/register.mjs ./scripts/seed-builtin-modules/relink.mts",
+    "db:builtin:reset": "node --env-file-if-exists=apps/dashboard/.env --import ./scripts/seed-builtin-modules/register.mjs ./scripts/seed-builtin-modules/reset.mts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",

@@ -12,7 +12,6 @@
       "!!**/.git",
       "!!**/.idea",
       "!!**/*.log",
-      "!!seed",
       "!!**/.terraform"
     ],
     "ignoreUnknown": true

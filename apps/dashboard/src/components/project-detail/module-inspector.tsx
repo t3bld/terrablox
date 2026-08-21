@@ -6,7 +6,6 @@ import { Input } from "@terrablox/ui/input";
 import {
   Check,
   ExternalLink,
-  PanelRightClose,
   Pencil,
   Sparkles,
   Trash2,
@@ -22,16 +21,18 @@ import type {
   ProjectGraphNode,
   ProjectGraphPort,
 } from "@/lib/projects/types";
-import { MIN_WIRING_SCORE, wiringScore } from "@/lib/projects/wiring";
+import { ValuePicker, type VariableOption } from "./value-picker";
 
 interface ModuleInspectorProps {
   node: ProjectGraphNode;
   graph: ProjectGraph;
   busy: boolean;
   onMutate: (mutation: ProjectGraphMutation) => void;
-  onClose: () => void;
-  /** Hides the whole pane, as opposed to `onClose` which returns to the chat. */
-  onCollapse?: () => void;
+  /**
+   * Omitted when the panel is inside a dialog, which brings its own close.
+   * Two close buttons in one header is worse than none.
+   */
+  onClose?: () => void;
 }
 
 /** One selectable `module.<node>.<output>` reference. */
@@ -55,15 +56,16 @@ export function ModuleInspector({
   busy,
   onMutate,
   onClose,
-  onCollapse,
 }: ModuleInspectorProps) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [showOptional, setShowOptional] = useState(false);
 
+  // Modules only: a local has no outputs, and it reaches an input through the
+  // variables list below rather than as a producer.
   const sources = useMemo<SourceOption[]>(
     () =>
       graph.nodes
-        .filter((other) => other.id !== node.id)
+        .filter((other) => other.kind === "module" && other.id !== node.id)
         .flatMap((other) =>
           other.outputs.map((output) => ({
             node: other.id,
@@ -72,6 +74,15 @@ export function ModuleInspector({
           })),
         ),
     [graph.nodes, node.id],
+  );
+
+  const variables = useMemo<VariableOption[]>(
+    () =>
+      graph.nodes
+        .filter((other) => other.kind === "local")
+        .map((local) => ({ name: local.id, expression: local.expression }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [graph.nodes],
   );
 
   const ports = useMemo(() => orderPorts(node), [node]);
@@ -145,25 +156,15 @@ export function ModuleInspector({
           </p>
         </div>
 
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 shrink-0"
-          onClick={onClose}
-          aria-label="Back to the agent"
-        >
-          <X className="h-4 w-4" />
-        </Button>
-
-        {onCollapse ? (
+        {onClose ? (
           <Button
             variant="ghost"
             size="icon"
             className="h-7 w-7 shrink-0"
-            onClick={onCollapse}
-            aria-label="Collapse panel"
+            onClick={onClose}
+            aria-label="Close module details"
           >
-            <PanelRightClose className="h-4 w-4" />
+            <X className="h-4 w-4" />
           </Button>
         ) : null}
       </header>
@@ -205,7 +206,7 @@ export function ModuleInspector({
                 }
               >
                 <Sparkles className="h-3 w-3" />
-                Wire from canvas
+                Fill from other modules
               </Button>
             ) : null}
           </div>
@@ -229,6 +230,7 @@ export function ModuleInspector({
                   port={port}
                   value={node.values[port.name] ?? null}
                   sources={sources}
+                  variables={variables}
                   busy={busy}
                   onMutate={onMutate}
                 />
@@ -288,6 +290,7 @@ interface InputRowProps {
   port: ProjectGraphPort;
   value: string | null;
   sources: SourceOption[];
+  variables: VariableOption[];
   busy: boolean;
   onMutate: (mutation: ProjectGraphMutation) => void;
 }
@@ -297,30 +300,14 @@ function InputRow({
   port,
   value,
   sources,
+  variables,
   busy,
   onMutate,
 }: InputRowProps) {
   const [draft, setDraft] = useState<string | null>(null);
-  const wired = value?.startsWith("module.") ?? false;
-
-  // Matching outputs float to the top of the picker; a `vpc_id` input has one
-  // plausible source and dozens of implausible ones, and scrolling past the
-  // implausible ones is the whole friction this panel exists to remove.
-  const options = useMemo(
-    () =>
-      sources
-        .map((source) => ({
-          ...source,
-          score: wiringScore(port.name, source.output, source.node),
-        }))
-        .sort(
-          (a, b) =>
-            b.score - a.score ||
-            a.node.localeCompare(b.node) ||
-            a.output.localeCompare(b.output),
-        ),
-    [sources, port.name],
-  );
+  // A value that points somewhere else is worth marking; a literal is not.
+  const wired =
+    value?.startsWith("module.") || value?.startsWith("local.") || false;
 
   return (
     <li className="rounded-md border p-2">
@@ -416,35 +403,58 @@ function InputRow({
         </div>
       )}
 
-      {options.length > 0 && draft === null ? (
-        <select
-          value=""
+      {draft === null ? (
+        <ValuePicker
           disabled={busy}
-          onChange={(event) => {
-            const [source, output] = event.target.value.split("\u0000");
-            if (!source || !output) return;
-            onMutate({
-              action: "connect",
-              source,
-              sourceOutput: output,
-              target: label,
-              targetInput: port.name,
-            });
+          inputName={port.name}
+          onChoose={(choice) => {
+            switch (choice.kind) {
+              case "output":
+                onMutate({
+                  action: "connect",
+                  source: choice.producer,
+                  sourceOutput: choice.output,
+                  target: label,
+                  targetInput: port.name,
+                });
+                return;
+
+              case "variable":
+                onMutate({
+                  action: "connect-local",
+                  local: choice.name,
+                  target: label,
+                  targetInput: port.name,
+                });
+                return;
+
+              // One mutation, so creating a value and wiring it is one commit and
+              // one history entry — which is what it was as a gesture.
+              case "new-variable":
+                onMutate({
+                  action: "add-local",
+                  name: choice.name,
+                  value: choice.value,
+                  connectTo: { target: label, targetInput: port.name },
+                });
+                return;
+
+              case "expression":
+                onMutate({
+                  action: "set-argument",
+                  name: label,
+                  input: port.name,
+                  value: choice.value,
+                });
+                return;
+            }
           }}
-          className="mt-1.5 w-full rounded-md border bg-background px-2 py-1 text-xs text-muted-foreground"
-          aria-label={`Connect ${port.name} to a module output`}
-        >
-          <option value="">Connect from…</option>
-          {options.map((option) => (
-            <option
-              key={`${option.node}.${option.output}`}
-              value={`${option.node}\u0000${option.output}`}
-            >
-              {option.score >= MIN_WIRING_SCORE ? "★ " : ""}
-              module.{option.node}.{option.output}
-            </option>
-          ))}
-        </select>
+          outputs={sources.map((source) => ({
+            producer: source.node,
+            output: source.output,
+          }))}
+          variables={variables}
+        />
       ) : null}
     </li>
   );

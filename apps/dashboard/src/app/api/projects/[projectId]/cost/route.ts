@@ -11,8 +11,9 @@ import {
 } from "@/lib/github/repo-files";
 import { hasInfracostApiKey } from "@/lib/integrations/infracost";
 import { type ProjectCostDto, parseCostSnapshot } from "@/lib/projects/cost";
-import { COST_SNAPSHOT_PATH, COST_WORKFLOW_PATH } from "@/lib/projects/deploy";
+import { COST_SNAPSHOT_PATH } from "@/lib/projects/deploy";
 import { findOwnedProject } from "@/lib/projects/service";
+import { findTemplate } from "@/lib/projects/workflow-templates";
 
 export async function GET(
   req: Request,
@@ -61,7 +62,7 @@ export async function GET(
       }),
       readRepoFile(token, {
         repoFullName: project.repoFullName,
-        path: COST_WORKFLOW_PATH,
+        path: findTemplate("cost")?.path ?? "",
         ref: project.repoBranch,
       }),
     ]);
@@ -132,7 +133,7 @@ export async function POST(
   try {
     await dispatchWorkflow(token, {
       repoFullName: project.repoFullName,
-      workflowFile: COST_WORKFLOW_PATH,
+      workflowFile: findTemplate("cost")?.path ?? "",
       ref: project.repoBranch,
     });
 

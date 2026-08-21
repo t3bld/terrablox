@@ -10,15 +10,22 @@ reviewable in the repository.
 Mattar). That package repackages the official *AWS Architecture Icons* asset
 set published by Amazon Web Services.
 
-## Licensing — unresolved, read before shipping
+## Licensing
 
 The npm package carries the MIT licence, but the underlying artwork is AWS's.
 The repackager can license his own work; he cannot grant rights to Amazon's
 trademarks. Use of the official icons is governed by the AWS Architecture Icons
 terms and the AWS Trademark Guidelines, not by the MIT text above.
 
-This matters for distribution to third parties. It has been raised with the
-project owner and is **not settled**. Do not treat the MIT line as clearance.
+Confirmed with the project owner: TerraBlox is an AWS partner and holds the
+rights to use these marks. That is what covers the two places they are
+distributed from — this app, and the `icon.png` committed to each of the fifty
+public catalogue repositories, which is a rendering of the matching SVG here.
+
+The script that produced those files has been removed now that all fifty repos
+carry their icon. Kept on the record because the provenance is the point: the
+PNGs in those repositories are the same AWS artwork as the SVGs in this folder,
+and they are covered by the same partner rights rather than by the MIT text.
 
 - AWS Architecture Icons: https://aws.amazon.com/architecture/icons/
 - AWS Trademark Guidelines: https://aws.amazon.com/trademark-guidelines/

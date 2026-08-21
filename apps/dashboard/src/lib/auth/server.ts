@@ -22,13 +22,13 @@ export const auth = betterAuth({
   secret: process.env.BETTER_AUTH_SECRET,
   database: prismaAdapter(database, { provider: "postgresql" }),
 
-  emailAndPassword: {
-    enabled: true,
-    // No SMTP in a local setup: print the reset link to the server console.
-    sendResetPassword: async ({ user, url }) => {
-      console.log(`[auth] Password reset link for ${user.email}: ${url}`);
-    },
-  },
+  // No email and password. Every feature needs a GitHub identity — reading a
+  // project's repository, committing the graph, importing modules, running the
+  // agent on the user's Copilot seat — so an account without one could sign in
+  // and then do nothing. Turning it off here and not only in the UI matters: the
+  // endpoints stay reachable otherwise, and a sign-up route nobody links to is
+  // still a sign-up route.
+  emailAndPassword: { enabled: false },
 
   socialProviders: isGithubConfigured
     ? {
@@ -50,9 +50,9 @@ export const auth = betterAuth({
       // GitHub verifies the emails it hands out, so we accept it as proof of
       // identity when attaching a GitHub login to an existing account.
       trustedProviders: ["github"],
-      // There is no SMTP server in this setup, so `emailVerified` never turns
-      // true for email/password users. Left at its default, that would block
-      // every attempt to link a GitHub account to such a user.
+      // Nothing verifies email here — there is no SMTP server, and no local
+      // password to attach one to. Left at its default this would block linking
+      // for accounts created before sign-in became GitHub only.
       requireLocalEmailVerified: false,
       // A work login address and a personal GitHub address are rarely the same.
       // Only applies to explicit linking by an already signed-in user, never to

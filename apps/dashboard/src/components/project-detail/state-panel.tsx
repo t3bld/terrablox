@@ -40,8 +40,8 @@ interface StatePanelProps {
  * What is actually running in AWS, as opposed to what the code declares.
  *
  * The two differ more often than anyone would like — a failed apply, a change
- * made in the console — so this reads the inventory the pipeline publishes
- * after each apply rather than inferring anything from the Terraform sources.
+ * made in the console — so this reads the Terraform state out of its encrypted
+ * bucket rather than inferring anything from the sources.
  */
 export function StatePanel({ projectId }: StatePanelProps) {
   const [state, setState] = useState<ProjectStateDto | null>(null);
@@ -71,28 +71,19 @@ export function StatePanel({ projectId }: StatePanelProps) {
     void load();
   }, [load]);
 
+  /**
+   * Re-reads the bucket.
+   *
+   * There is nothing to trigger any more: the state in S3 is already whatever
+   * the last apply left there, so refreshing is just asking again.
+   */
   async function refresh() {
     if (refreshing) return;
 
     setRefreshing(true);
-    setError(null);
     setNotice(null);
-
-    try {
-      const response = await fetch(`/api/projects/${projectId}/state`, {
-        method: "POST",
-      });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body?.error ?? "Failed to refresh");
-
-      setNotice(
-        "Refresh started. The snapshot is committed when the workflow finishes.",
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to refresh");
-    } finally {
-      setRefreshing(false);
-    }
+    await load();
+    setRefreshing(false);
   }
 
   const resources = useMemo<StateResourceView[]>(() => {
@@ -151,36 +142,39 @@ export function StatePanel({ projectId }: StatePanelProps) {
               <CardTitle className="text-base">
                 {snapshot
                   ? `${managedCount} resource${managedCount === 1 ? "" : "s"} deployed`
-                  : "No state snapshot yet"}
+                  : state?.configured
+                    ? "Nothing deployed yet"
+                    : "No state backend yet"}
               </CardTitle>
               <CardDescription>
                 {snapshot ? (
                   <>
-                    Read from the Terraform state{" "}
-                    <RelativeTime iso={snapshot.generatedAt} />
+                    Read from the Terraform state in{" "}
+                    <code className="rounded bg-muted px-1">
+                      {state?.bucket}
+                    </code>
+                    , last written <RelativeTime iso={snapshot.generatedAt} />
                     {snapshot.terraformVersion
                       ? ` with Terraform ${snapshot.terraformVersion}`
                       : null}
                     .
                   </>
-                ) : state?.hasWorkflow ? (
-                  "The state workflow is in the repository but has not published a snapshot yet. It runs after every apply, or start it now."
                 ) : (
-                  "Generate the pipeline in the Deploy tab first — the workflow it creates is what reads the state bucket."
+                  "This reads the encrypted state bucket directly, so it is current as of now rather than as of the last workflow run."
                 )}
               </CardDescription>
             </div>
 
             <Button
-              variant="outline"
-              size="sm"
+              disabled={refreshing || !state?.configured}
               onClick={() => void refresh()}
-              disabled={refreshing || !state?.hasWorkflow}
+              size="sm"
+              variant="outline"
             >
               <RefreshCw
                 className={`mr-2 h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
               />
-              Refresh from AWS
+              Re-read
             </Button>
           </div>
         </CardHeader>
@@ -202,15 +196,13 @@ export function StatePanel({ projectId }: StatePanelProps) {
               </ul>
             ) : null}
 
-            <a
-              href={state?.fileUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-            >
-              View the snapshot in the repository
-              <ExternalLink className="h-3 w-3" />
-            </a>
+            {/* Only identifiers ever leave the server, which is worth saying
+                here rather than only in the code that enforces it. */}
+            <p className="text-muted-foreground text-xs">
+              Terraform state can contain generated passwords. TerraBlox reads
+              only resource identifiers and non-sensitive outputs from it —
+              attribute values are never sent to the browser.
+            </p>
           </CardContent>
         ) : null}
       </Card>

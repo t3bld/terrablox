@@ -13,6 +13,7 @@ import {
   renderConnectionTemplate,
   resolveTerraBloxPrincipal,
 } from "./connection";
+import { sessionForConnection } from "./credentials";
 
 export interface AwsConnectionView {
   id: string;
@@ -22,6 +23,10 @@ export interface AwsConnectionView {
   region: string;
   /** Shown to its owner only; the customer needs it to write the trust policy. */
   externalId: string;
+  /** `assume-role` or `sso`; the two differ in what the user has to maintain. */
+  credentialMode: string;
+  /** Set in `sso` mode only: when the user will have to sign in again. */
+  sessionExpiresAt: string | null;
   verifiedAt: string | null;
   lastError: string | null;
   /** The stack the customer runs in their account to create the role. */
@@ -38,7 +43,7 @@ export interface AwsConnectionsState {
   principalArn: string | null;
 }
 
-function toView(
+export function toView(
   record: AwsConnection,
   principalArn: string | null,
 ): AwsConnectionView {
@@ -49,6 +54,8 @@ function toView(
     roleArn: record.roleArn,
     region: record.region,
     externalId: record.externalId,
+    credentialMode: record.credentialMode,
+    sessionExpiresAt: record.ssoExpiresAt?.toISOString() ?? null,
     verifiedAt: record.verifiedAt?.toISOString() ?? null,
     lastError: record.lastError,
     template: renderConnectionTemplate({
@@ -123,6 +130,36 @@ export async function createConnection(
 }
 
 /**
+ * Proves the connection still works and reports which account it reached.
+ *
+ * Both modes fail for their own reason — a trust policy that no longer names
+ * us, or a sign-in that has run out — and the caller records either as the
+ * connection's last error.
+ */
+async function proveAccess(
+  record: AwsConnection,
+  connectionId: string,
+): Promise<string | null> {
+  if (record.credentialMode === "sso") {
+    await sessionForConnection(record, {
+      region: record.region,
+      sessionSuffix: connectionId,
+      access: "read",
+    });
+    return record.accountId;
+  }
+
+  const identity = await assumeConnection({
+    roleArn: record.roleArn,
+    externalId: record.externalId,
+    region: record.region,
+    sessionSuffix: connectionId,
+  });
+
+  return identity.accountId;
+}
+
+/**
  * Assumes the role once and records what came back.
  *
  * Deliberately not done at creation time: the user needs the external ID
@@ -139,17 +176,12 @@ export async function verifyConnection(
   if (!record) return null;
 
   try {
-    const identity = await assumeConnection({
-      roleArn: record.roleArn,
-      externalId: record.externalId,
-      region: record.region,
-      sessionSuffix: connectionId,
-    });
+    const accountId = await proveAccess(record, connectionId);
 
     const updated = await database.awsConnection.update({
       where: { id: record.id },
       data: {
-        accountId: identity.accountId,
+        accountId,
         verifiedAt: new Date(),
         lastError: null,
       },

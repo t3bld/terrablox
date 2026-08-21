@@ -82,6 +82,15 @@ export interface DependencyGraphProps {
    */
   fitViewMinZoom?: number;
   showMiniMap?: boolean;
+  /**
+   * How many lines of a node's description are shown.
+   *
+   * Three by default, which is what the default node heights are sized for. A
+   * caller whose descriptions are written short can ask for two and get a
+   * guarantee rather than a hope — the harness diagram does, because a box there
+   * carries a label, a description and a metadata row.
+   */
+  descriptionLines?: 2 | 3;
   /** Fan-out size at which leaf children switch to a grid; see `layoutDependencyGraph`. */
   leafFanoutThreshold?: number;
   /** Widest rank dagre may produce before it is wrapped; see `layoutDependencyGraph`. */
@@ -120,6 +129,8 @@ export interface DependencyGraphProps {
 type DependencyFlowNodeData = Record<string, unknown> & {
   dependencyNode: DependencyGraphNode;
   layoutDirection: DependencyGraphLayoutDirection;
+  /** Carried per node because the card is rendered by React Flow, not by us. */
+  descriptionLines: 2 | 3;
 };
 
 type DependencyFlowNode = Node<DependencyFlowNodeData, DependencyGraphNodeKind>;
@@ -127,6 +138,7 @@ type DependencyFlowNode = Node<DependencyFlowNodeData, DependencyGraphNodeKind>;
 type GraphNodeFrameProps = {
   node: DependencyGraphNode;
   direction: DependencyGraphLayoutDirection;
+  descriptionLines: 2 | 3;
   titleClassName?: string;
   frameClassName?: string;
   kindLabel: string;
@@ -155,6 +167,7 @@ export function DependencyGraph({
   fitView = true,
   fitViewMinZoom = 0.4,
   showMiniMap,
+  descriptionLines = 3,
   leafFanoutThreshold,
   maxNodesPerRank,
   nodesDraggable = true,
@@ -192,6 +205,7 @@ export function DependencyGraph({
       data: {
         dependencyNode: node,
         layoutDirection: direction,
+        descriptionLines,
       },
       // Declared as real node dimensions, not just CSS: React Flow computes
       // bounds (and therefore fitView) from these before it has measured the
@@ -203,7 +217,14 @@ export function DependencyGraph({
         height: node.height,
       },
     }));
-  }, [nodes, renderableEdges, direction, leafFanoutThreshold, maxNodesPerRank]);
+  }, [
+    nodes,
+    renderableEdges,
+    direction,
+    leafFanoutThreshold,
+    maxNodesPerRank,
+    descriptionLines,
+  ]);
 
   // Dragging needs the node set to be state, not a derived value: React Flow
   // reports moves as changes and expects the caller to persist them.
@@ -435,6 +456,7 @@ export function DependencyGraph({
           nodesDraggable={nodesDraggable}
           nodesConnectable={false}
           elementsSelectable={Boolean(onNodeClick)}
+          proOptions={{ hideAttribution: true }}
           onMove={handleMove}
         >
           {fitView ? (
@@ -544,6 +566,7 @@ function FitViewOnChange({
 function ModuleNode(props: NodeProps<DependencyFlowNode>) {
   return (
     <GraphNodeFrame
+      descriptionLines={props.data.descriptionLines}
       direction={props.data.layoutDirection}
       frameClassName="border-primary bg-primary text-primary-foreground shadow-md"
       kindLabel={kindLabels.module}
@@ -556,6 +579,7 @@ function ModuleNode(props: NodeProps<DependencyFlowNode>) {
 function ResourceNode(props: NodeProps<DependencyFlowNode>) {
   return (
     <GraphNodeFrame
+      descriptionLines={props.data.descriptionLines}
       direction={props.data.layoutDirection}
       frameClassName="border-border bg-card text-card-foreground"
       kindLabel={kindLabels.resource}
@@ -567,6 +591,7 @@ function ResourceNode(props: NodeProps<DependencyFlowNode>) {
 function DataSourceNode(props: NodeProps<DependencyFlowNode>) {
   return (
     <GraphNodeFrame
+      descriptionLines={props.data.descriptionLines}
       direction={props.data.layoutDirection}
       // Same fill as a resource; only the dashed border sets it apart.
       frameClassName="border-dashed border-muted-foreground/50 bg-card text-card-foreground"
@@ -579,6 +604,7 @@ function DataSourceNode(props: NodeProps<DependencyFlowNode>) {
 function ExternalModuleNode(props: NodeProps<DependencyFlowNode>) {
   return (
     <GraphNodeFrame
+      descriptionLines={props.data.descriptionLines}
       direction={props.data.layoutDirection}
       frameClassName="border-secondary bg-secondary text-secondary-foreground shadow-sm"
       kindLabel={kindLabels["external-module"]}
@@ -590,6 +616,7 @@ function ExternalModuleNode(props: NodeProps<DependencyFlowNode>) {
 function GraphNodeFrame({
   node,
   direction,
+  descriptionLines,
   kindLabel,
   frameClassName,
   titleClassName,
@@ -638,9 +665,16 @@ function GraphNodeFrame({
           >
             {node.label}
           </p>
+          {/* Three lines by default: a description is the one thing on a node
+              that explains it, and two lines cut most of them mid-sentence, so
+              the default heights below are set so three fit. A caller whose text
+              is written short asks for two and gets a guarantee. */}
           {node.description ? (
             <p
-              className="line-clamp-2 text-xs opacity-75"
+              className={cn(
+                "text-xs opacity-75",
+                descriptionLines === 2 ? "line-clamp-2" : "line-clamp-3",
+              )}
               title={node.description}
             >
               {node.description}

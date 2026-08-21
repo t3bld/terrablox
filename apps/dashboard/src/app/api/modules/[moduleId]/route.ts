@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { loadModuleDetail } from "@/lib/modules/detail-service";
+import { isBuiltin, ownedByUser, visibleToUser } from "@/lib/modules/ownership";
 import { parseScope } from "@/lib/terraform/delete-scope";
 
 export async function GET(
@@ -52,13 +53,27 @@ export async function DELETE(
     );
   }
 
+  // Looked up by visibility so the refusal can be honest. Every query that
+  // follows uses `ownedByUser`, which cannot match a builtin's NULL owner — the
+  // check below decides what the caller is *told*, not what they are allowed to
+  // do. Deleting it would change the message, never the outcome.
   const mod = await database.terraformModule.findFirst({
-    where: { id: moduleId, userId },
-    select: { id: true, sourceId: true },
+    where: { id: moduleId, ...visibleToUser(userId) },
+    select: { id: true, sourceId: true, userId: true },
   });
 
   if (!mod) {
     return NextResponse.json({ error: "Module not found" }, { status: 404 });
+  }
+
+  if (isBuiltin(mod)) {
+    return NextResponse.json(
+      {
+        error:
+          "This module ships with TerraBlox and cannot be deleted. Every user shares it.",
+      },
+      { status: 403 },
+    );
   }
 
   // `scope=module` wipes every ref of the repository, so the target set is
@@ -66,12 +81,12 @@ export async function DELETE(
   const targets =
     scope === "module" && mod.sourceId
       ? await database.terraformModule.findMany({
-          where: { userId, sourceId: mod.sourceId },
+          where: { ...ownedByUser(userId), sourceId: mod.sourceId },
           select: { id: true },
         })
       : await database.terraformModule.findMany({
           where: {
-            userId,
+            ...ownedByUser(userId),
             OR: [{ id: mod.id }, { parentModuleId: mod.id }],
           },
           select: { id: true },
@@ -84,7 +99,7 @@ export async function DELETE(
     // orphans that still claim `isSubmodule = true`. Deleting the whole set in
     // one statement avoids relying on that cascade at all.
     await tx.terraformModule.deleteMany({
-      where: { id: { in: targetIds }, userId },
+      where: { id: { in: targetIds }, ...ownedByUser(userId) },
     });
 
     // The source carries the name, description and tags. Keeping it while other
@@ -97,7 +112,7 @@ export async function DELETE(
 
       if (remaining === 0) {
         await tx.terraformModuleSource.deleteMany({
-          where: { id: mod.sourceId, userId },
+          where: { id: mod.sourceId, ...ownedByUser(userId) },
         });
       }
     }

@@ -15,6 +15,16 @@ export interface ProjectDto {
   repoBranch: string;
   terraformRootFolder: string;
   terraformEntryFile: string;
+  /**
+   * The application this infrastructure is for, as `owner/name`.
+   *
+   * Read-only: TerraBlox never commits here. Null means the project was never
+   * linked to one, which is a working project — the agent asks about the
+   * application instead of reading it.
+   */
+  appRepoFullName: string | null;
+  /** Ref the application is read at. Null falls back to its default branch. */
+  appRepoBranch: string | null;
   lastSyncedSha: string | null;
   lastSyncedAt: string | null;
   createdAt: string;
@@ -29,10 +39,26 @@ export interface ProjectGraphPort {
   type?: string | null;
 }
 
+/**
+ * What a node on the canvas stands for.
+ *
+ * `module` is a block that creates infrastructure; `local` is a named value that
+ * feeds one. They share the node type because they share the canvas, the
+ * position store and the wiring, but almost nothing else — a local has no source,
+ * no version and no ports of its own.
+ */
+export type ProjectNodeKind = "module" | "local";
+
 export interface ProjectGraphNode {
-  /** The `module` block label, which is also the node's identity in the repo. */
+  /** The block label (module) or the local's name, which is its identity. */
   id: string;
   label: string;
+  kind: ProjectNodeKind;
+  /**
+   * Locals only: the expression as written. A module carries its arguments in
+   * `values` instead, because it has many and a local has exactly one.
+   */
+  expression: string | null;
   /** Raw `source` argument as written in the file. */
   source: string | null;
   version: string | null;
@@ -80,11 +106,17 @@ export interface ProjectGraphLink {
 
 export interface ProjectGraphEdge {
   id: string;
-  /** Module whose output is consumed. */
+  /** Node whose value is consumed: a module's output, or a local. */
   source: string;
-  /** Module that consumes it. */
+  /** Node that consumes it. */
   target: string;
-  /** Every argument connecting these two modules. */
+  /**
+   * What the source is. A local has no named output, so `sourceOutput` is always
+   * null on its links and the canvas must not offer a port picker for them.
+   */
+  sourceKind: ProjectNodeKind;
+  targetKind: ProjectNodeKind;
+  /** Every argument connecting these two nodes. */
   links: ProjectGraphLink[];
 }
 
@@ -142,7 +174,31 @@ export type ProjectGraphMutation =
   /** Sets an argument to a literal or an expression the user typed. */
   | { action: "set-argument"; name: string; input: string; value: string }
   /** Fills a module's required inputs from unambiguous matches on the canvas. */
-  | { action: "auto-connect"; name: string };
+  | { action: "auto-connect"; name: string }
+  /**
+   * Declares a named value in a `locals` block.
+   *
+   * `connectTo` exists because creating a local and wiring it are one gesture on
+   * the canvas — dragging from an unfilled input. Two mutations would put two
+   * commits and two history entries behind a single user action.
+   */
+  | {
+      action: "add-local";
+      name: string;
+      value: string;
+      position?: { x: number; y: number };
+      connectTo?: { target: string; targetInput: string };
+    }
+  | { action: "set-local"; name: string; value: string }
+  | { action: "rename-local"; name: string; newName: string }
+  | { action: "remove-local"; name: string }
+  /** Points a module's input at a local. */
+  | {
+      action: "connect-local";
+      local: string;
+      target: string;
+      targetInput: string;
+    };
 
 export interface ProjectMutationResult {
   graph: ProjectGraph;
@@ -169,6 +225,40 @@ export interface ProjectDeploySettings {
   awsRoleArn: string | null;
   stateBucket: string | null;
   stateLockTable: string | null;
+  /** The KMS key the state is encrypted with, from the state stack. */
+  stateKmsKeyArn: string | null;
+}
+
+/** One workflow template as the wizard lists it. */
+export interface WorkflowTemplateDto {
+  id: string;
+  path: string;
+  name: string;
+  summary: string;
+  /** Required templates cannot be turned off. */
+  required: boolean;
+  /** What the template needs before it can work, e.g. a repository secret. */
+  requires: string | null;
+  enabled: boolean;
+}
+
+export interface DeployTemplatesDto {
+  config: {
+    disabled: string[];
+    terraformVersion: string;
+    requireApproval: boolean;
+    scheduleRefresh: boolean;
+  };
+  catalogue: WorkflowTemplateDto[];
+}
+
+/** A CloudFormation stack the setup runs, and how to run it by hand instead. */
+export interface DeployStackDto {
+  stackName: string;
+  /** Null when the stack cannot be rendered yet, e.g. before a name is derived. */
+  template: string | null;
+  command: string;
+  consoleUrl: string;
 }
 
 export interface WorkflowFileDto {
@@ -190,11 +280,43 @@ export interface WorkflowRunDto {
   createdAt: string;
 }
 
+/** What the workflows will read at run time, straight from GitHub. */
+export interface DeployVariablesDto {
+  role: string | null;
+  region: string | null;
+  stateBucket: string | null;
+  /** Set when none of them could be read, e.g. a missing GitHub permission. */
+  error: string | null;
+}
+
+/**
+ * How far the deployment setup has got.
+ *
+ * Derived from the account, the repository and the project on every read rather
+ * than stored as progress. A stored flag would keep claiming the setup was done
+ * after somebody deleted the workflow or pointed the role somewhere else, and
+ * the one thing this state has to be is true.
+ */
+export interface DeploySetupState {
+  /** The deployment role exists and is known. */
+  roleReady: boolean;
+  /** The repository variables match what this project would deploy with. */
+  variablesReady: boolean;
+  /** The state bucket and its encryption key exist. */
+  stateReady: boolean;
+  /** The workflow files are committed and current. */
+  pipelineReady: boolean;
+  complete: boolean;
+}
+
 export interface ProjectDeployState {
   settings: ProjectDeploySettings;
   /** What still has to be filled in before the pipeline can run. */
   missing: string[];
+  variables: DeployVariablesDto;
+  setup: DeploySetupState;
   workflows: WorkflowFileDto[];
+  /** Kept for the pipeline preview; the backend file is not a template. */
   hasBackendFile: boolean;
   backendUpToDate: boolean;
   runs: WorkflowRunDto[];
@@ -203,14 +325,12 @@ export interface ProjectDeployState {
   /** Files the pipeline would be written as, for review before committing. */
   preview: { path: string; content: string }[];
   trustPolicy: string;
-  /** The account-side prerequisites, for the user to run with their own credentials. */
-  bootstrap: {
-    stackName: string;
-    template: string;
-    command: string;
-    consoleUrl: string;
-  };
+  templates: DeployTemplatesDto;
+  /** The role and OIDC trust, for the user to run with their own credentials. */
+  bootstrap: DeployStackDto;
+  /** The encrypted state backend, kept as its own stack. */
+  state: DeployStackDto;
 }
 
 /** The workflows TerraBlox can start on the user's behalf. */
-export type DeployRunKind = "plan" | "apply" | "state" | "cost";
+export type DeployRunKind = "plan" | "apply" | "cost";

@@ -1,14 +1,16 @@
 "use client";
 
 import { Badge } from "@terrablox/ui/badge";
-import { Button } from "@terrablox/ui/button";
 import { cn } from "@terrablox/ui/lib/utils";
 import { EyeOff } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { inferOutputType } from "@/lib/terraform/output-type";
+
 import {
   EmptyMessage,
   FieldList,
+  FilterPopover,
   formatDefault,
   SearchField,
   TypeBadge,
@@ -82,7 +84,20 @@ function InputRow({ variable }: { variable: ModuleVariableDto }) {
   );
 }
 
-function OutputRow({ output }: { output: ModuleOutputDto }) {
+function OutputRow({
+  output,
+  variableTypes,
+}: {
+  output: ModuleOutputDto;
+  variableTypes: Readonly<Record<string, string | null>>;
+}) {
+  // Worked out from the expression, not declared — Terraform gives outputs no
+  // type. Absent wherever the expression does not settle it, which is why there
+  // is no placeholder in its place.
+  const inferredType = inferOutputType(output.valueExpression ?? null, {
+    variableTypes,
+  });
+
   return (
     <div className="group border-b px-4 py-3 last:border-b-0 hover:bg-muted/40">
       <div className="flex flex-wrap items-center gap-2">
@@ -92,6 +107,15 @@ function OutputRow({ output }: { output: ModuleOutputDto }) {
             <EyeOff className="h-3 w-3" />
             sensitive
           </Badge>
+        ) : null}
+
+        {inferredType ? (
+          <span className="ml-auto min-w-0 max-w-full sm:max-w-[60%]">
+            <TypeBadge
+              title={`Inferred from the output value: ${output.valueExpression}`}
+              type={inferredType}
+            />
+          </span>
         ) : null}
       </div>
 
@@ -126,7 +150,6 @@ function HiddenMatches({ count }: { count: number }) {
 export function VariablesTab({ variables, outputs }: VariablesTabProps) {
   const [query, setQuery] = useState("");
   const [requirement, setRequirement] = useState<RequirementFilter>("all");
-  const [showFilterSettings, setShowFilterSettings] = useState(false);
   const [showInputs, setShowInputs] = useState(true);
   const [showOutputs, setShowOutputs] = useState(true);
 
@@ -183,51 +206,80 @@ export function VariablesTab({ variables, outputs }: VariablesTabProps) {
 
   const requiredCount = variables.filter((v) => v.required).length;
   const isSearching = needle.length > 0;
+  const isFiltered = isSearching || requirement !== "all";
+
+  /**
+   * Declared input types, for outputs that just hand an input back. That case is
+   * the one place an output's type is not a guess at all.
+   */
+  const variableTypes = useMemo(() => {
+    const types: Record<string, string | null> = {};
+    for (const variable of variables) types[variable.name] = variable.type;
+    return types;
+  }, [variables]);
 
   return (
     <div className="space-y-4">
-      <div className="space-y-2">
-        <SearchField
-          onChange={setQuery}
-          placeholder="Filter inputs and outputs…"
-          value={query}
-        />
-
-        <button
-          aria-expanded={showFilterSettings}
-          className="text-left text-muted-foreground text-sm hover:text-foreground"
-          onClick={() => setShowFilterSettings((open) => !open)}
-          type="button"
+      <SearchField
+        count={
+          isFiltered
+            ? `${filteredInputs.length + filteredOutputs.length} of ${
+                variables.length + outputs.length
+              }`
+            : `${variables.length + outputs.length} fields`
+        }
+        onChange={setQuery}
+        placeholder="Filter inputs and outputs"
+        value={query}
+      >
+        <FilterPopover
+          activeCount={requirement === "all" ? 0 : 1}
+          canClear={isFiltered}
+          onClearAll={() => {
+            setQuery("");
+            setRequirement("all");
+          }}
         >
-          Filter settings
-        </button>
-
-        {showFilterSettings ? (
           <fieldset
             aria-label="Filter inputs by requirement"
-            className="flex flex-wrap gap-1 rounded-md border p-1"
+            className="space-y-2"
           >
-            {(
-              [
-                ["all", `All ${variables.length}`],
-                ["required", `Required ${requiredCount}`],
-                ["optional", `Optional ${variables.length - requiredCount}`],
-              ] as const
-            ).map(([value, label]) => (
-              <Button
-                className="h-7 px-2.5 text-xs"
-                key={value}
-                onClick={() => setRequirement(value)}
-                size="sm"
-                type="button"
-                variant={requirement === value ? "secondary" : "ghost"}
-              >
-                {label}
-              </Button>
-            ))}
+            <legend className="font-medium text-sm">Filter by</legend>
+            {/* Chips rather than a segmented row: the three are mutually
+                exclusive, and a pill that carries its own count reads as one
+                choice among tags instead of a toolbar of buttons. */}
+            <div className="flex flex-wrap gap-1.5">
+              {(
+                [
+                  ["all", "All", variables.length],
+                  ["required", "Required", requiredCount],
+                  ["optional", "Optional", variables.length - requiredCount],
+                ] as const
+              ).map(([value, label, count]) => {
+                const active = requirement === value;
+
+                return (
+                  <button
+                    aria-pressed={active}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                      active
+                        ? "border-transparent bg-secondary font-medium text-secondary-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                    )}
+                    key={value}
+                    onClick={() => setRequirement(value)}
+                    type="button"
+                  >
+                    {label}
+                    <span className="tabular-nums opacity-60">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
           </fieldset>
-        ) : null}
-      </div>
+        </FilterPopover>
+      </SearchField>
 
       {isSearching &&
       filteredInputs.length === 0 &&
@@ -284,7 +336,11 @@ export function VariablesTab({ variables, outputs }: VariablesTabProps) {
           </EmptyMessage>
         ) : (
           filteredOutputs.map((o) => (
-            <OutputRow key={`${o.file ?? ""}:${o.name}`} output={o} />
+            <OutputRow
+              key={`${o.file ?? ""}:${o.name}`}
+              output={o}
+              variableTypes={variableTypes}
+            />
           ))
         )}
       </FieldList>

@@ -2,9 +2,21 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+/**
+ * Only what is genuinely per user.
+ *
+ * AWS used to be here too, and that was the bug: "this user has a connection"
+ * unlocked a project that had no account of its own. AWS is now asked per project
+ * through `/api/projects/[projectId]/aws`.
+ */
 export interface IntegrationStatus {
-  aws: { connected: boolean; verified: boolean };
   infracost: { connected: boolean };
+  /**
+   * GitHub, which is not optional: repositories, projects and the agent's
+   * Copilot seat all come through it, so a disconnected account is not a missing
+   * feature but a tool that cannot do anything.
+   */
+  github: { configured: boolean; connected: boolean };
 }
 
 /**

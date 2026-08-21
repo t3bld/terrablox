@@ -23,11 +23,11 @@ import { AwsConnectionError, isValidRegion } from "./connection";
  * Signing in with IAM Identity Center, the same device flow `aws sso login`
  * uses.
  *
- * This is only how the connection gets *set up*. The SSO session is interactive
- * and expires within hours, which is useless for reading a project graph on a
- * page load, so TerraBlox spends it once — to create the read role — and then
- * throws it away. Everything afterwards runs on AssumeRole, which needs nobody
- * present.
+ * What happens to the session depends on what the instance is. One that has an
+ * AWS identity spends the sign-in once — to create a role that trusts it — and
+ * throws it away, so later reads need nobody present. One that has no identity
+ * cannot be named in a trust policy at all, so it keeps the session and
+ * exchanges it for role credentials per request instead.
  */
 
 /** Portal URLs are user input that we turn into an endpoint, so pin the shape. */
@@ -130,7 +130,7 @@ export async function startDeviceAuthorization(params: {
 
 export type DeviceTokenResult =
   | { state: "pending" }
-  | { state: "ready"; accessToken: string }
+  | { state: "ready"; accessToken: string; tokenExpiresAt: Date }
   | { state: "expired" };
 
 /**
@@ -161,7 +161,12 @@ export async function pollDeviceToken(params: {
       throw new AwsConnectionError("AWS returned no access token.", "unknown");
     }
 
-    return { state: "ready", accessToken: token.accessToken };
+    return {
+      state: "ready",
+      accessToken: token.accessToken,
+      // AWS states this in seconds and typically grants eight hours.
+      tokenExpiresAt: new Date(Date.now() + (token.expiresIn ?? 28_800) * 1000),
+    };
   } catch (error) {
     const name = errorName(error);
 
@@ -303,6 +308,68 @@ export async function createBootstrapStack(params: {
       throw new AwsConnectionError(
         `A stack called ${BOOTSTRAP_STACK_NAME} already exists in that account. Delete it first, or connect the existing role by its ARN.`,
         "duplicate",
+      );
+    }
+    throw describeSsoFailure(error);
+  }
+}
+
+/**
+ * Exchanges an SSO session for role credentials in one account.
+ *
+ * This is the whole reason a self-hosted instance can work at all: the token
+ * the user signed in with is enough to act in their accounts, so TerraBlox
+ * needs no AWS identity of its own to stand behind a trust policy.
+ */
+export async function getSsoRoleCredentials(params: {
+  ssoRegion: string;
+  accessToken: string;
+  accountId: string;
+  roleName: string;
+}): Promise<{
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+  expiration: Date | null;
+}> {
+  const sso = new SSOClient({ region: params.ssoRegion });
+
+  try {
+    const issued = await sso.send(
+      new GetRoleCredentialsCommand({
+        accessToken: params.accessToken,
+        accountId: params.accountId,
+        roleName: params.roleName,
+      }),
+    );
+
+    const credentials = issued.roleCredentials;
+    if (
+      !credentials?.accessKeyId ||
+      !credentials.secretAccessKey ||
+      !credentials.sessionToken
+    ) {
+      throw new AwsConnectionError(
+        "AWS did not issue credentials for that role.",
+        "unknown",
+      );
+    }
+
+    return {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+      expiration: credentials.expiration
+        ? new Date(credentials.expiration)
+        : null,
+    };
+  } catch (error) {
+    if (error instanceof AwsConnectionError) throw error;
+    // An expired session is the ordinary end of this mode, not a fault.
+    if (errorName(error) === "UnauthorizedException") {
+      throw new AwsConnectionError(
+        "That AWS sign-in has expired. Sign in again to reconnect the account.",
+        "expired",
       );
     }
     throw describeSsoFailure(error);

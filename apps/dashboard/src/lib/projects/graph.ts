@@ -15,12 +15,15 @@ import {
 } from "@/lib/terraform/module-link";
 import type { TerraformAnalysis } from "@/lib/terraform/types";
 
+import { localNodeId, localsReferencedIn } from "./locals";
 import type {
   ProjectGraph,
   ProjectGraphEdge,
   ProjectGraphGap,
+  ProjectGraphLink,
   ProjectGraphNode,
   ProjectGraphPort,
+  ProjectNodeKind,
 } from "./types";
 import { MIN_WIRING_SCORE, wiringScore } from "./wiring";
 
@@ -130,7 +133,7 @@ export interface BuildProjectGraphInput {
 export function buildProjectGraph(input: BuildProjectGraphInput): ProjectGraph {
   const { analysis, files, library, positions } = input;
 
-  const nodes: ProjectGraphNode[] = analysis.moduleCalls.map((call) => {
+  const moduleNodes: ProjectGraphNode[] = analysis.moduleCalls.map((call) => {
     const link = resolveModuleLink(call.source, call.sourceKind, library);
     const imported = link
       ? library.find((m) => m.id === link.moduleId)
@@ -146,6 +149,8 @@ export function buildProjectGraph(input: BuildProjectGraphInput): ProjectGraph {
       version: call.version,
       sourceKind: call.sourceKind,
       file: call.file,
+      kind: "module",
+      expression: null,
       moduleId: link?.moduleId ?? null,
       moduleName: link?.name ?? null,
       exactVersion: link?.exactVersion ?? true,
@@ -157,8 +162,61 @@ export function buildProjectGraph(input: BuildProjectGraphInput): ProjectGraph {
     } satisfies ProjectGraphNode;
   });
 
-  const known = new Map(nodes.map((node) => [node.id, node]));
+  const localNodes: ProjectGraphNode[] = analysis.locals.map((local) => {
+    const position = positions[localNodeId(local.name)];
+
+    return {
+      id: local.name,
+      label: local.name,
+      kind: "local",
+      expression: local.expression,
+      source: null,
+      version: null,
+      sourceKind: "local",
+      file: local.file,
+      moduleId: null,
+      moduleName: null,
+      exactVersion: true,
+      // A local is a single value: it has nothing to offer as named ports, and
+      // pretending otherwise would put empty port lists on every one of them.
+      inputs: [],
+      outputs: [],
+      setArguments: [],
+      values: {},
+      position: position ? { x: position.x, y: position.y } : null,
+    } satisfies ProjectGraphNode;
+  });
+
+  const nodes = [...moduleNodes, ...localNodes];
+  const known = new Map(moduleNodes.map((node) => [node.id, node]));
+  const localNames = new Set(localNodes.map((node) => node.id));
   const edges = new Map<string, ProjectGraphEdge>();
+
+  const linkInto = (
+    source: string,
+    sourceKind: ProjectNodeKind,
+    target: string,
+    targetKind: ProjectNodeKind,
+    link: ProjectGraphLink,
+  ) => {
+    const id = `${sourceKind}:${source}->${targetKind}:${target}`;
+    const edge = edges.get(id) ?? {
+      id,
+      source,
+      target,
+      sourceKind,
+      targetKind,
+      links: [],
+    };
+
+    if (
+      !edge.links.some((existing) => existing.targetInput === link.targetInput)
+    ) {
+      edge.links.push(link);
+    }
+
+    edges.set(id, edge);
+  };
 
   for (const reference of analysis.references) {
     if (reference.fromKind !== "module" || reference.toKind !== "module") {
@@ -174,12 +232,8 @@ export function buildProjectGraph(input: BuildProjectGraphInput): ProjectGraph {
     const targetNode = known.get(target);
     if (!targetNode || !known.has(source)) continue;
 
-    const id = `${source}->${target}`;
-    const edge = edges.get(id) ?? { id, source, target, links: [] };
-
     for (const attribute of reference.attributes) {
-      if (edge.links.some((link) => link.targetInput === attribute)) continue;
-      edge.links.push({
+      linkInto(source, "module", target, "module", {
         targetInput: attribute,
         sourceOutput: findReferencedOutput(
           files,
@@ -189,19 +243,66 @@ export function buildProjectGraph(input: BuildProjectGraphInput): ProjectGraph {
         ),
       });
     }
+  }
 
-    edges.set(id, edge);
+  // Locals are invisible to the reference resolver: it deliberately walks
+  // *through* them to the resource they ultimately name, which is right for a
+  // dependency graph and wrong here. A local is a node on this canvas, so the
+  // wires to and from it are read from the expressions directly.
+  for (const node of moduleNodes) {
+    for (const [argument, expression] of Object.entries(node.values)) {
+      for (const name of localsReferencedIn(expression)) {
+        if (!localNames.has(name)) continue;
+        linkInto(name, "local", node.id, "module", {
+          targetInput: argument,
+          // A local has no named output — it *is* the value.
+          sourceOutput: null,
+        });
+      }
+    }
+  }
+
+  for (const local of localNodes) {
+    const expression = local.expression ?? "";
+
+    for (const producer of moduleNodes) {
+      const output = firstReferencedOutput(expression, producer.id);
+      if (!output) continue;
+
+      linkInto(producer.id, "module", local.id, "local", {
+        targetInput: local.id,
+        sourceOutput: output,
+      });
+    }
   }
 
   return {
     nodes,
     edges: [...edges.values()],
-    gaps: findGaps(nodes, library),
+    // Only modules have required inputs, so only they can have gaps.
+    gaps: findGaps(moduleNodes, library),
     resourceCount: analysis.resources.length,
     files: [...files.keys()].sort(),
     sha: input.sha,
     errors: analysis.errors,
   };
+}
+
+/** The output of `producer` that an expression names, when it names exactly one. */
+function firstReferencedOutput(
+  expression: string,
+  producer: string,
+): string | null {
+  const pattern = new RegExp(
+    `module\\.${escapeForRegExp(producer)}\\.([A-Za-z_][A-Za-z0-9_-]*)`,
+    "g",
+  );
+
+  const names = new Set(
+    [...expression.matchAll(pattern)].map((match) => match[1] as string),
+  );
+
+  return names.size === 1 ? ([...names][0] as string) : null;
 }
 
 /** What a library module is called once it is on the canvas. */

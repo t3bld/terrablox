@@ -72,3 +72,27 @@
     @apply bg-background text-foreground;
   }
 }
+
+/*
+ * Keeps the page still while a dropdown, popover or dialog is open.
+ *
+ * Radix locks the document through react-remove-scroll-bar, which measures the
+ * scrollbar it is about to hide and pads the body by that width to compensate.
+ * The `scrollbar-gutter: stable` above has already reserved exactly that space
+ * and never gives it up, so the compensation lands on top of a gap that never
+ * closed — and the whole page shifts sideways every time a menu opens.
+ *
+ * Zeroing it leaves the gutter doing its job: the scrollbar stays visible and
+ * simply stops responding while the menu is open, which is what the layout
+ * wants and what a reader expects.
+ *
+ * Outside `@layer base` and qualified with `html` on purpose. The library writes
+ * its padding with `!important` from a style element injected into the head at
+ * runtime, so this has to win on specificity rather than on order.
+ */
+html body[data-scroll-locked] {
+  padding-right: 0 !important;
+  padding-left: 0 !important;
+  margin-right: 0 !important;
+  margin-left: 0 !important;
+}

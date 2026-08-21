@@ -289,10 +289,19 @@ export interface AttributeSpan {
   name: string;
   /** Offset of the first character of the attribute name. */
   start: number;
-  /** Offset just past the value expression. */
+  /**
+   * Offset just past everything belonging to this attribute, which includes a
+   * comment trailing it on the same line. That comment documents this value, so
+   * deleting the attribute has to take it along.
+   */
   end: number;
   valueStart: number;
-  /** The value expression as written. */
+  /**
+   * Offset just past the value expression itself, stopping short of any
+   * trailing comment. Rewriting a value splices here so the comment survives.
+   */
+  valueEnd: number;
+  /** The value expression as written, without a trailing comment. */
   value: string;
 }
 
@@ -327,12 +336,14 @@ export function listBlockAttributes(
       if (assignment?.[1]) {
         const valueStart = i + assignment[0].length;
         const end = findValueEnd(source, valueStart, block.bodyEnd);
+        const valueEnd = trimTrailingComment(source, valueStart, end);
         attributes.push({
           name: assignment[1],
           start: i,
           end,
           valueStart,
-          value: source.slice(valueStart, end),
+          valueEnd,
+          value: source.slice(valueStart, valueEnd),
         });
         i = end;
         continue;
@@ -363,6 +374,56 @@ function findAttribute(
   return (
     listBlockAttributes(source, block).find((a) => a.name === name) ?? null
   );
+}
+
+/**
+ * Where the value expression stops, given the span the scanner accepted.
+ *
+ * {@link findValueEnd} walks past a trailing comment because {@link advance}
+ * consumes comments whole, so `env = "dev" # staging` would otherwise report
+ * the comment as part of the value — which then shows up on the canvas node and
+ * misreads the value's type. Only a comment at depth zero ends the value: one
+ * inside an object or list is part of the expression the user wrote, and
+ * dropping it would silently rewrite their file on the next edit.
+ */
+function trimTrailingComment(
+  source: string,
+  valueStart: number,
+  end: number,
+): number {
+  let i = valueStart;
+  let depth = 0;
+
+  while (i < end) {
+    const ch = source[i];
+    if (ch === undefined) break;
+
+    if (ch === "{" || ch === "[" || ch === "(") {
+      depth++;
+      i++;
+      continue;
+    }
+    if (ch === "}" || ch === "]" || ch === ")") {
+      depth--;
+      i++;
+      continue;
+    }
+
+    const startsComment =
+      ch === "#" ||
+      (ch === "/" && (source[i + 1] === "/" || source[i + 1] === "*"));
+
+    if (depth === 0 && startsComment) {
+      let stop = i;
+      while (stop > valueStart && /[ \t]/.test(source[stop - 1] ?? "")) stop--;
+      return stop;
+    }
+
+    const next = advance(source, i);
+    i = next > i ? next : i + 1;
+  }
+
+  return end;
 }
 
 /**
@@ -402,6 +463,55 @@ function findValueEnd(
 }
 
 /**
+ * Sets a top-level attribute of a block already located by the caller.
+ *
+ * Split out from {@link setBlockAttribute} because `locals` blocks carry no
+ * label and so cannot be found by one.
+ */
+export function setAttributeInBlock(
+  source: string,
+  block: HclBlock,
+  name: string,
+  value: string,
+): string {
+  const existing = findAttribute(source, block, name);
+  if (existing) {
+    return (
+      source.slice(0, existing.valueStart) +
+      value +
+      source.slice(existing.valueEnd)
+    );
+  }
+
+  const indent = detectBodyIndent(source, block);
+  const body = source.slice(block.bodyStart, block.bodyEnd).replace(/\s*$/, "");
+  const closingIndent = closingBraceIndent(source, block);
+
+  const nextBody = `${body}\n${indent}${name} = ${value}\n${closingIndent}`;
+
+  return (
+    source.slice(0, block.bodyStart) + nextBody + source.slice(block.bodyEnd)
+  );
+}
+
+/** Removes a top-level attribute of a block already located by the caller. */
+export function removeAttributeInBlock(
+  source: string,
+  block: HclBlock,
+  name: string,
+): string {
+  const existing = findAttribute(source, block, name);
+  if (!existing) return source;
+
+  const lineStart = source.lastIndexOf("\n", existing.start) + 1;
+  let end = existing.end;
+  if (source[end] === "\r") end++;
+  if (source[end] === "\n") end++;
+
+  return source.slice(0, lineStart) + source.slice(end);
+}
+
+/**
  * Sets a top-level attribute of a block, adding it before the closing brace
  * when it is not declared yet. Returns null when the block does not exist.
  */
@@ -412,24 +522,7 @@ export function setBlockAttribute(
   const block = findBlock(source, params.type, params.label);
   if (!block) return null;
 
-  const existing = findAttribute(source, block, params.name);
-  if (existing) {
-    return (
-      source.slice(0, existing.valueStart) +
-      params.value +
-      source.slice(existing.end)
-    );
-  }
-
-  const indent = detectBodyIndent(source, block);
-  const body = source.slice(block.bodyStart, block.bodyEnd).replace(/\s*$/, "");
-  const closingIndent = closingBraceIndent(source, block);
-
-  const nextBody = `${body}\n${indent}${params.name} = ${params.value}\n${closingIndent}`;
-
-  return (
-    source.slice(0, block.bodyStart) + nextBody + source.slice(block.bodyEnd)
-  );
+  return setAttributeInBlock(source, block, params.name, params.value);
 }
 
 export function removeBlockAttribute(
@@ -439,15 +532,7 @@ export function removeBlockAttribute(
   const block = findBlock(source, params.type, params.label);
   if (!block) return null;
 
-  const existing = findAttribute(source, block, params.name);
-  if (!existing) return source;
-
-  const lineStart = source.lastIndexOf("\n", existing.start) + 1;
-  let end = existing.end;
-  if (source[end] === "\r") end++;
-  if (source[end] === "\n") end++;
-
-  return source.slice(0, lineStart) + source.slice(end);
+  return removeAttributeInBlock(source, block, params.name);
 }
 
 /** Indentation of the block's first body line, falling back to two spaces. */
@@ -512,4 +597,158 @@ export function uniqueBlockLabel(
   let n = 2;
   while (used.has(`${base}_${n}`)) n++;
   return `${base}_${n}`;
+}
+
+/**
+ * Editing `locals`, which behaves unlike every other block in this file.
+ *
+ * A local is not a block — it is one entry inside a `locals { }` block, and a
+ * file may hold several such blocks that Terraform merges. So "add a local" is
+ * "set a key", and the block that key belongs in has to be chosen rather than
+ * addressed: an existing key is edited where it already lives, and a new one
+ * goes into the first block so a file does not accumulate one block per value.
+ */
+
+/** The `locals` blocks in a file, in source order. They take no labels. */
+export function findLocalsBlocks(source: string): HclBlock[] {
+  return listBlocks(source).filter((block) => block.type === "locals");
+}
+
+export interface LocalEntry {
+  name: string;
+  /** The expression as written, e.g. `"production"` or `module.vpc.id`. */
+  value: string;
+}
+
+/**
+ * Every local declared in a file, across all its `locals` blocks.
+ *
+ * A name declared twice is reported once, keeping the first — Terraform rejects
+ * the duplicate anyway, and picking the later one would make the graph disagree
+ * with the error the user is about to see.
+ */
+export function listLocalsEntries(source: string): LocalEntry[] {
+  const entries: LocalEntry[] = [];
+  const seen = new Set<string>();
+
+  for (const block of findLocalsBlocks(source)) {
+    for (const attribute of listBlockAttributes(source, block)) {
+      if (seen.has(attribute.name)) continue;
+      seen.add(attribute.name);
+      entries.push({ name: attribute.name, value: attribute.value.trim() });
+    }
+  }
+
+  return entries;
+}
+
+/** The `locals` block declaring `name`, or null when no block does. */
+export function findLocalsBlockDeclaring(
+  source: string,
+  name: string,
+): HclBlock | null {
+  for (const block of findLocalsBlocks(source)) {
+    if (listBlockAttributes(source, block).some((a) => a.name === name)) {
+      return block;
+    }
+  }
+  return null;
+}
+
+/**
+ * Sets a local, editing it where it is declared or adding it to the first
+ * `locals` block. Returns null when the file has no such block, which is the
+ * caller's signal to render one.
+ */
+export function setLocalsEntry(
+  source: string,
+  name: string,
+  value: string,
+): string | null {
+  const declaring = findLocalsBlockDeclaring(source, name);
+  if (declaring) return setAttributeInBlock(source, declaring, name, value);
+
+  const first = findLocalsBlocks(source)[0];
+  if (!first) return null;
+
+  return setAttributeInBlock(source, first, name, value);
+}
+
+/**
+ * Removes a local, and the `locals` block with it once it holds nothing else.
+ *
+ * An empty `locals { }` is valid Terraform but reads as an oversight, and it
+ * would collect the next local added anywhere in the project.
+ */
+export function removeLocalsEntry(source: string, name: string): string | null {
+  const block = findLocalsBlockDeclaring(source, name);
+  if (!block) return null;
+
+  const without = removeAttributeInBlock(source, block, name);
+
+  // Re-read rather than reuse `block`: the removal moved every offset after it.
+  const remaining = findLocalsBlocks(without).find(
+    (candidate) => candidate.start === block.start,
+  );
+  if (!remaining) return without;
+
+  const stillHolds = listBlockAttributes(without, remaining).length > 0;
+  if (stillHolds) return without;
+
+  return removeBlockAt(without, remaining);
+}
+
+/**
+ * Removes a block located by the caller, taking the blank lines around it.
+ *
+ * {@link removeBlock} finds its block by label, which a `locals` block has not.
+ */
+function removeBlockAt(source: string, block: HclBlock): string {
+  let start = block.start;
+  while (start > 0 && /[ \t]/.test(source[start - 1] ?? "")) start--;
+
+  let end = block.end;
+  while (end < source.length && /[ \t\r]/.test(source[end] ?? "")) end++;
+  if (source[end] === "\n") end++;
+  while (end < source.length && /^\s*?\n/.test(source.slice(end))) {
+    end += source.slice(end).indexOf("\n") + 1;
+  }
+
+  const before = source.slice(0, start).replace(/\s*$/, "");
+  const after = source.slice(end).replace(/^\s*/, "");
+
+  if (!before) return after;
+  if (!after) return `${before}\n`;
+  return `${before}\n\n${after}`;
+}
+
+/** Renames a local in place, leaving references for the caller to update. */
+export function renameLocalsEntry(
+  source: string,
+  name: string,
+  newName: string,
+): string | null {
+  const block = findLocalsBlockDeclaring(source, name);
+  if (!block) return null;
+
+  const existing = listBlockAttributes(source, block).find(
+    (a) => a.name === name,
+  );
+  if (!existing) return null;
+
+  return (
+    source.slice(0, existing.start) +
+    newName +
+    source.slice(existing.start + name.length)
+  );
+}
+
+export function renderLocalsBlock(entries: LocalEntry[]): string {
+  const lines = [
+    "locals {",
+    ...alignAssignments(entries.map((entry) => [entry.name, entry.value])),
+    "}",
+  ];
+
+  return `${lines.join("\n")}\n`;
 }

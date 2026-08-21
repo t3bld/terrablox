@@ -12,6 +12,8 @@ import {
 import { Check, ChevronDown, GitBranch } from "lucide-react";
 import Link from "next/link";
 
+import { pickDefaultVersion } from "@/lib/terraform/versions";
+
 export interface ModuleVersionRef {
   id: string;
   versionTag: string | null;
@@ -36,7 +38,10 @@ export function VersionSwitcher({
 }: VersionSwitcherProps) {
   const activeId = switchTargetId ?? currentModuleId;
   const current = versions.find((v) => v.id === activeId);
-  const latest = versions[0];
+  // The one a repository opens at — its tracked branch, or the newest release if
+  // it has none. Marked so a reader can tell where they were sent by default from
+  // where they navigated deliberately.
+  const fallback = pickDefaultVersion(versions);
 
   const label = current?.versionTag ?? "(no ref)";
 
@@ -55,9 +60,9 @@ export function VersionSwitcher({
         <Button className="h-8 gap-1.5 font-mono text-xs" variant="outline">
           <GitBranch className="h-3.5 w-3.5" />
           {label}
-          {current && latest && current.id === latest.id ? (
+          {current && fallback && current.id === fallback.id ? (
             <span className="font-sans text-[10px] uppercase tracking-wide text-muted-foreground">
-              latest
+              default
             </span>
           ) : null}
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
@@ -88,9 +93,9 @@ export function VersionSwitcher({
                   )}
                   {version.versionTag ?? "(no ref)"}
                 </span>
-                {latest && version.id === latest.id ? (
+                {fallback && version.id === fallback.id ? (
                   <span className="font-sans text-[10px] uppercase tracking-wide text-muted-foreground">
-                    latest
+                    default
                   </span>
                 ) : null}
               </Link>

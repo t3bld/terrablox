@@ -68,6 +68,14 @@ export interface ArchitectureDiagramNode {
   /** Number of underlying resources folded into this node. */
   count?: number;
   /**
+   * Resources that serve this box without being drawn themselves — an IAM role
+   * and its policies, a KMS key, a security group. Shown as a badge rather than
+   * as boxes, because they are properties of this thing rather than components
+   * beside it. Largest group first, which is the order the badge shows them in
+   * and the order it drops them from once there are more than it can name.
+   */
+  attachments?: { service: string; icon?: string; count: number }[];
+  /**
    * Built by another repository rather than here. Marked so a reader can tell
    * at a glance which boxes they can open and which are defined in this module.
    */
@@ -109,6 +117,11 @@ export interface ArchitectureDiagramProps {
   edges: ArchitectureDiagramEdge[];
   iconBasePath?: string;
   className?: string;
+  /**
+   * Fills the parent instead of using the built-in canvas height. For callers
+   * that already own a full-height pane, such as the project graph.
+   */
+  fill?: boolean;
   onToggleExpand?: (path: string) => void;
   /**
    * Positions the reader arranged themselves, keyed by node id. A node inside a
@@ -135,6 +148,7 @@ type FlowNode = Node<{
   sublabel?: string;
   icon?: string;
   count: number;
+  attachments?: { service: string; icon?: string; count: number }[];
   moduleCall?: boolean;
   href?: string;
   iconBasePath: string;
@@ -302,15 +316,111 @@ const HANDLE_SIDES = [
   ["l", Position.Left],
 ] as const;
 
+/**
+ * How many service icons the badge shows before it stops naming them.
+ *
+ * Four 16px icons overlapped by 6px come to 46px, which sits inside the 150px
+ * tile width and so cannot reach the tile in the next column. A fifth would push
+ * the row past the icon in the middle of the tile, and at that point the badge
+ * has stopped being a marker and become a second row of content.
+ */
+const BADGE_ICON_LIMIT = 4;
+
+/**
+ * Which undrawn services serve a tile, and how many resources in total.
+ *
+ * Placed over the border rather than inside the tile's column on purpose: the
+ * tile height is fixed by the layout and already carries an icon, a label, a
+ * Terraform name and sometimes an expand button. A badge that took part in that
+ * stack would either overflow or force every tile in the diagram to grow for the
+ * sake of the few that have one.
+ *
+ * One icon per service rather than only the largest group's. A Transit Gateway
+ * module hides EC2 route tables, RAM shares and a VPC route behind one box, and
+ * showing the EC2 icon alone said the hidden resources were EC2 — a reader had no
+ * way to know sharing was involved at all without opening the panel. The icons
+ * overlap the way a group of avatars does, which is the established way to say
+ * "several kinds of thing" in a space that only fits one.
+ *
+ * Deliberately not one count per service: four counts do not fit here, and they
+ * are already listed per service, per resource and per file in the detail panel
+ * one click away. The badge answers "which services, and how much" — the panel
+ * answers "exactly what".
+ *
+ * Stacked horizontally rather than vertically because the vertical gap between
+ * tiles is 24px while the horizontal one is 76px and carries the arrows: a column
+ * of chips would either collide with the tile above or sit in the corridor the
+ * edges travel down.
+ */
+function AttachmentBadge({
+  attachments,
+  iconBasePath,
+}: {
+  attachments: NonNullable<FlowNode["data"]["attachments"]>;
+  iconBasePath: string;
+}) {
+  const total = attachments.reduce((sum, entry) => sum + entry.count, 0);
+
+  // Services with no vendored icon would otherwise take a slot and draw nothing,
+  // so they are counted in the overflow instead of shown as a gap.
+  const withIcons = attachments.filter((entry) => entry.icon);
+  const shown = withIcons.slice(0, BADGE_ICON_LIMIT);
+  const hiddenServices = attachments.length - shown.length;
+
+  return (
+    <div
+      className="absolute -top-2 -right-2 flex items-center gap-1 rounded-full border bg-background py-0.5 pr-1.5 pl-1 shadow-sm"
+      title={`${total} supporting resource${total === 1 ? "" : "s"} not drawn: ${attachments
+        .map((entry) => `${entry.service} ${entry.count}`)
+        .join(", ")}`}
+    >
+      <span className="flex shrink-0 items-center">
+        {shown.map((entry, index) => (
+          <img
+            alt=""
+            // Ringed so overlapping icons stay separable, and the later ones sit
+            // on top so the leftmost — the largest group — reads as the front.
+            className={`h-4 w-4 shrink-0 rounded-full bg-background ring-1 ring-background ${
+              index > 0 ? "-ml-1.5" : ""
+            }`}
+            key={entry.service}
+            src={`${iconBasePath}/${entry.icon}.svg`}
+            title={`${entry.service}: ${entry.count}`}
+          />
+        ))}
+      </span>
+
+      {hiddenServices > 0 ? (
+        <span className="shrink-0 font-medium text-[10px] text-muted-foreground">
+          +{hiddenServices}
+        </span>
+      ) : null}
+
+      {/* Bigger than the rest of the tile's text on purpose: at 9px with a 12px
+          icon this was the one element on the diagram people had to lean in for,
+          and it is carrying the count of everything the box hides. */}
+      <span className="font-medium text-[11px] text-muted-foreground tabular-nums">
+        {total}
+      </span>
+    </div>
+  );
+}
+
 function ServiceTile({ data }: NodeProps<FlowNode>) {
   return (
     <div
-      className={`flex h-full w-full cursor-grab flex-col items-center justify-center gap-1 rounded-md bg-card px-2 py-2 shadow-sm active:cursor-grabbing ${
+      className={`relative flex h-full w-full cursor-grab flex-col items-center justify-center gap-1 rounded-md bg-card px-2 py-2 shadow-sm active:cursor-grabbing ${
         // A dashed edge marks a box whose innards are defined elsewhere, the
         // same convention the Connections view uses for data sources.
         data.moduleCall ? "border-2 border-dashed" : "border"
       }`}
     >
+      {data.attachments?.length ? (
+        <AttachmentBadge
+          attachments={data.attachments}
+          iconBasePath={data.iconBasePath}
+        />
+      ) : null}
       {/* One pair per side so an edge can leave and enter on whichever side
           faces the other node — see pickHandles. */}
       {HANDLE_SIDES.map(([id, position]) => (
@@ -417,6 +527,7 @@ export function ArchitectureDiagram({
   edges,
   iconBasePath = "/aws-icons",
   className,
+  fill = false,
   onToggleExpand,
   nodePositions,
   onNodePositionsChange,
@@ -464,6 +575,7 @@ export function ArchitectureDiagram({
           sublabel: node.sublabel,
           icon: node.icon,
           count: node.count ?? 1,
+          attachments: node.attachments,
           moduleCall: node.moduleCall,
           href: node.href,
           iconBasePath,
@@ -707,8 +819,11 @@ export function ArchitectureDiagram({
       <div
         // Nesting makes these diagrams roughly square, so a short canvas is what
         // caps the zoom, not the layout. Grows with the window, with a floor so
-        // a laptop still gets a usable picture.
-        className={`tbx-dependency-graph h-[calc(100vh-25rem)] min-h-[24rem] w-full overflow-hidden rounded-lg border bg-background ${className ?? ""}`}
+        // a laptop still gets a usable picture — unless the caller already has a
+        // pane of its own to fill.
+        className={`tbx-dependency-graph w-full overflow-hidden rounded-lg border bg-background ${
+          fill ? "h-full" : "h-[calc(100vh-25rem)] min-h-[24rem]"
+        } ${className ?? ""}`}
       >
         <ReactFlow
           edges={flowEdges}
@@ -721,6 +836,7 @@ export function ArchitectureDiagram({
           nodesConnectable={false}
           nodesDraggable
           nodeTypes={nodeTypes}
+          proOptions={{ hideAttribution: true }}
           onMove={handleMove}
           onNodeClick={handleNodeClick}
           onNodesChange={handleNodesChange}

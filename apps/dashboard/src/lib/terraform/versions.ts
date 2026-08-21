@@ -116,3 +116,28 @@ export function pickLatest<T extends VersionLike>(versions: T[]): T | null {
 export function isReleaseTag(tag: string | null): boolean {
   return parseVersionTag(tag) !== null;
 }
+
+/**
+ * The version a repository should open at.
+ *
+ * The tracked branch wins over the newest release. A branch is what upstream
+ * currently says, which is what someone reading a module or placing it on a canvas
+ * almost always wants; a pinned tag is a deliberate choice made later, in the
+ * version switcher.
+ *
+ * "Is a branch" is decided by {@link isReleaseTag} rather than stored, because the
+ * import records only the ref name. That misreads a non-semver *tag* — `stable`,
+ * say — as a branch. The consequence is opening at that tag instead of at the
+ * newest one, which is a wrong default rather than a broken page, and no
+ * catalogue repository has one.
+ */
+export function pickDefaultVersion<T extends VersionLike>(
+  versions: T[],
+): T | null {
+  const ordered = sortVersionsDesc(versions);
+  return (
+    ordered.find((version) => !isReleaseTag(version.versionTag)) ??
+    ordered[0] ??
+    null
+  );
+}

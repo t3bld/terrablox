@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Project } from "@terrablox/database";
 
+import { getRepoVariable } from "@/lib/github/actions-config";
 import {
   commitFiles,
   type FileChange,
@@ -12,28 +13,38 @@ import {
 } from "@/lib/github/repo-files";
 
 import {
-  APPLY_WORKFLOW_PATH,
+  AWS_REGION_VARIABLE,
+  AWS_ROLE_VARIABLE,
   BACKEND_FILE,
   bootstrapStackName,
-  COST_WORKFLOW_PATH,
   missingDeploySettings,
   type PipelineContext,
-  PLAN_WORKFLOW_PATH,
-  renderApplyWorkflow,
   renderBackendFile,
   renderBootstrapCommand,
   renderBootstrapTemplate,
-  renderCostWorkflow,
-  renderPlanWorkflow,
-  renderStateWorkflow,
+  renderStateCommand,
+  renderStateTemplate,
   renderTrustPolicy,
-  STATE_WORKFLOW_PATH,
+  STATE_BUCKET_VARIABLE,
+  stateStackName,
   WORKFLOW_DIR,
 } from "./deploy";
 import { normalizeFolder } from "./service";
-import type { ProjectDeployState, WorkflowFileDto } from "./types";
+import type {
+  DeployVariablesDto,
+  ProjectDeployState,
+  WorkflowFileDto,
+} from "./types";
+import {
+  activeTemplates,
+  allTemplatePaths,
+  type ResolvedTemplateConfig,
+  resolveTemplateConfig,
+  WORKFLOW_TEMPLATES,
+} from "./workflow-templates";
 
-function pipelineContext(project: Project): PipelineContext {
+/** Exported so the account-side stacks are rendered from the same settings. */
+export function pipelineContext(project: Project): PipelineContext {
   return {
     repoFullName: project.repoFullName,
     branch: project.repoBranch,
@@ -44,7 +55,13 @@ function pipelineContext(project: Project): PipelineContext {
     awsRoleArn: project.awsRoleArn,
     stateBucket: project.stateBucket,
     stateLockTable: project.stateLockTable,
+    stateKmsKeyArn: project.stateKmsKeyArn,
   };
+}
+
+/** The template configuration this project deploys with. */
+export function templateConfig(project: Project): ResolvedTemplateConfig {
+  return resolveTemplateConfig(project.deployTemplates);
 }
 
 /** Where the backend file goes: next to the root configuration, not at the top. */
@@ -53,22 +70,54 @@ function backendPath(project: Project): string {
   return folder === "." ? BACKEND_FILE : `${folder}/${BACKEND_FILE}`;
 }
 
-/** The files TerraBlox generates, in the order the UI shows them. */
+/**
+ * The files TerraBlox writes for this project.
+ *
+ * Driven by the catalogue and the project's configuration, so a template the
+ * project turned off is not merely hidden — it is never rendered, and
+ * {@link writeDeployPipeline} deletes the file if it is already there.
+ */
 export function pipelineFiles(
   project: Project,
 ): { path: string; content: string }[] {
   const context = pipelineContext(project);
-  const files = [
-    { path: PLAN_WORKFLOW_PATH, content: renderPlanWorkflow(context) },
-    { path: APPLY_WORKFLOW_PATH, content: renderApplyWorkflow(context) },
-    { path: STATE_WORKFLOW_PATH, content: renderStateWorkflow(context) },
-    { path: COST_WORKFLOW_PATH, content: renderCostWorkflow(context) },
-  ];
+  const config = templateConfig(project);
+
+  const files = activeTemplates(config).map((template) => ({
+    path: template.path,
+    content: template.render(context, config),
+  }));
 
   const backend = renderBackendFile(context);
   if (backend) files.push({ path: backendPath(project), content: backend });
 
   return files;
+}
+
+/** The three variables together, or the reason none of them could be read. */
+async function readRepoVariables(
+  token: string,
+  repoFullName: string,
+): Promise<DeployVariablesDto> {
+  try {
+    const [role, region, stateBucket] = await Promise.all([
+      getRepoVariable(token, { repoFullName, name: AWS_ROLE_VARIABLE }),
+      getRepoVariable(token, { repoFullName, name: AWS_REGION_VARIABLE }),
+      getRepoVariable(token, { repoFullName, name: STATE_BUCKET_VARIABLE }),
+    ]);
+
+    return { role, region, stateBucket, error: null };
+  } catch (error) {
+    return {
+      role: null,
+      region: null,
+      stateBucket: null,
+      error:
+        error instanceof GithubRequestError
+          ? "Repository variables are not readable with the current GitHub permissions."
+          : "Could not read the repository variables.",
+    };
+  }
 }
 
 /**
@@ -84,9 +133,14 @@ export async function readDeployState(
 ): Promise<ProjectDeployState> {
   const expected = pipelineFiles(project);
   const context = pipelineContext(project);
+  const config = templateConfig(project);
   const managedPaths = new Set(expected.map((file) => file.path));
 
-  const [tree, runs, existing] = await Promise.all([
+  // Includes the templates this project turned off: a file left behind from
+  // before still runs in Actions, so it has to be visible and removable.
+  const ownedPaths = new Set([...allTemplatePaths(), ...managedPaths]);
+
+  const [tree, runs, existing, variables] = await Promise.all([
     listRepoTree(token, {
       repoFullName: project.repoFullName,
       ref: project.repoBranch,
@@ -111,6 +165,11 @@ export async function readDeployState(
         }).catch(() => null),
       ),
     ),
+    // What the workflows will actually read at run time. Asking GitHub rather
+    // than assuming the last write succeeded: the permission needed to set a
+    // variable is one the installation may not have, and a pipeline pointed at
+    // a stale role is exactly the failure that is hardest to read from a log.
+    readRepoVariables(token, project.repoFullName),
   ]);
 
   const currentByPath = new Map(
@@ -132,9 +191,11 @@ export async function readDeployState(
       return {
         path: entry.path,
         managed,
+        // A file TerraBlox owns but this project no longer wants counts as out
+        // of date, which is what makes the "needs update" badge honest.
         upToDate: managed
           ? current?.content.trim() === rendered?.content.trim()
-          : true,
+          : !ownedPaths.has(entry.path),
       };
     })
     .sort((a, b) => a.path.localeCompare(b.path));
@@ -152,21 +213,59 @@ export async function readDeployState(
     (file) => file.path === backendPath(project),
   );
 
+  const settings = {
+    awsAccountId: project.awsAccountId,
+    awsRegion: project.awsRegion,
+    awsRoleArn: project.awsRoleArn,
+    stateBucket: project.stateBucket,
+    stateLockTable: project.stateLockTable,
+    stateKmsKeyArn: project.stateKmsKeyArn,
+  };
+
+  const missing = missingDeploySettings(settings);
+
+  // Committed *and* current: a workflow left behind by an older set of settings
+  // would point at the wrong role, which is worse than having none.
+  const pipelineReady =
+    expected.length > 0 &&
+    expected.every((file) => {
+      const current = currentByPath.get(file.path);
+      return current != null && current.content.trim() === file.content.trim();
+    });
+
+  // Compared against the project rather than merely present, so a role that was
+  // replaced after the first setup shows as unfinished instead of done.
+  const variablesReady =
+    variables.error === null &&
+    variables.role !== null &&
+    variables.role === project.awsRoleArn &&
+    variables.region === project.awsRegion &&
+    variables.stateBucket === project.stateBucket;
+
   return {
-    settings: {
-      awsAccountId: project.awsAccountId,
-      awsRegion: project.awsRegion,
-      awsRoleArn: project.awsRoleArn,
-      stateBucket: project.stateBucket,
-      stateLockTable: project.stateLockTable,
+    settings,
+    missing,
+    variables,
+    templates: {
+      config,
+      catalogue: WORKFLOW_TEMPLATES.map((template) => ({
+        id: template.id,
+        path: template.path,
+        name: template.name,
+        summary: template.summary,
+        required: template.required,
+        requires: template.requires,
+        enabled: template.required || !config.disabled.includes(template.id),
+      })),
     },
-    missing: missingDeploySettings({
-      awsAccountId: project.awsAccountId,
-      awsRegion: project.awsRegion,
-      awsRoleArn: project.awsRoleArn,
-      stateBucket: project.stateBucket,
-      stateLockTable: project.stateLockTable,
-    }),
+    setup: {
+      roleReady: project.awsRoleArn !== null,
+      variablesReady,
+      stateReady:
+        project.stateBucket !== null && project.stateKmsKeyArn !== null,
+      pipelineReady,
+      complete: missing.length === 0 && variablesReady && pipelineReady,
+    },
     workflows,
     hasBackendFile: backendFile !== null,
     backendUpToDate:
@@ -183,29 +282,63 @@ export async function readDeployState(
       stackName: bootstrapStackName(project.name),
       template: renderBootstrapTemplate(context),
       command: renderBootstrapCommand(context),
-      consoleUrl: `https://${encodeURIComponent(
-        project.awsRegion,
-      )}.console.aws.amazon.com/cloudformation/home?region=${encodeURIComponent(
-        project.awsRegion,
-      )}#/stacks/create`,
+      consoleUrl: consoleUrl(project.awsRegion),
+    },
+    state: {
+      stackName: stateStackName(project.name),
+      // Rendering needs a bucket name, which only exists once the wizard has
+      // derived one; before that there is nothing to show.
+      template: project.stateBucket ? renderStateTemplate(context) : null,
+      command: renderStateCommand(context),
+      consoleUrl: consoleUrl(project.awsRegion),
     },
   };
+}
+
+function consoleUrl(region: string): string {
+  const encoded = encodeURIComponent(region);
+  return `https://${encoded}.console.aws.amazon.com/cloudformation/home?region=${encoded}#/stacks/create`;
 }
 
 /**
  * Writes the pipeline in a single commit.
  *
  * One commit rather than one per file, so a repository is never left with a
- * plan workflow that refers to a backend that was not written.
+ * plan workflow that refers to a backend that was not written. Templates the
+ * project has turned off are deleted in the same commit: leaving them behind
+ * would leave a runnable workflow nobody is looking after.
  */
 export async function writeDeployPipeline(
   token: string,
   project: Project,
 ): Promise<{ sha: string; paths: string[] } | null> {
-  const changes: FileChange[] = pipelineFiles(project).map((file) => ({
+  const files = pipelineFiles(project);
+  const wanted = new Set(files.map((file) => file.path));
+
+  const changes: FileChange[] = files.map((file) => ({
     path: file.path,
     content: file.content,
   }));
+
+  const disabledPaths = allTemplatePaths().filter((path) => !wanted.has(path));
+
+  // Only delete what is actually there, or the tree update fails on a path that
+  // never existed.
+  const present = await Promise.all(
+    disabledPaths.map((path) =>
+      readRepoFile(token, {
+        repoFullName: project.repoFullName,
+        path,
+        ref: project.repoBranch,
+      })
+        .then((file) => (file ? path : null))
+        .catch(() => null),
+    ),
+  );
+
+  for (const path of present) {
+    if (path) changes.push({ path, content: null });
+  }
 
   const result = await commitFiles(token, {
     repoFullName: project.repoFullName,

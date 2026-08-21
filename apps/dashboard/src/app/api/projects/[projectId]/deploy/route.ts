@@ -1,3 +1,4 @@
+import type { Prisma } from "@terrablox/database";
 import { NextResponse } from "next/server";
 
 import {
@@ -8,6 +9,7 @@ import { database } from "@/lib/database";
 import { GithubRequestError } from "@/lib/github/repo-files";
 import { readDeployState } from "@/lib/projects/deploy-service";
 import { findOwnedProject } from "@/lib/projects/service";
+import { resolveTemplateConfig } from "@/lib/projects/workflow-templates";
 
 export async function GET(
   req: Request,
@@ -47,6 +49,9 @@ interface DeployPatchBody {
   awsRoleArn?: string | null;
   stateBucket?: string | null;
   stateLockTable?: string | null;
+  stateKmsKeyArn?: string | null;
+  /** Workflow template configuration, normalised by the catalogue. */
+  templates?: unknown;
 }
 
 const ROLE_ARN_PATTERN = /^arn:aws[a-z-]*:iam::\d{12}:role\/.+$/;
@@ -117,6 +122,19 @@ export async function PATCH(
         : {}),
       ...(optional(body.stateLockTable) !== undefined
         ? { stateLockTable: optional(body.stateLockTable) }
+        : {}),
+      ...(optional(body.stateKmsKeyArn) !== undefined
+        ? { stateKmsKeyArn: optional(body.stateKmsKeyArn) }
+        : {}),
+      // Stored through the catalogue's normaliser rather than as given: this is
+      // a JSON column, and an unknown template id or a bogus version string must
+      // never reach a renderer.
+      ...(body.templates !== undefined
+        ? {
+            deployTemplates: {
+              ...resolveTemplateConfig(body.templates),
+            } satisfies Record<string, unknown> as Prisma.InputJsonObject,
+          }
         : {}),
     },
   });

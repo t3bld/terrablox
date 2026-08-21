@@ -13,7 +13,7 @@ import { Label } from "@terrablox/ui/label";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import {
   AlertCircle,
-  Check,
+  ArrowLeft,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -26,6 +26,7 @@ import {
   PlayCircle,
   RefreshCw,
   Rocket,
+  Settings2,
   ShieldAlert,
   XCircle,
 } from "lucide-react";
@@ -33,11 +34,13 @@ import { useCallback, useEffect, useState } from "react";
 
 import type {
   DeployRunKind,
+  DeployStackDto,
   ProjectDeploySettings,
   ProjectDeployState,
   ProjectDto,
   WorkflowRunDto,
 } from "@/lib/projects/types";
+import { DeployWizard } from "./deploy-wizard";
 
 interface DeployPanelProps {
   projectId: string;
@@ -65,6 +68,12 @@ function toForm(settings: ProjectDeploySettings): SettingsForm {
 /**
  * Everything needed to get the project's Terraform running in CI.
  *
+ * Two faces, decided by whether the setup is actually finished: a wizard while
+ * anything is still missing, and the configuration plus the run controls once it
+ * is not. The old panel showed both at once, which meant the first thing a new
+ * project offered was a form with five empty fields and no clue which to fill in
+ * first.
+ *
  * The pipeline itself lives in the repository as ordinary workflow files, so
  * this panel generates and inspects them rather than hiding them behind a
  * proprietary runner — a project stays deployable without TerraBlox.
@@ -74,9 +83,9 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
   const [form, setForm] = useState<SettingsForm | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [generating, setGenerating] = useState(false);
   const [running, setRunning] = useState<DeployRunKind | null>(null);
   const [confirmApply, setConfirmApply] = useState(false);
+  const [reconfiguring, setReconfiguring] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -180,43 +189,14 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
       const body = await response.json();
       if (!response.ok) throw new Error(body?.error ?? "Failed to save");
 
-      setState(body.deploy as ProjectDeployState);
+      const deploy = body.deploy as ProjectDeployState;
+      setState(deploy);
+      setForm(toForm(deploy.settings));
       setNotice("Settings saved.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save");
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function generatePipeline() {
-    if (generating) return;
-
-    setGenerating(true);
-    setError(null);
-    setNotice(null);
-
-    try {
-      const response = await fetch(
-        `/api/projects/${projectId}/deploy/pipeline`,
-        { method: "POST" },
-      );
-
-      const body = await response.json();
-      if (!response.ok) throw new Error(body?.error ?? "Failed to generate");
-
-      setState(body.deploy as ProjectDeployState);
-      setNotice(
-        body.commit
-          ? `Committed ${body.commit.paths.length} file(s) as ${String(
-              body.commit.sha,
-            ).slice(0, 7)}.`
-          : "The pipeline was already up to date.",
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to generate");
-    } finally {
-      setGenerating(false);
     }
   }
 
@@ -231,6 +211,8 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
   }
 
   const ready = state !== null && state.missing.length === 0;
+  const configured = state?.setup.complete ?? false;
+  const showWizard = state !== null && (!configured || reconfiguring);
 
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-6">
@@ -247,345 +229,514 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
         </p>
       ) : null}
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">
-            {ready ? "Ready to deploy" : "Not deployable yet"}
-          </CardTitle>
-          <CardDescription>
-            {ready
-              ? "Pushing to the deployment branch runs terraform apply through GitHub Actions."
-              : `Still missing: ${state?.missing.join(", ")}.`}
-          </CardDescription>
-        </CardHeader>
-      </Card>
+      {showWizard && state ? (
+        <>
+          {configured ? (
+            <Button
+              onClick={() => setReconfiguring(false)}
+              size="sm"
+              variant="ghost"
+            >
+              <ArrowLeft className="mr-2 h-3.5 w-3.5" />
+              Back to the configuration
+            </Button>
+          ) : null}
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">AWS account</CardTitle>
-          <CardDescription>
-            The pipeline assumes an IAM role through GitHub&rsquo;s OIDC
-            provider. No access keys are created, stored or committed.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {form ? (
-            <>
+          <DeployWizard
+            onChanged={load}
+            project={project}
+            projectId={projectId}
+            state={state}
+          />
+        </>
+      ) : null}
+
+      {!showWizard && state ? (
+        <>
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                Deployment is configured
+              </CardTitle>
+              <CardDescription>
+                Terraform runs in GitHub Actions, which federates into your AWS
+                account for the length of a job. No credentials are stored, and
+                nothing is triggered by a push — a deployment only happens when
+                you start one here.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[11rem_1fr]">
+                <ConfigRow label="Repository">
+                  {project
+                    ? `${project.repoFullName}@${project.repoBranch}`
+                    : "—"}
+                </ConfigRow>
+                <ConfigRow label="AWS account">
+                  {state.settings.awsAccountId ?? "—"}
+                </ConfigRow>
+                <ConfigRow label="Region">{state.settings.awsRegion}</ConfigRow>
+                <ConfigRow label="Deployment role">
+                  {state.settings.awsRoleArn ?? "—"}
+                </ConfigRow>
+                <ConfigRow label="State bucket">
+                  {state.settings.stateBucket ?? "—"}
+                </ConfigRow>
+                <ConfigRow label="Lock table">
+                  {state.settings.stateLockTable ?? "none"}
+                </ConfigRow>
+                <ConfigRow label="State encryption">
+                  {state.settings.stateKmsKeyArn ?? "not encrypted with KMS"}
+                </ConfigRow>
+                <ConfigRow label="Terraform">
+                  {state.templates.config.terraformVersion}
+                </ConfigRow>
+              </dl>
+
+              <ul className="space-y-1.5">
+                {state.workflows.map((workflow) => (
+                  <li
+                    className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                    key={workflow.path}
+                  >
+                    <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    <span className="truncate font-mono text-xs">
+                      {workflow.path}
+                    </span>
+                    {workflow.managed ? (
+                      <span
+                        className={`ml-auto shrink-0 rounded-full border px-2 py-0.5 font-medium text-[0.65rem] ${
+                          workflow.upToDate
+                            ? "text-emerald-600"
+                            : "text-amber-600"
+                        }`}
+                      >
+                        {workflow.upToDate ? "up to date" : "needs update"}
+                      </span>
+                    ) : (
+                      <span className="ml-auto shrink-0 text-[0.65rem] text-muted-foreground">
+                        your own
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+
+              <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                <span className="text-muted-foreground">
+                  The deployment role has AdministratorAccess, so anyone who can
+                  push to this repository or start a workflow in it can change
+                  anything in account{" "}
+                  {state.settings.awsAccountId ?? "this account"}.
+                </span>
+              </div>
+
+              <Button
+                onClick={() => setReconfiguring(true)}
+                size="sm"
+                variant="outline"
+              >
+                <Settings2 className="mr-2 h-3.5 w-3.5" />
+                Change the setup
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Run Terraform</CardTitle>
+              <CardDescription>
+                Starts the workflow in GitHub Actions on{" "}
+                <code className="rounded bg-muted px-1">
+                  {project?.repoBranch ?? "main"}
+                </code>
+                . The credentials never leave the runner, and every run leaves a
+                log you can audit.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  disabled={!ready || running !== null}
+                  onClick={() => void startRun("plan")}
+                  variant="outline"
+                >
+                  {running === "plan" ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <PlayCircle className="mr-2 h-4 w-4" />
+                  )}
+                  Plan
+                </Button>
+
+                {confirmApply ? (
+                  <>
+                    <Button
+                      disabled={running !== null}
+                      onClick={() => void startRun("apply")}
+                      variant="destructive"
+                    >
+                      {running === "apply" ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <ShieldAlert className="mr-2 h-4 w-4" />
+                      )}
+                      Apply to {state.settings.awsAccountId ?? "AWS"}
+                    </Button>
+                    <Button
+                      onClick={() => setConfirmApply(false)}
+                      variant="ghost"
+                    >
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    disabled={!ready || running !== null}
+                    onClick={() => setConfirmApply(true)}
+                  >
+                    <Rocket className="mr-2 h-4 w-4" />
+                    Apply
+                  </Button>
+                )}
+
+                <Button
+                  aria-label="Refresh runs"
+                  onClick={() => void refreshRuns()}
+                  size="icon"
+                  variant="ghost"
+                >
+                  <RefreshCw
+                    className={`h-4 w-4 ${runInFlight ? "animate-spin" : ""}`}
+                  />
+                </Button>
+              </div>
+
+              <p className="text-muted-foreground text-xs">
+                Apply runs in the{" "}
+                <code className="rounded bg-muted px-1">production</code>{" "}
+                environment, so GitHub can hold it for an approval before
+                anything changes in AWS.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">Recent runs</CardTitle>
+              <CardDescription>
+                The last GitHub Actions runs for this repository.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {state.runsError ? (
+                <p className="text-muted-foreground text-sm">
+                  {state.runsError}
+                </p>
+              ) : state.runs.length === 0 ? (
+                <p className="text-muted-foreground text-sm">
+                  No workflow has run yet.
+                </p>
+              ) : (
+                <ul className="space-y-1.5">
+                  {state.runs.map((run) => (
+                    <RunRow key={run.id} run={run} />
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      ) : null}
+
+      {/* Kept reachable in both faces: the wizard covers the normal path, and
+          this is what is left for a role somebody else created, or a state
+          bucket that has to be pointed somewhere specific. */}
+      {state && form ? (
+        <Card>
+          <CardContent className="pt-6">
+            <Collapsible label="Edit the settings by hand">
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field
                   id="aws-account"
                   label="Account ID"
-                  placeholder="123456789012"
-                  value={form.awsAccountId}
                   onChange={(value) =>
                     setForm({ ...form, awsAccountId: value })
                   }
+                  placeholder="123456789012"
+                  value={form.awsAccountId}
                 />
                 <Field
                   id="aws-region"
                   label="Region"
+                  onChange={(value) => setForm({ ...form, awsRegion: value })}
                   placeholder="eu-central-1"
                   value={form.awsRegion}
-                  onChange={(value) => setForm({ ...form, awsRegion: value })}
                 />
               </div>
               <Field
                 id="aws-role"
                 label="Deployment role ARN"
+                onChange={(value) => setForm({ ...form, awsRoleArn: value })}
                 placeholder="arn:aws:iam::123456789012:role/terrablox-deploy"
                 value={form.awsRoleArn}
-                onChange={(value) => setForm({ ...form, awsRoleArn: value })}
               />
-
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field
                   id="state-bucket"
                   label="State bucket (S3)"
+                  onChange={(value) => setForm({ ...form, stateBucket: value })}
                   placeholder="my-terraform-state"
                   value={form.stateBucket}
-                  onChange={(value) => setForm({ ...form, stateBucket: value })}
                 />
                 <Field
                   id="state-lock"
                   label="Lock table (DynamoDB)"
-                  placeholder="Optional"
-                  value={form.stateLockTable}
                   onChange={(value) =>
                     setForm({ ...form, stateLockTable: value })
                   }
+                  placeholder="Optional"
+                  value={form.stateLockTable}
                 />
               </div>
 
+              <StateBackendStatus projectId={projectId} />
+
+              <p className="text-muted-foreground text-xs">
+                Changing a value here does not touch the repository. Re-run the
+                setup afterwards so the workflows and the Actions variables
+                follow.
+              </p>
+
               <div className="flex items-center gap-2">
-                <Button onClick={() => void saveSettings()} disabled={saving}>
+                <Button disabled={saving} onClick={() => void saveSettings()}>
                   {saving ? "Saving…" : "Save settings"}
                 </Button>
                 <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => void load()}
                   aria-label="Reload"
+                  onClick={() => void load()}
+                  size="icon"
+                  variant="ghost"
                 >
                   <RefreshCw className="h-4 w-4" />
                 </Button>
               </div>
-            </>
-          ) : null}
 
-          {state ? (
-            <Collapsible label="Set up the AWS side">
-              <p className="text-sm text-muted-foreground">
-                One CloudFormation stack creates everything the pipeline needs:
-                the GitHub identity provider, the deployment role limited to
-                this repository, the versioned state bucket
-                {state.settings.stateLockTable ? " and the lock table" : ""}.
-                Run it with your own AWS credentials — TerraBlox has none, which
-                is why it cannot do this for you.
-              </p>
+              <Collapsible label="The CloudFormation stacks, to run yourself">
+                <p className="text-muted-foreground text-sm">
+                  The identical templates the wizard uses. Two stacks, because
+                  the role can be rebuilt at will while deleting the state loses
+                  track of infrastructure that is still running.
+                </p>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    downloadFile(
-                      "terrablox-bootstrap.yml",
-                      state.bootstrap.template,
-                    )
-                  }
-                >
-                  <Download className="mr-2 h-3.5 w-3.5" />
-                  Download template
-                </Button>
-                <a
-                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                  href={state.bootstrap.consoleUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Or upload it in the CloudFormation console
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-
-              <CodeBlock
-                content={state.bootstrap.command}
-                label="bootstrap command"
-                language="bash"
-              />
-
-              <p className="text-sm text-muted-foreground">
-                The stack&rsquo;s outputs are the values for the fields above.
-                The role starts with read-only permissions, so a plan works
-                immediately and an apply fails until you widen{" "}
-                <code className="rounded bg-muted px-1">
-                  PermissionsPolicyArn
-                </code>{" "}
-                to what this project really deploys.
-              </p>
-
-              <Collapsible label={`${state.bootstrap.stackName}.yml`}>
-                <CodeBlock
-                  content={state.bootstrap.template}
-                  label="bootstrap template"
-                  language="yaml"
+                <StackDetails
+                  fileName="terrablox-role.yml"
+                  label="Deployment role"
+                  stack={state.bootstrap}
                 />
+                <StackDetails
+                  fileName="terrablox-state.yml"
+                  label="State backend"
+                  stack={state.state}
+                />
+
+                <Collapsible label="Trust policy only">
+                  <CodeBlock
+                    content={state.trustPolicy}
+                    label="Trust policy"
+                    language="json"
+                  />
+                </Collapsible>
               </Collapsible>
 
-              <Collapsible label="Trust policy only">
-                <CodeBlock
-                  content={state.trustPolicy}
-                  label="Trust policy"
-                  language="json"
-                />
+              <Collapsible label="The files TerraBlox writes">
+                {state.preview.map((file) => (
+                  <Collapsible key={file.path} label={file.path}>
+                    <CodeBlock content={file.content} label={file.path} />
+                  </Collapsible>
+                ))}
               </Collapsible>
-
-              <a
-                className="mt-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                href="https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-idp_oidc.html"
-                target="_blank"
-                rel="noreferrer"
-              >
-                AWS documentation on OIDC roles
-                <ExternalLink className="h-3 w-3" />
-              </a>
             </Collapsible>
-          ) : null}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ) : null}
+    </div>
+  );
+}
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Pipeline</CardTitle>
-          <CardDescription>
-            A plan on every pull request, an apply on{" "}
-            <code className="rounded bg-muted px-1">
-              {project?.repoBranch ?? "main"}
-            </code>
-            . The apply job runs in the{" "}
-            <code className="rounded bg-muted px-1">production</code>{" "}
-            environment, so you can require an approval for it in GitHub.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <ul className="space-y-1.5">
-            {state?.workflows.map((workflow) => (
-              <li
-                key={workflow.path}
-                className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
-              >
-                <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="truncate font-mono text-xs">
-                  {workflow.path}
-                </span>
-                {workflow.managed ? (
-                  <span
-                    className={`ml-auto shrink-0 rounded-full border px-2 py-0.5 text-[0.65rem] font-medium ${
-                      workflow.upToDate ? "text-emerald-600" : "text-amber-600"
-                    }`}
-                  >
-                    {workflow.upToDate ? "up to date" : "needs update"}
-                  </span>
-                ) : (
-                  <span className="ml-auto shrink-0 text-[0.65rem] text-muted-foreground">
-                    your own
-                  </span>
-                )}
-              </li>
-            ))}
-            {state?.hasBackendFile === false && state.settings.stateBucket ? (
-              <li className="flex items-center gap-2 rounded-md border border-amber-500/40 px-3 py-2 text-sm">
-                <AlertCircle className="h-4 w-4 shrink-0 text-amber-600" />
-                No backend file in the repository — state would be local to each
-                run.
-              </li>
-            ) : null}
-          </ul>
-
-          <div className="flex items-center gap-2">
-            <Button
-              onClick={() => void generatePipeline()}
-              disabled={generating || !state?.settings.awsRoleArn}
-            >
-              {generating ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Committing…
-                </>
-              ) : (
-                "Generate pipeline"
-              )}
-            </Button>
-            {!state?.settings.awsRoleArn ? (
-              <span className="text-xs text-muted-foreground">
-                Set the role ARN first.
-              </span>
-            ) : null}
-          </div>
-
-          {state?.preview.map((file) => (
-            <Collapsible key={file.path} label={file.path}>
-              <CodeBlock content={file.content} label={file.path} />
-            </Collapsible>
-          ))}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Run Terraform</CardTitle>
-          <CardDescription>
-            Starts the workflow in GitHub Actions, which federates into your AWS
-            account for the length of the job. The credentials never leave the
-            runner, and every run leaves a log you can audit.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
+/**
+ * One stack, with the two ways to run it without this app.
+ *
+ * The template can be null before the wizard has derived the names it needs, in
+ * which case there is nothing honest to offer for download yet.
+ */
+function StackDetails({
+  fileName,
+  label,
+  stack,
+}: {
+  fileName: string;
+  label: string;
+  stack: DeployStackDto;
+}) {
+  return (
+    <Collapsible label={`${label} — ${stack.stackName}`}>
+      {stack.template ? (
+        <>
           <div className="flex flex-wrap items-center gap-2">
             <Button
+              onClick={() => downloadFile(fileName, stack.template ?? "")}
+              size="sm"
               variant="outline"
-              onClick={() => void startRun("plan")}
-              disabled={!ready || running !== null}
             >
-              {running === "plan" ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <PlayCircle className="mr-2 h-4 w-4" />
-              )}
-              Plan
+              <Download className="mr-2 h-3.5 w-3.5" />
+              Download template
             </Button>
-
-            {confirmApply ? (
-              <>
-                <Button
-                  variant="destructive"
-                  onClick={() => void startRun("apply")}
-                  disabled={running !== null}
-                >
-                  {running === "apply" ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <ShieldAlert className="mr-2 h-4 w-4" />
-                  )}
-                  Apply to {state?.settings.awsAccountId ?? "AWS"}
-                </Button>
-                <Button variant="ghost" onClick={() => setConfirmApply(false)}>
-                  Cancel
-                </Button>
-              </>
-            ) : (
-              <Button
-                onClick={() => setConfirmApply(true)}
-                disabled={!ready || running !== null}
-              >
-                <Rocket className="mr-2 h-4 w-4" />
-                Apply
-              </Button>
-            )}
-
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => void refreshRuns()}
-              aria-label="Refresh runs"
+            <a
+              className="inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground"
+              href={stack.consoleUrl}
+              rel="noreferrer"
+              target="_blank"
             >
-              <RefreshCw
-                className={`h-4 w-4 ${runInFlight ? "animate-spin" : ""}`}
-              />
-            </Button>
+              Or upload it in the CloudFormation console
+              <ExternalLink className="h-3 w-3" />
+            </a>
           </div>
+          <CodeBlock
+            content={stack.command}
+            label={`${label} command`}
+            language="bash"
+          />
+          <CodeBlock
+            content={stack.template}
+            label={`${label} template`}
+            language="yaml"
+          />
+        </>
+      ) : (
+        <p className="text-muted-foreground text-sm">
+          Available once the setup has derived the bucket name. Run the state
+          step in the wizard.
+        </p>
+      )}
+    </Collapsible>
+  );
+}
 
-          <p className="text-xs text-muted-foreground">
-            {ready
-              ? "Apply runs in the production environment, so GitHub can hold it for an approval before anything changes in AWS."
-              : "Fill in the AWS settings and generate the pipeline before running anything."}
-          </p>
-        </CardContent>
-      </Card>
+/** One configured value, or a dash where there is nothing to show. */
+function ConfigRow({
+  children,
+  label,
+}: {
+  children: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="mb-1 break-all font-mono text-xs sm:mb-0">{children}</dd>
+    </>
+  );
+}
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Recent runs</CardTitle>
-          <CardDescription>
-            The last GitHub Actions runs for this repository.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {state?.runsError ? (
-            <p className="text-sm text-muted-foreground">{state.runsError}</p>
-          ) : state?.runs.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No workflow has run yet.
-            </p>
-          ) : (
-            <ul className="space-y-1.5">
-              {state?.runs.map((run) => (
-                <RunRow key={run.id} run={run} />
-              ))}
-            </ul>
+interface StateBackendDto {
+  bucket: string;
+  key: string;
+  exists: boolean;
+  versioning: boolean;
+  state: { size: number; lastModified: string | null } | null;
+  problem: string | null;
+}
+
+/**
+ * What is really in the state bucket, read from S3 rather than inferred.
+ *
+ * The panel could only ever say what the last pipeline run reported, which is
+ * silence until the first one succeeds. Asking the account directly turns "is
+ * this configured correctly" into an answer while the field is still on screen.
+ */
+function StateBackendStatus({ projectId }: { projectId: string }) {
+  const [status, setStatus] = useState<StateBackendDto | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/projects/${projectId}/state-backend`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error ?? "Failed to read");
+
+      setStatus((body.status as StateBackendDto | null) ?? null);
+      setMessage(body.message ?? null);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to read");
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const create = async () => {
+    setCreating(true);
+    setMessage(null);
+
+    try {
+      const response = await fetch(`/api/projects/${projectId}/state-backend`, {
+        method: "POST",
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error ?? "Failed to create");
+      setStatus((body.status as StateBackendDto | null) ?? null);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Failed to create");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  if (!status) {
+    return message ? (
+      <p className="text-muted-foreground text-xs">{message}</p>
+    ) : null;
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      {status.exists ? (
+        <>
+          <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-muted-foreground">
+            Bucket reachable
+            {status.versioning ? ", versioned" : ", versioning off"}.
+            {status.state
+              ? ` State written ${new Date(
+                  status.state.lastModified ?? Date.now(),
+                ).toLocaleString()}.`
+              : " No state yet."}
+          </span>
+        </>
+      ) : (
+        <>
+          <AlertCircle className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-muted-foreground">
+            {status.problem ?? "That bucket does not exist yet."}
+          </span>
+          {status.problem ? null : (
+            <Button
+              className="h-6 px-2 text-xs"
+              disabled={creating}
+              onClick={() => void create()}
+              size="sm"
+              variant="outline"
+            >
+              {creating ? "Creating…" : "Create it"}
+            </Button>
           )}
-        </CardContent>
-      </Card>
+        </>
+      )}
     </div>
   );
 }
@@ -619,11 +770,11 @@ function Field({
     <div className="grid gap-2">
       <Label htmlFor={id}>{label}</Label>
       <Input
-        id={id}
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
         className="font-mono text-sm"
+        id={id}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        value={value}
       />
     </div>
   );
@@ -642,22 +793,22 @@ function RunRow({ run }: { run: WorkflowRunDto }) {
     );
 
   return (
-    <li>
+    <li className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
+      {icon}
+      <span className="truncate">{run.name}</span>
+      <span className="shrink-0 text-muted-foreground text-xs">
+        {run.event}
+      </span>
+      <span className="ml-auto shrink-0 text-muted-foreground text-xs">
+        {new Date(run.createdAt).toLocaleString()}
+      </span>
       <a
+        className="shrink-0 text-muted-foreground hover:text-foreground"
         href={run.htmlUrl}
-        target="_blank"
         rel="noreferrer"
-        className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-muted/60"
+        target="_blank"
       >
-        {icon}
-        <span className="truncate">{run.name}</span>
-        <span className="shrink-0 text-xs text-muted-foreground">
-          {run.headBranch} · {run.event}
-        </span>
-        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-          {new Date(run.createdAt).toLocaleString()}
-        </span>
-        <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground" />
+        <ExternalLink className="h-3.5 w-3.5" />
       </a>
     </li>
   );
@@ -673,20 +824,21 @@ function Collapsible({
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="rounded-lg border">
+    <div className="space-y-2">
       <button
+        aria-expanded={open}
+        className="flex items-center gap-1 text-muted-foreground text-sm hover:text-foreground"
+        onClick={() => setOpen((value) => !value)}
         type="button"
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm font-medium"
       >
         {open ? (
-          <ChevronDown className="h-4 w-4" />
+          <ChevronDown className="h-4 w-4 shrink-0" />
         ) : (
-          <ChevronRight className="h-4 w-4" />
+          <ChevronRight className="h-4 w-4 shrink-0" />
         )}
-        <span className="truncate font-mono text-xs">{label}</span>
+        {label}
       </button>
-      {open ? <div className="space-y-2 border-t p-3">{children}</div> : null}
+      {open ? <div className="space-y-3 pl-5">{children}</div> : null}
     </div>
   );
 }
@@ -702,27 +854,28 @@ function CodeBlock({
 }) {
   const [copied, setCopied] = useState(false);
 
+  const copy = async () => {
+    await navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   return (
     <div className="relative">
       <Button
-        variant="ghost"
-        size="icon"
         aria-label={`Copy ${label}`}
-        className="absolute right-1 top-1 h-7 w-7"
-        onClick={() => {
-          void navigator.clipboard.writeText(content).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          });
-        }}
+        className="absolute top-1.5 right-1.5 h-7 w-7"
+        onClick={() => void copy()}
+        size="icon"
+        variant="ghost"
       >
         {copied ? (
-          <Check className="h-3.5 w-3.5 text-emerald-600" />
+          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
         ) : (
           <Copy className="h-3.5 w-3.5" />
         )}
       </Button>
-      <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">
+      <pre className="max-h-80 overflow-auto rounded-md border bg-muted/40 p-3 text-xs">
         <code data-language={language}>{content}</code>
       </pre>
     </div>

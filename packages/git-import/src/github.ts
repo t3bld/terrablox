@@ -20,6 +20,7 @@ function mapRepo(repo: GitRepo): GitRepo {
     html_url: repo.html_url,
     description: repo.description,
     updated_at: repo.updated_at,
+    default_branch: repo.default_branch ?? null,
   };
 }
 

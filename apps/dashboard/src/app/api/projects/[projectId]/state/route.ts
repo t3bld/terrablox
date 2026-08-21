@@ -1,90 +1,30 @@
 import { NextResponse } from "next/server";
-
-import {
-  getCurrentUserId,
-  getProviderTokenForRequest,
-} from "@/lib/auth/server-helpers";
-import {
-  dispatchWorkflow,
-  GithubRequestError,
-  readRepoFile,
-} from "@/lib/github/repo-files";
-import {
-  STATE_SNAPSHOT_PATH,
-  STATE_WORKFLOW_PATH,
-} from "@/lib/projects/deploy";
+import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import { stateReadPolicy } from "@/lib/aws/connection";
+import { resolveProjectAwsSession } from "@/lib/aws/credentials";
+import { awsRouteError } from "@/lib/aws/route-error";
+import { readStateObject } from "@/lib/aws/state-backend";
+import { stateKey } from "@/lib/projects/deploy";
 import { findOwnedProject } from "@/lib/projects/service";
-import { type ProjectStateDto, parseStateSnapshot } from "@/lib/projects/state";
-
-export async function GET(
-  req: Request,
-  { params }: { params: { projectId: string } },
-) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const project = await findOwnedProject(userId, params.projectId);
-  if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  }
-
-  const token = await getProviderTokenForRequest(req, project.provider);
-  if (!token) {
-    return NextResponse.json(
-      { error: "GitHub is not connected" },
-      { status: 401 },
-    );
-  }
-
-  try {
-    const [snapshotFile, workflowFile] = await Promise.all([
-      readRepoFile(token, {
-        repoFullName: project.repoFullName,
-        path: STATE_SNAPSHOT_PATH,
-        ref: project.repoBranch,
-      }),
-      readRepoFile(token, {
-        repoFullName: project.repoFullName,
-        path: STATE_WORKFLOW_PATH,
-        ref: project.repoBranch,
-      }),
-    ]);
-
-    const snapshot = snapshotFile
-      ? parseStateSnapshot(snapshotFile.content)
-      : null;
-
-    const state: ProjectStateDto = {
-      snapshot,
-      region: project.awsRegion,
-      fileUrl: `https://github.com/${project.repoFullName}/blob/${project.repoBranch}/${STATE_SNAPSHOT_PATH}`,
-      hasWorkflow: workflowFile !== null,
-      problem:
-        snapshotFile && !snapshot
-          ? "The state snapshot could not be read. It may have been edited by hand."
-          : null,
-    };
-
-    return NextResponse.json({ state });
-  } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Failed to read state" },
-      { status: e instanceof GithubRequestError ? e.status : 500 },
-    );
-  }
-}
+import type { ProjectStateDto } from "@/lib/projects/state";
+import { parseTerraformState } from "@/lib/projects/tfstate";
 
 /**
- * Asks the pipeline for a fresh snapshot.
+ * What is actually deployed, read from the Terraform state in S3.
  *
- * TerraBlox cannot read the state bucket itself — it holds no AWS credentials —
- * so refreshing means triggering the workflow that can, and the result arrives
- * as a commit a minute or two later.
+ * The state is the only honest answer to that question — the code says what
+ * should exist, and the two drift after a failed apply or a change made in the
+ * console. It used to arrive as a summary the pipeline committed into the
+ * repository, which meant the tab was only ever as current as the last workflow
+ * run. Reading the bucket makes it current as of this request.
+ *
+ * The trade that comes with it: raw state holds generated passwords and private
+ * keys in clear text. So the session is narrowed to this one object, and the
+ * parser keeps identifiers only. Nothing but `id`, `arn` and non-sensitive
+ * outputs leaves this route.
  */
-export async function POST(
-  req: Request,
+export async function GET(
+  _req: Request,
   { params }: { params: { projectId: string } },
 ) {
   const userId = await getCurrentUserId();
@@ -97,36 +37,78 @@ export async function POST(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const token = await getProviderTokenForRequest(req, project.provider);
-  if (!token) {
-    return NextResponse.json(
-      { error: "GitHub is not connected" },
-      { status: 401 },
-    );
+  const bucket = project.stateBucket;
+  const key = stateKey(project.name);
+
+  const base: ProjectStateDto = {
+    snapshot: null,
+    region: project.awsRegion,
+    bucket,
+    key,
+    configured: bucket !== null,
+    connected: false,
+    problem: null,
+  };
+
+  if (!bucket) {
+    return NextResponse.json({
+      state: {
+        ...base,
+        problem:
+          "No state backend yet. Run the setup in the Deploy tab — it creates the encrypted bucket this reads from.",
+      },
+    });
+  }
+
+  // A session that may read this object and decrypt it with this key, and
+  // nothing else. Narrower than the default read-only cap, which cannot express
+  // kms:Decrypt at all.
+  const resolved = await resolveProjectAwsSession(
+    userId,
+    project,
+    "read",
+    stateReadPolicy({
+      bucket,
+      key,
+      kmsKeyArn: project.stateKmsKeyArn,
+    }),
+  );
+
+  if (!resolved.ok) {
+    return NextResponse.json({
+      state: { ...base, problem: resolved.message },
+    });
   }
 
   try {
-    await dispatchWorkflow(token, {
-      repoFullName: project.repoFullName,
-      workflowFile: STATE_WORKFLOW_PATH,
-      ref: project.repoBranch,
-    });
+    const object = await readStateObject(resolved.session, { bucket, key });
 
-    return NextResponse.json({ started: true });
-  } catch (e) {
-    if (e instanceof GithubRequestError && e.status === 404) {
-      return NextResponse.json(
-        {
-          error:
-            "The state workflow is not on the repository's default branch yet. Generate the pipeline in the Deploy tab first.",
+    if (!object) {
+      return NextResponse.json({
+        state: {
+          ...base,
+          connected: true,
+          problem:
+            "The bucket is reachable but holds no state yet. Run an apply in the Deploy tab.",
         },
-        { status: 409 },
-      );
+      });
     }
 
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Failed to start the refresh" },
-      { status: e instanceof GithubRequestError ? e.status : 500 },
-    );
+    const snapshot = parseTerraformState(object.body, {
+      lastModified: object.lastModified,
+    });
+
+    return NextResponse.json({
+      state: {
+        ...base,
+        connected: true,
+        snapshot,
+        problem: snapshot
+          ? null
+          : "The Terraform state could not be read. It may have been written by a newer Terraform than this supports.",
+      },
+    });
+  } catch (error) {
+    return awsRouteError(error);
   }
 }

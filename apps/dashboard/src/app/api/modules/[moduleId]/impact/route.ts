@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
+import { isBuiltin, ownedByUser, visibleToUser } from "@/lib/modules/ownership";
 import { parseScope } from "@/lib/terraform/delete-scope";
 
 /**
@@ -34,13 +35,26 @@ export async function GET(
     );
   }
 
+  // Visibility, then the same builtin refusal the DELETE handler gives. Without
+  // it a builtin would 404 here and the dialog would report a load failure for
+  // something that is simply not deletable.
   const mod = await database.terraformModule.findFirst({
-    where: { id: moduleId, userId },
-    select: { id: true, sourceId: true },
+    where: { id: moduleId, ...visibleToUser(userId) },
+    select: { id: true, sourceId: true, userId: true },
   });
 
   if (!mod) {
     return NextResponse.json({ error: "Module not found" }, { status: 404 });
+  }
+
+  if (isBuiltin(mod)) {
+    return NextResponse.json(
+      {
+        error:
+          "This module ships with TerraBlox and cannot be deleted. Every user shares it.",
+      },
+      { status: 403 },
+    );
   }
 
   // Mirrors the target selection in the DELETE handler, so the warning can
@@ -48,11 +62,14 @@ export async function GET(
   const targets =
     scope === "module" && mod.sourceId
       ? await database.terraformModule.findMany({
-          where: { userId, sourceId: mod.sourceId },
+          where: { ...ownedByUser(userId), sourceId: mod.sourceId },
           select: { id: true, isSubmodule: true },
         })
       : await database.terraformModule.findMany({
-          where: { userId, OR: [{ id: mod.id }, { parentModuleId: mod.id }] },
+          where: {
+            ...ownedByUser(userId),
+            OR: [{ id: mod.id }, { parentModuleId: mod.id }],
+          },
           select: { id: true, isSubmodule: true },
         });
 
@@ -65,7 +82,11 @@ export async function GET(
     }),
     mod.sourceId
       ? database.terraformModule.count({
-          where: { userId, sourceId: mod.sourceId, id: { notIn: targetIds } },
+          where: {
+            ...ownedByUser(userId),
+            sourceId: mod.sourceId,
+            id: { notIn: targetIds },
+          },
         })
       : Promise.resolve(0),
   ]);

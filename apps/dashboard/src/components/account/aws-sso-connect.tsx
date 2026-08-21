@@ -19,7 +19,8 @@ import { readJson } from "@/lib/read-json";
 /**
  * Signing in with IAM Identity Center to set up an account in one go.
  *
- * The sign-in is spent immediately on creating the read role and then dropped.
+ * The sign-in creates the read role and is dropped, unless this instance has no
+ * AWS identity of its own — then the sign-in itself is the connection.
  * TerraBlox keeps no AWS session after setup.
  */
 
@@ -30,6 +31,8 @@ interface ConnectionView {
   roleArn: string;
   region: string;
   externalId: string;
+  credentialMode: string;
+  sessionExpiresAt: string | null;
   verifiedAt: string | null;
   lastError: string | null;
   template: string;
@@ -59,8 +62,11 @@ type Stage =
 
 export function AwsSsoConnect({
   onConnected,
+  usesSessionOnly = false,
 }: {
   onConnected: (connection: ConnectionView) => void;
+  /** True when the app has no AWS identity and will keep this sign-in instead. */
+  usesSessionOnly?: boolean;
 }) {
   const [stage, setStage] = useState<Stage>({ name: "idle" });
   const [startUrl, setStartUrl] = useState("");
@@ -409,12 +415,22 @@ export function AwsSsoConnect({
           </div>
 
           <p className="text-muted-foreground text-xs">
-            TerraBlox creates a CloudFormation stack called{" "}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono">
-              terrablox-read-access
-            </code>{" "}
-            holding one read-only role, then forgets this sign-in. Delete the
-            stack to revoke access.
+            {usesSessionOnly ? (
+              <>
+                TerraBlox keeps this sign-in and uses it to reach the account,
+                creating nothing there. Disconnect the account, or let the
+                session run out, to revoke access.
+              </>
+            ) : (
+              <>
+                TerraBlox creates a CloudFormation stack called{" "}
+                <code className="rounded bg-muted px-1 py-0.5 font-mono">
+                  terrablox-read-access
+                </code>{" "}
+                holding one read-only role, then forgets this sign-in. Delete
+                the stack to revoke access.
+              </>
+            )}
           </p>
 
           <div className="flex gap-2">

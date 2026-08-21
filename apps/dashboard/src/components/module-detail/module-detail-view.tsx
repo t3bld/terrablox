@@ -11,20 +11,18 @@ import {
   FileText,
   GitBranch,
   LayoutGrid,
-  Network,
   Package,
   Wallet,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
 import { TabsNav, tabPanelProps } from "@/components/layout/tabs-nav";
 import { ModuleActionsMenu } from "@/components/module-actions/module-actions-menu";
 import { ArchitectureTab } from "@/components/module-detail/architecture-tab";
-import { ConnectionsTab } from "@/components/module-detail/connections-tab";
 import { CostsTab } from "@/components/module-detail/costs-tab";
 import { DependenciesTab } from "@/components/module-detail/dependencies-tab";
 import { ReadmeTab } from "@/components/module-detail/readme-tab";
@@ -39,34 +37,40 @@ import {
 } from "@/components/module-detail/types";
 import { VariablesTab } from "@/components/module-detail/variables-tab";
 import { VersionSwitcher } from "@/components/module-detail/version-switcher";
+import { ModuleIcon } from "@/components/module-icon";
+import { githubFileUrl } from "@/lib/terraform/resource-label";
 import { useHashTab } from "@/lib/use-hash-tab";
 
 type TabKey =
   | "readme"
-  | "variables"
-  | "dependencies"
   | "architecture"
-  | "connections"
-  | "resources"
   | "costs"
+  | "dependencies"
+  | "resources"
+  | "variables"
   | "code";
 
+/** Listed in the order they appear on the bar; `code` sits off it, see below. */
 const TAB_KEYS: readonly TabKey[] = [
   "readme",
-  "variables",
-  "dependencies",
   "architecture",
-  "connections",
-  "resources",
   "costs",
+  "dependencies",
+  "resources",
+  "variables",
   "code",
 ];
 
-/** Links handed out while inputs and outputs were separate tabs. */
+/** Fragments from tabs that have since been merged or renamed. */
 const TAB_ALIASES: Readonly<Record<string, TabKey>> = {
   inputs: "variables",
   outputs: "variables",
   source: "code",
+  // Connections was folded into the architecture graph as its Detail level,
+  // then dropped: it drew every Terraform block as an equal card, which the
+  // Resources tab already lists more legibly. The alias stays so an existing
+  // `#connections` link lands on the diagram rather than silently on the README.
+  connections: "architecture",
 };
 
 const README_CANDIDATES = [
@@ -229,6 +233,25 @@ export function ModuleDetailView({
     };
   }, [tab, repoRef, mod.terraformRootFolder, readmeMd, readmeError]);
 
+  /**
+   * Where one of this module's files can be read on GitHub.
+   *
+   * Built here because it needs all three of the clone URL, the imported ref and
+   * the analysed root folder — `sourceFile` is recorded relative to that folder,
+   * not to the repository. The architecture panel takes this as a function so it
+   * never has to know any of that.
+   */
+  const architectureFileUrl = useCallback(
+    (sourceFile: string) =>
+      githubFileUrl({
+        cloneUrl: mod.source?.url,
+        file: sourceFile,
+        ref: mod.versionTag,
+        rootFolder: mod.terraformRootFolder,
+      }),
+    [mod.source?.url, mod.versionTag, mod.terraformRootFolder],
+  );
+
   const variables = useMemo(() => parseVariables(mod.variables), [mod]);
   const outputs = useMemo(() => parseOutputs(mod.outputs), [mod]);
 
@@ -281,6 +304,7 @@ export function ModuleDetailView({
               />
 
               <ModuleActionsMenu
+                canDelete={!mod.isBuiltin}
                 deleteOnly
                 module={{
                   id: mod.id,
@@ -302,9 +326,21 @@ export function ModuleDetailView({
         <main className="space-y-4 p-4">
           <section className="rounded-lg border bg-card p-4">
             {/* The name lives in the header; repeating it here would give
-                the page two titles. */}
-            <div className="flex items-start justify-between gap-4">
-              <p className="min-w-0 text-sm leading-6 break-words">
+                the page two titles. The icon goes next to the description
+                instead — it belongs to the repository, and this is the first
+                block on the page that is about the repository. */}
+            <div className="flex items-start gap-3">
+              <ModuleIcon
+                className="h-10 w-10"
+                icon={{
+                  sourceId: mod.sourceId,
+                  iconMode: mod.source?.iconMode ?? "repo",
+                  hasIcon: Boolean(mod.source?.iconUrl),
+                  iconName: mod.source?.iconName ?? null,
+                }}
+              />
+
+              <p className="min-w-0 flex-1 text-sm leading-6 break-words">
                 {mod.isSubmodule ? (
                   <Badge variant="outline" className="mr-2 align-middle">
                     Submodule
@@ -344,15 +380,22 @@ export function ModuleDetailView({
                     target="_blank"
                   >
                     <ExternalLink className="h-3.5 w-3.5 shrink-0" />
-                    <span className="truncate">{mod.source.name}</span>
+                    {/* The repository's own name, not the module's display name.
+                        A link labelled "SQS" pointing at terrablox-aws-sqs hides
+                        the one fact this row exists to give. */}
+                    <span className="truncate">
+                      {repoRef?.repo ?? mod.source.name}
+                    </span>
                   </a>
                 ) : (
                   <span className="text-muted-foreground">(none)</span>
                 )}
               </InfoField>
 
-              <InfoField label="Tags">
-                {mod.source?.tags?.length ? (
+              {/* Dropped entirely when there are none. A row reading "No tags."
+                  spends a column of the header saying nothing. */}
+              {mod.source?.tags?.length ? (
+                <InfoField label="Tags">
                   <div className="flex flex-wrap gap-1.5">
                     {mod.source.tags.map((t) => (
                       <Badge key={t} variant="outline">
@@ -360,10 +403,8 @@ export function ModuleDetailView({
                       </Badge>
                     ))}
                   </div>
-                ) : (
-                  <span className="text-muted-foreground">No tags.</span>
-                )}
-              </InfoField>
+                </InfoField>
+              ) : null}
             </div>
 
             {/* A submodule lists its siblings, a root module its children;
@@ -402,22 +443,11 @@ export function ModuleDetailView({
             tabs={[
               { value: "readme", label: "Readme", icon: FileText },
               {
-                value: "variables",
-                label: "Variables",
-                icon: ArrowRightLeft,
-                count: variables.length + outputs.length,
-              },
-              {
                 value: "architecture",
                 label: "Architecture",
                 icon: LayoutGrid,
               },
-              {
-                value: "connections",
-                label: "Connections",
-                icon: Network,
-                count: mod.references?.length ?? 0,
-              },
+              { value: "costs", label: "Costs", icon: Wallet },
               {
                 value: "dependencies",
                 label: "Dependencies",
@@ -430,8 +460,16 @@ export function ModuleDetailView({
                 icon: Boxes,
                 count: mod.resources?.length ?? 0,
               },
-              { value: "costs", label: "Costs", icon: Wallet },
-              { value: "code", label: "Code", icon: FileText },
+              {
+                value: "variables",
+                label: "Variables",
+                icon: ArrowRightLeft,
+                count: variables.length + outputs.length,
+              },
+              // No `code` entry: the file browser is off the tab bar. Everything
+              // behind it is left standing — the tab key, the `source` alias and
+              // the panel below still work — so `#code` in a URL opens it and
+              // putting it back is one line.
             ]}
             value={tab}
             onChange={setTab}
@@ -464,15 +502,7 @@ export function ModuleDetailView({
             {tab === "architecture" ? (
               <ArchitectureTab
                 dependencies={mod.dependencies ?? []}
-                moduleId={mod.id}
-                references={mod.references ?? []}
-                resources={mod.resources ?? []}
-              />
-            ) : null}
-
-            {tab === "connections" ? (
-              <ConnectionsTab
-                dependencies={mod.dependencies ?? []}
+                fileUrl={architectureFileUrl}
                 moduleId={mod.id}
                 references={mod.references ?? []}
                 resources={mod.resources ?? []}

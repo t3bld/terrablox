@@ -13,6 +13,8 @@ export function toProjectDto(project: Project): ProjectDto {
     repoBranch: project.repoBranch,
     terraformRootFolder: project.terraformRootFolder,
     terraformEntryFile: project.terraformEntryFile,
+    appRepoFullName: project.appRepoFullName,
+    appRepoBranch: project.appRepoBranch,
     lastSyncedSha: project.lastSyncedSha,
     lastSyncedAt: project.lastSyncedAt?.toISOString() ?? null,
     createdAt: project.createdAt.toISOString(),

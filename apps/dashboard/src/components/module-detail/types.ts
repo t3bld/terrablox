@@ -19,6 +19,11 @@ export interface ModuleOutputDto {
   name: string;
   description: string | null;
   sensitive?: boolean;
+  /**
+   * The `value` expression as written. An output declares no type, so this is
+   * what {@link inferOutputType} reads to work one out.
+   */
+  valueExpression?: string | null;
   file?: string | null;
 }
 
@@ -30,6 +35,11 @@ export interface ModuleResourceDto {
   resourceName: string | null;
   version: string | null;
   sourceFile: string | null;
+  /**
+   * The `count`/`for_each` expression guarding this block, or null when it is
+   * always created. Null also on modules imported before this was recorded.
+   */
+  conditionalOn: string | null;
   resourceUrl: string | null;
   providerUrl: string | null;
   resourceDescription: string | null;
@@ -78,6 +88,15 @@ export interface ModuleSourceDto {
   tags: string[];
   url: string;
   provider: string;
+  /** Which icon source the module shows: `repo`, `aws` or `none`. */
+  iconMode: string;
+  /** A bundled AWS icon chosen at import, without the extension. */
+  iconName: string | null;
+  /**
+   * Presence is all the client needs — the bytes are fetched through our own
+   * proxy, which is the only thing that can reach a private repository's raw URL.
+   */
+  iconUrl: string | null;
 }
 
 export interface ModuleDetailDto {
@@ -89,6 +108,11 @@ export interface ModuleDetailDto {
   sourceId: string | null;
   terraformRootFolder: string | null;
   isSubmodule: boolean;
+  /**
+   * Part of the catalogue TerraBlox ships with: shared by every user, owned by
+   * none, and not deletable. Drives the badge and the absent actions menu.
+   */
+  isBuiltin: boolean;
   submoduleName: string | null;
   parentModuleId: string | null;
   variables: unknown;
@@ -144,6 +168,7 @@ export function parseOutputs(value: unknown): ModuleOutputDto[] {
     name: asString(o["name"]) ?? "",
     description: asString(o["description"]),
     sensitive: o["sensitive"] === true,
+    valueExpression: asString(o["valueExpression"]),
     file: asString(o["file"]),
   }));
 }

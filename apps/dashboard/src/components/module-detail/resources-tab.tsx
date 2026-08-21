@@ -5,9 +5,14 @@ import { useMemo, useState } from "react";
 
 import { serviceOfResource } from "@/lib/terraform/aws-services";
 import {
+  isConventionalResourceName,
+  sortResourceNames,
+} from "@/lib/terraform/resource-label";
+import {
   EmptyMessage,
   FieldList,
   LinkRow,
+  ResourceNames,
   SearchField,
 } from "./field-primitives";
 import type { ModuleResourceDto } from "./types";
@@ -28,7 +33,11 @@ interface ResourcesTabProps {
 interface TypeRow {
   key: string;
   resourceType: string;
-  /** Block names, e.g. `cpu_scaling`. Empty when a block carries no name. */
+  /**
+   * Every block label of this type, conventions included, ordered by
+   * {@link sortResourceNames}. Emptied only for a lone block whose label says
+   * nothing — see {@link labelIsInformative}.
+   */
   names: string[];
   count: number;
   docsUrl: string | null;
@@ -44,6 +53,37 @@ interface ServiceGroup {
 
 const DATA_GROUP = "Data sources";
 
+/**
+ * Labels Terraform authors use when there is nothing to distinguish.
+ *
+ * `resource "aws_iam_role" "this"` and `data "aws_region" "current"` exist
+ * because HCL demands a second label, not because they name anything.
+ *
+ * Held to these two on purpose. Terraform defines no set of meaningless
+ * labels, so every further entry would be a guess about another author's
+ * intent, and `default` shows how that goes wrong: filler on
+ * `aws_default_route_table`, the actual AWS concept on `aws_elasticache_user`.
+ * Redundancy against the type is the part that generalises, and that is
+ * {@link labelIsInformative}.
+ */
+const CONVENTIONAL_NAMES = new Set(["this", "current"]);
+
+/**
+ * Whether a block label tells the reader anything its type has not said.
+ *
+ * `aws_iam_policy.policy` and `aws_elasticache_subnet_group.elasticache` spend
+ * a line repeating words that are already in the headline. Compared token-wise
+ * rather than as substrings, so `aws_elasticache_user.default` survives —
+ * `default` is not a word in that type and so may well carry meaning.
+ */
+function labelIsInformative(name: string, resourceType: string): boolean {
+  const label = name.toLowerCase();
+  if (CONVENTIONAL_NAMES.has(label)) return false;
+
+  const typeTokens = new Set(resourceType.toLowerCase().split("_"));
+  return label.split("_").some((token) => !typeTokens.has(token));
+}
+
 function foldByType(resources: ModuleResourceDto[]): TypeRow[] {
   const rows = new Map<string, TypeRow>();
 
@@ -52,9 +92,15 @@ function foldByType(resources: ModuleResourceDto[]): TypeRow[] {
     const key = `${isData ? "data." : ""}${resource.resourceType}`;
     const existing = rows.get(key);
 
+    // Every label is collected, conventions included. Filtering here is what
+    // made `aws_ssm_parameter` badged `2` list only `ignore_value` and drop the
+    // `this` beside it. Whether a label is worth showing depends on how many
+    // blocks the type has, which is not known until the fold is finished.
+    const name = resource.resourceName?.trim();
+
     if (existing) {
       existing.count += 1;
-      if (resource.resourceName) existing.names.push(resource.resourceName);
+      if (name) existing.names.push(name);
       // The first block of a type may carry neither, so take the first that does.
       existing.docsUrl ??= resource.resourceUrl;
       existing.description ??= resource.resourceDescription;
@@ -64,7 +110,7 @@ function foldByType(resources: ModuleResourceDto[]): TypeRow[] {
     rows.set(key, {
       key,
       resourceType: resource.resourceType,
-      names: resource.resourceName ? [resource.resourceName] : [],
+      names: name ? [name] : [],
       count: 1,
       docsUrl: resource.resourceUrl,
       description: resource.resourceDescription,
@@ -72,7 +118,21 @@ function foldByType(resources: ModuleResourceDto[]): TypeRow[] {
   }
 
   for (const row of rows.values()) {
-    row.names.sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+    row.names = sortResourceNames(row.names);
+
+    // Only for a lone block: several labels of the same type are what tells them
+    // apart, so all of them stay even when each one on its own says little.
+    // Keyed on the block count rather than on how many labels were collected —
+    // those two used to be the same number, and treating them as one is how a
+    // conventional label went missing from a type that had two blocks.
+    const only = row.count === 1 ? row.names[0] : undefined;
+    if (
+      only &&
+      (isConventionalResourceName(only) ||
+        !labelIsInformative(only, row.resourceType))
+    ) {
+      row.names = [];
+    }
   }
 
   return [...rows.values()].sort(
@@ -157,7 +217,7 @@ export function ResourcesTab({ resources }: ResourcesTabProps) {
     <div className="space-y-4">
       <SearchField
         onChange={setQuery}
-        placeholder="Filter resources..."
+        placeholder="Filter resources"
         value={query}
       />
 
@@ -198,11 +258,10 @@ export function ResourcesTab({ resources }: ResourcesTabProps) {
                     ) : null}
                   </div>
 
-                  {row.names.length > 0 ? (
-                    <p className="mt-1 break-words font-mono text-xs text-muted-foreground">
-                      {row.names.join(", ")}
-                    </p>
-                  ) : null}
+                  <ResourceNames
+                    names={row.names}
+                    resourceType={row.resourceType}
+                  />
 
                   {row.description ? (
                     <p className="mt-1 text-sm text-muted-foreground">

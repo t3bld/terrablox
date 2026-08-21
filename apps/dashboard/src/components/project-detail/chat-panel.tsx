@@ -4,7 +4,6 @@ import { Button } from "@terrablox/ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@terrablox/ui/dialog";
@@ -15,27 +14,42 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
+  Loader2,
   PanelRightClose,
   Send,
   Settings2,
   User,
   Wrench,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AgentHarness } from "@/components/agent/agent-harness";
 import type {
   AgentStep,
   ProjectChatMessageDto,
   ProjectGraph,
 } from "@/lib/projects/types";
-import { AgentSettingsPanel } from "./agent-settings-panel";
+import { AgentMarkdown } from "./agent-markdown";
 import { ChatModelPicker, type ModelSelection } from "./chat-model-picker";
 
-/** Overridden per turn from the composer; these are only the starting point. */
-const DEFAULT_SELECTION: ModelSelection = {
-  model: "claude-opus-5",
-  reasoningEffort: "high",
+/**
+ * What the composer shows before this project's settings have loaded.
+ *
+ * Deliberately not a real model id: it is replaced within one request, and a
+ * plausible-looking id here is a value someone could send a turn with by being
+ * quick, without it ever having been chosen.
+ */
+const UNKNOWN_SELECTION: ModelSelection = {
+  model: "",
+  reasoningEffort: "",
 };
+
+/**
+ * How often the running turn is asked what it is doing, in ms.
+ *
+ * Matched to the interval the server writes progress at, since polling faster
+ * than that only re-reads the same trail.
+ */
+const STATUS_POLL_INTERVAL_MS = 2_000;
 
 interface ChatPanelProps {
   projectId: string;
@@ -61,32 +75,220 @@ export function ChatPanel({
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selection, setSelection] = useState<ModelSelection>(DEFAULT_SELECTION);
+  const [selection, setSelection] = useState<ModelSelection>(UNKNOWN_SELECTION);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** This project's stored overrides, so a save can resend the ones it is not changing. */
+  const overridesRef = useRef<Record<string, unknown>>({});
+  /**
+   * Premium requests left, as a percentage.
+   *
+   * Next to the composer because that is where the spending happens. Null when
+   * GitHub reports no metered budget — an unlimited plan, or the undocumented
+   * endpoint changing shape — and then nothing is shown rather than a zero.
+   */
+  const [creditsLeft, setCreditsLeft] = useState<number | null>(null);
+  /** The running turn's trail, refreshed by the status poll. */
+  const [liveSteps, setLiveSteps] = useState<AgentStep[]>([]);
 
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Watches for the turn to finish, for a turn this tab did not start.
+   *
+   * The running flag lives on the project rather than in this component, so a
+   * reload or a detour to another page still comes back to a spinner. Polling is
+   * how that spinner learns it can stop.
+   */
+  const startPolling = useCallback(
+    /**
+     * `ownTurn` marks the case where this tab is the one waiting on the POST.
+     * Then the poll reports progress only: completion is the awaited response's
+     * job, and treating a not-yet-`true` flag as "finished" would end the turn in
+     * the UI moments after starting it.
+     */
+    (options?: { ownTurn?: boolean }) => {
+      stopPolling();
+
+      pollRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/projects/${projectId}/chat/status`);
+          if (!res.ok) return;
+          const body = await res.json();
+
+          if (body.running !== false || options?.ownTurn) {
+            // Progress for the panel below the transcript. Same poll: what the
+            // turn is doing and whether it still runs are one answer.
+            setLiveSteps(Array.isArray(body.steps) ? body.steps : []);
+            return;
+          }
+
+          stopPolling();
+          setLiveSteps([]);
+
+          // Re-read the transcript rather than trusting the poll: the reply was
+          // written by whichever request ran the turn, not by this one.
+          const msgRes = await fetch(`/api/projects/${projectId}/chat`);
+          if (msgRes.ok) {
+            const msgBody = await msgRes.json();
+            setMessages(msgBody.messages ?? []);
+          }
+          setSending(false);
+        } catch {
+          // Swallowed: polling is best-effort.
+        }
+      }, STATUS_POLL_INTERVAL_MS);
+    },
+    [projectId, stopPolling],
+  );
+
+  /**
+   * Reads the model and effort this project is set to.
+   *
+   * The composer used to start from a hardcoded pair, which meant the settings
+   * screen and the picker two centimetres below it could disagree about what the
+   * next turn would run on. There is one answer now, and it comes from the
+   * project — so `?projectId=` matters: the same request without it would report
+   * the user's defaults, which is what a *new* project would inherit, not what
+   * this one uses.
+   */
+  const loadSelection = useCallback(async () => {
+    try {
+      const response = await fetch(
+        `/api/agent/context?projectId=${encodeURIComponent(projectId)}`,
+      );
+      if (!response.ok) return;
+
+      const body = (await response.json()) as {
+        model: string | null;
+        reasoningEffort: string | null;
+        defaults: { model: string; reasoningEffort: string };
+        overrides?: Record<string, unknown>;
+      };
+
+      overridesRef.current = body.overrides ?? {};
+
+      setSelection({
+        model: body.model ?? body.defaults.model,
+        reasoningEffort: body.reasoningEffort ?? body.defaults.reasoningEffort,
+      });
+    } catch {
+      // The picker keeps showing nothing and `send` refuses; better than
+      // inventing a model the user never chose.
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void loadSelection();
+  }, [loadSelection]);
+
+  // Re-read after every turn as well as on mount: the number the composer shows
+  // is only useful if it moves when requests are spent.
+  useEffect(() => {
+    if (sending) return;
+
+    let cancelled = false;
+
+    fetch("/api/copilot/status")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        if (cancelled) return;
+        const premium = body?.plan?.premium;
+        setCreditsLeft(
+          premium &&
+            !premium.unlimited &&
+            typeof premium.percentRemaining === "number"
+            ? Math.round(premium.percentRemaining)
+            : null,
+        );
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sending]);
+
+  /**
+   * Persists a change made in the composer to this project.
+   *
+   * The picker is no longer a per-turn override. Two controls for one decision,
+   * one of them forgetting on reload, is the thing that made them look
+   * disconnected in the first place.
+   */
+  const changeSelection = useCallback(
+    (next: ModelSelection) => {
+      setSelection(next);
+
+      void fetch(`/api/projects/${projectId}/agent-settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        // The endpoint replaces the whole override object, so the rest of it —
+        // the timeout, the knowledge and operation deny lists — has to be sent
+        // back untouched. Sending only the two fields would silently reset them.
+        body: JSON.stringify({
+          ...overridesRef.current,
+          model: next.model,
+          reasoningEffort: next.reasoningEffort,
+        }),
+      })
+        .then(() => loadSelection())
+        .catch(() => undefined);
+    },
+    [projectId, loadSelection],
+  );
+
+  // Load messages and check if the agent is already running (e.g. after a
+  // navigation away and back while a turn was in-flight).
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
 
-    fetch(`/api/projects/${projectId}/chat`)
-      .then(async (res) => {
+    Promise.all([
+      fetch(`/api/projects/${projectId}/chat`).then(async (res) => {
         const body = await res.json();
         if (!res.ok) throw new Error(body?.error ?? "Failed to load messages");
-        if (!cancelled) setMessages(body.messages ?? []);
+        return (body.messages ?? []) as ProjectChatMessageDto[];
+      }),
+      fetch(`/api/projects/${projectId}/chat/status`).then(async (res) => {
+        if (!res.ok) return null;
+        const body = await res.json();
+        return body.running === true
+          ? {
+              steps: (Array.isArray(body.steps)
+                ? body.steps
+                : []) as AgentStep[],
+            }
+          : null;
+      }),
+    ])
+      .then(([msgs, inFlight]) => {
+        if (cancelled) return;
+        setMessages(msgs);
+        if (inFlight) {
+          // Arriving mid-turn shows the progress so far rather than starting the
+          // trail over from whatever happens next.
+          setSending(true);
+          setLiveSteps(inFlight.steps);
+          startPolling();
+        }
       })
-      .catch(() => {
-        // A missing transcript must not block the canvas; the user can still
-        // send a message, which reports its own errors.
-      })
+      .catch(() => {})
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
 
     return () => {
       cancelled = true;
+      stopPolling();
     };
-  }, [projectId]);
+  }, [projectId, startPolling, stopPolling]);
 
   useEffect(() => {
     if (messages.length === 0) return;
@@ -96,10 +298,30 @@ export function ChatPanel({
   async function send() {
     const message = input.trim();
     if (!message || sending) return;
+    // The project's settings decide the model, so a turn before they have loaded
+    // would run on whatever the server falls back to rather than on the choice
+    // the user can see. It is a matter of one request.
+    if (!selection.model) return;
 
     setSending(true);
     setError(null);
     setInput("");
+    // The POST below is awaited for the whole turn, so the progress the panel
+    // shows in the meantime has to come from somewhere else.
+    setLiveSteps([]);
+    startPolling({ ownTurn: true });
+
+    // Optimistic: show the user's message immediately, before the server
+    // responds. The id is temporary — it will be replaced by the real one
+    // when the POST returns.
+    const optimisticMsg: ProjectChatMessageDto = {
+      id: `pending-${Date.now()}`,
+      role: "user",
+      content: message,
+      metadata: {},
+      createdAt: new Date().toISOString(),
+    };
+    setMessages((current) => [...current, optimisticMsg]);
 
     try {
       const response = await fetch(`/api/projects/${projectId}/chat`, {
@@ -114,10 +336,13 @@ export function ChatPanel({
 
       const body = await response.json();
 
-      // Failed turns still return the stored messages, so the transcript stays
-      // truthful about what was asked and what went wrong.
       if (body?.messages) {
-        setMessages((current) => [...current, ...body.messages]);
+        // Replace the optimistic message with the server's pair (user +
+        // assistant). The optimistic message has a `pending-` id prefix.
+        setMessages((current) => [
+          ...current.filter((m) => !m.id.startsWith("pending-")),
+          ...body.messages,
+        ]);
       }
 
       if (!response.ok) {
@@ -131,6 +356,8 @@ export function ChatPanel({
       );
     } finally {
       setSending(false);
+      stopPolling();
+      setLiveSteps([]);
     }
   }
 
@@ -155,20 +382,22 @@ export function ChatPanel({
       </div>
 
       {/* A modal, not a tab: tuning the agent is a short detour from the
-          conversation the settings apply to, and the dialog keeps it in view. */}
+          conversation the settings apply to, and the dialog keeps it in view.
+          The same harness view as the settings screen, so there is one picture of
+          the agent rather than two that can disagree. */}
       <Dialog onOpenChange={setSettingsOpen} open={settingsOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-h-[92vh] w-[95vw] max-w-6xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Agent settings for this project</DialogTitle>
-            <DialogDescription>
-              Each setting follows your global agent settings until you take it
-              over here. Only this project is affected.
-            </DialogDescription>
+            <DialogTitle>Agent Harness</DialogTitle>
           </DialogHeader>
 
-          <div className="max-h-[65vh] overflow-y-auto pr-1">
-            <AgentSettingsPanel projectId={projectId} />
-          </div>
+          {/* Scoped to this project: the same view, but every change here is an
+              override on this project rather than an edit to the defaults. The
+              callback is what keeps the composer's picker in step. */}
+          <AgentHarness
+            onChanged={() => void loadSelection()}
+            projectId={projectId}
+          />
         </DialogContent>
       </Dialog>
 
@@ -188,11 +417,7 @@ export function ChatPanel({
             <ChatBubble key={message.id} message={message} />
           ))
         )}
-        {sending ? (
-          <p className="text-xs text-muted-foreground">
-            The agent is thinking…
-          </p>
-        ) : null}
+        {sending ? <LiveSteps steps={liveSteps} /> : null}
         <div ref={bottomRef} />
       </div>
 
@@ -231,8 +456,8 @@ export function ChatPanel({
         </div>
         <div className="flex items-center gap-1.5">
           <ChatModelPicker
-            disabled={sending}
-            onChange={setSelection}
+            disabled={sending || !selection.model}
+            onChange={changeSelection}
             value={selection}
           />
           <Button
@@ -240,11 +465,22 @@ export function ChatPanel({
             size="icon"
             className="h-8 w-8 shrink-0"
             onClick={() => setSettingsOpen(true)}
-            aria-label="Agent settings for this project"
-            title="Settings"
+            aria-label="Agent settings"
+            title="Agent settings"
           >
             <Settings2 className="h-4 w-4" />
           </Button>
+
+          {creditsLeft !== null ? (
+            <span
+              className={`ml-auto shrink-0 pl-1 text-xs tabular-nums ${
+                creditsLeft <= 10 ? "text-destructive" : "text-muted-foreground"
+              }`}
+              title="Premium requests left on your Copilot plan"
+            >
+              {creditsLeft}%
+            </span>
+          ) : null}
         </div>
       </div>
     </div>
@@ -273,12 +509,21 @@ function ChatBubble({ message }: { message: ProjectChatMessageDto }) {
       <div
         className={`flex max-w-[85%] flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}
       >
+        {/* The user's own text is shown exactly as typed; only the agent writes
+            markdown, and rendering a person's asterisks would change what they
+            said. */}
         <div
-          className={`whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
-            isUser ? "bg-primary text-primary-foreground" : "bg-muted"
+          className={`min-w-0 rounded-lg px-3 py-2 text-sm ${
+            isUser
+              ? "whitespace-pre-wrap bg-primary text-primary-foreground"
+              : "bg-muted"
           }`}
         >
-          {message.content}
+          {isUser ? (
+            message.content
+          ) : (
+            <AgentMarkdown>{message.content}</AgentMarkdown>
+          )}
         </div>
 
         {steps.length > 0 ? (
@@ -301,35 +546,86 @@ function ChatBubble({ message }: { message: ProjectChatMessageDto }) {
             {showSteps ? (
               <ol className="mt-1 space-y-1.5 rounded-md border bg-background p-2">
                 {steps.map((step, index) => (
-                  <li
+                  <StepRow
                     key={`${index}-${step.kind === "thought" ? step.text : step.summary}`}
-                    className="flex gap-2 text-xs"
-                  >
-                    {step.kind === "thought" ? (
-                      <>
-                        <Brain className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-                        <span className="text-muted-foreground">
-                          {step.text}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        {step.ok ? (
-                          <Wrench className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-                        ) : (
-                          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
-                        )}
-                        <span className={step.ok ? "" : "text-destructive"}>
-                          {step.summary}
-                        </span>
-                      </>
-                    )}
-                  </li>
+                    step={step}
+                  />
                 ))}
               </ol>
             ) : null}
           </div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One entry of the trail. Shared by the finished message and the live progress
+ * panel so a step does not change appearance the moment the turn ends.
+ */
+function StepRow({ step }: { step: AgentStep }) {
+  if (step.kind === "thought") {
+    return (
+      <li className="flex gap-2 text-xs">
+        <Brain className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+        <span className="text-muted-foreground">{step.text}</span>
+      </li>
+    );
+  }
+
+  return (
+    <li className="flex gap-2 text-xs">
+      {step.ok ? (
+        <Wrench className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+      ) : (
+        <AlertCircle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
+      )}
+      <span className={step.ok ? "" : "text-destructive"}>{step.summary}</span>
+    </li>
+  );
+}
+
+/**
+ * What the agent has done so far, while it is still doing it.
+ *
+ * Replaces a bare spinner. On a long turn the spinner was the only sign of life
+ * for minutes at a time, and a user cannot tell a thinking agent from a stuck one
+ * by looking at the same animation either way.
+ *
+ * The newest step sits at the bottom next to the spinner, so the panel reads
+ * downwards like the transcript it is part of, and older ones scroll away rather
+ * than pushing the composer off the screen.
+ */
+function LiveSteps({ steps }: { steps: AgentStep[] }) {
+  const endRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (steps.length === 0) return;
+    endRef.current?.scrollIntoView({ block: "nearest" });
+  }, [steps.length]);
+
+  return (
+    <div className="rounded-md border bg-background p-2">
+      {steps.length > 0 ? (
+        <ol className="max-h-40 space-y-1.5 overflow-y-auto">
+          {steps.map((step, index) => (
+            <StepRow
+              key={`${index}-${step.kind === "thought" ? step.text : step.summary}`}
+              step={step}
+            />
+          ))}
+          <div ref={endRef} />
+        </ol>
+      ) : null}
+
+      <div
+        className={`flex items-center gap-2 text-xs text-muted-foreground ${
+          steps.length > 0 ? "mt-2 border-t pt-2" : ""
+        }`}
+      >
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        {steps.length > 0 ? "Working…" : "The agent is working…"}
       </div>
     </div>
   );

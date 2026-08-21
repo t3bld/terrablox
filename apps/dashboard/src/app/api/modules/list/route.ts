@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { sortVersionsDesc } from "@/lib/terraform/versions";
+import { isBuiltin, visibleToUser } from "@/lib/modules/ownership";
+import { pickDefaultVersion, sortVersionsDesc } from "@/lib/terraform/versions";
 
 /**
  * Lists modules grouped by repository.
@@ -20,7 +21,7 @@ export async function GET() {
   }
 
   const modules = await database.terraformModule.findMany({
-    where: { userId },
+    where: visibleToUser(userId),
     include: { source: true },
   });
 
@@ -50,6 +51,18 @@ export async function GET() {
     tags: string[];
     url: string | null;
     provider: string | null;
+    /** Which icon source the module shows: `repo`, `aws` or `none`. */
+    iconMode: string;
+    /** True when the repository ships its own icon; served through our proxy. */
+    hasIcon: boolean;
+    /** A bundled AWS icon chosen at import, without the extension. */
+    iconName: string | null;
+    /**
+     * Part of the catalogue TerraBlox ships with, so the card hides the actions
+     * that would fail. Read from the row rather than passed in: a group is keyed
+     * by source, and a source is either shipped or owned, never both.
+     */
+    isBuiltin: boolean;
     versions: Version[];
   }
 
@@ -72,6 +85,10 @@ export async function GET() {
         tags: mod.source?.tags ?? [],
         url: mod.source?.url ?? null,
         provider: mod.source?.provider ?? null,
+        iconMode: mod.source?.iconMode ?? "repo",
+        hasIcon: Boolean(mod.source?.iconUrl),
+        iconName: mod.source?.iconName ?? null,
+        isBuiltin: isBuiltin(mod),
         versions: [],
       };
       groups.set(key, group);
@@ -110,7 +127,13 @@ export async function GET() {
         tags: group.tags,
         url: group.url,
         provider: group.provider,
-        latestVersion: serialized[0] ?? null,
+        iconMode: group.iconMode,
+        hasIcon: group.hasIcon,
+        iconName: group.iconName,
+        isBuiltin: group.isBuiltin,
+        // The tracked branch rather than the newest tag — see pickDefaultVersion.
+        // `versions` stays newest-first, so the switcher still reads as a history.
+        defaultVersion: pickDefaultVersion(serialized),
         versionCount: serialized.length,
         totalSubmoduleCount: versions.reduce(
           (sum, v) => sum + v.submoduleCount,
@@ -120,7 +143,7 @@ export async function GET() {
         updatedAt: lastActivity.toISOString(),
       };
     })
-    .filter((repo) => repo.latestVersion !== null)
+    .filter((repo) => repo.defaultVersion !== null)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   return NextResponse.json({ repositories });

@@ -9,28 +9,13 @@ import {
   GithubRequestError,
   listWorkflowRuns,
 } from "@/lib/github/repo-files";
-import {
-  APPLY_WORKFLOW_PATH,
-  COST_WORKFLOW_PATH,
-  missingDeploySettings,
-  PLAN_WORKFLOW_PATH,
-  STATE_WORKFLOW_PATH,
-} from "@/lib/projects/deploy";
+import { missingDeploySettings } from "@/lib/projects/deploy";
 import { findOwnedProject } from "@/lib/projects/service";
 import type { DeployRunKind } from "@/lib/projects/types";
-
-const WORKFLOW_BY_KIND: Record<DeployRunKind, string> = {
-  plan: PLAN_WORKFLOW_PATH,
-  apply: APPLY_WORKFLOW_PATH,
-  state: STATE_WORKFLOW_PATH,
-  cost: COST_WORKFLOW_PATH,
-};
+import { findTemplate } from "@/lib/projects/workflow-templates";
 
 function parseKind(value: unknown): DeployRunKind | null {
-  return value === "plan" ||
-    value === "apply" ||
-    value === "state" ||
-    value === "cost"
+  return value === "plan" || value === "apply" || value === "cost"
     ? value
     : null;
 }
@@ -99,7 +84,15 @@ export async function POST(
   const kind = parseKind(body?.workflow);
   if (!kind) {
     return NextResponse.json(
-      { error: "workflow must be one of: plan, apply, state" },
+      { error: "workflow must be one of: plan, apply, cost" },
+      { status: 400 },
+    );
+  }
+
+  const template = findTemplate(kind);
+  if (!template) {
+    return NextResponse.json(
+      { error: "That workflow is not in the catalogue." },
       { status: 400 },
     );
   }
@@ -112,6 +105,7 @@ export async function POST(
     awsRoleArn: project.awsRoleArn,
     stateBucket: project.stateBucket,
     stateLockTable: project.stateLockTable,
+    stateKmsKeyArn: project.stateKmsKeyArn,
   });
 
   if (missing.length > 0) {
@@ -132,7 +126,7 @@ export async function POST(
   try {
     await dispatchWorkflow(token, {
       repoFullName: project.repoFullName,
-      workflowFile: WORKFLOW_BY_KIND[kind],
+      workflowFile: template.path,
       ref: project.repoBranch,
     });
 

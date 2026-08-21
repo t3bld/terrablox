@@ -89,7 +89,11 @@ export function GithubAccountCard() {
   }
 
   return (
-    <Card>
+    // `h-full` plus a column content area is what lets the action sit on the
+    // bottom edge: the cards in this grid are different heights, and a button
+    // that floats wherever its card's text happens to end reads as a different
+    // control in each one.
+    <Card className="flex h-full flex-col">
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-center gap-1.5">
@@ -124,7 +128,7 @@ export function GithubAccountCard() {
           </CardDescription>
         ) : null}
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="flex flex-1 flex-col space-y-4">
         {config && !config.githubConfigured ? (
           <div className="space-y-1 rounded-md border border-dashed p-3 text-xs text-muted-foreground">
             <p className="font-medium text-foreground">
@@ -173,14 +177,10 @@ export function GithubAccountCard() {
                 )}
               </div>
             )}
-            <p className="text-xs text-muted-foreground">
-              The agent commits with this token, so it can write wherever you
-              can.
-            </p>
           </div>
         ) : null}
 
-        <div className="flex flex-col gap-2">
+        <div className="mt-auto flex flex-col gap-2">
           {!github.linked ? (
             <Button
               className="w-full"

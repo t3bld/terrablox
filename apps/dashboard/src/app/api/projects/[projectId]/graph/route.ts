@@ -5,6 +5,7 @@ import {
   getProviderTokenForRequest,
 } from "@/lib/auth/server-helpers";
 import { GithubRequestError } from "@/lib/github/repo-files";
+import { isValidLocalName } from "@/lib/projects/locals";
 import {
   applyProjectMutation,
   findOwnedProject,
@@ -109,6 +110,61 @@ function parseMutation(body: unknown): ProjectGraphMutation | null {
     case "auto-connect": {
       const name = str("name");
       return name ? { action, name } : null;
+    }
+    case "add-local": {
+      const name = str("name");
+      // An empty value is meaningful for a local too: it writes `""`, which is
+      // a placeholder the user then fills in.
+      const value = typeof input.value === "string" ? input.value : null;
+      if (!name || value === null || !isValidLocalName(name)) return null;
+
+      const position = input.position as
+        | { x?: unknown; y?: unknown }
+        | undefined;
+      const connectTo = input.connectTo as
+        | { target?: unknown; targetInput?: unknown }
+        | undefined;
+
+      const target =
+        typeof connectTo?.target === "string" ? connectTo.target.trim() : "";
+      const targetInput =
+        typeof connectTo?.targetInput === "string"
+          ? connectTo.targetInput.trim()
+          : "";
+
+      return {
+        action,
+        name,
+        value,
+        ...(typeof position?.x === "number" && typeof position?.y === "number"
+          ? { position: { x: position.x, y: position.y } }
+          : {}),
+        ...(target && targetInput
+          ? { connectTo: { target, targetInput } }
+          : {}),
+      };
+    }
+    case "set-local": {
+      const name = str("name");
+      const value = typeof input.value === "string" ? input.value : null;
+      return name && value !== null ? { action, name, value } : null;
+    }
+    case "rename-local": {
+      const name = str("name");
+      const newName = str("newName");
+      if (!name || !newName || !isValidLocalName(newName)) return null;
+      return { action, name, newName };
+    }
+    case "remove-local": {
+      const name = str("name");
+      return name ? { action, name } : null;
+    }
+    case "connect-local": {
+      const local = str("local");
+      const target = str("target");
+      const targetInput = str("targetInput");
+      if (!local || !target || !targetInput) return null;
+      return { action, local, target, targetInput };
     }
     default:
       return null;

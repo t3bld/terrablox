@@ -96,7 +96,9 @@ export function InfracostCard() {
   };
 
   return (
-    <Card>
+    // Same shape as the GitHub card: full height, column content, action pinned
+    // to the bottom edge so the two cards in this row agree with each other.
+    <Card className="flex h-full flex-col">
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -127,10 +129,10 @@ export function InfracostCard() {
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-3">
+      <CardContent className="flex flex-1 flex-col space-y-3">
         {status?.configured ? (
           <Button
-            className="w-full"
+            className="mt-auto w-full"
             disabled={busy}
             onClick={() => void disconnect()}
             variant="outline"
@@ -157,7 +159,7 @@ export function InfracostCard() {
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
             <Button
-              className="cursor-pointer disabled:cursor-not-allowed"
+              className="mt-auto w-full cursor-pointer disabled:cursor-not-allowed"
               disabled={busy || !apiKey.trim()}
               onClick={() => void save()}
             >

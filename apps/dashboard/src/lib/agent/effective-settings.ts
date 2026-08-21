@@ -2,13 +2,13 @@ import "server-only";
 
 import { prisma } from "@terrablox/database";
 
+import { isKnownKnowledge } from "./knowledge";
 import {
   type AgentSettingsView,
   getAgentSettings,
   REASONING_EFFORTS,
   type ReasoningEffortValue,
 } from "./settings-service";
-import { isKnownSkill } from "./skills";
 import { isKnownTool } from "./tool-catalogue";
 
 /**
@@ -24,8 +24,17 @@ import { isKnownTool } from "./tool-catalogue";
 export interface AgentOverrides {
   model?: string | null;
   reasoningEffort?: ReasoningEffortValue | null;
-  skills?: string[];
+  disabledKnowledge?: string[];
   disabledTools?: string[];
+  turnTimeout?: number | null;
+  /**
+   * Whether the agent may delete in this project.
+   *
+   * Worth overriding per project more than any other field here: a scratch
+   * project and one behind a production account deserve different answers, and
+   * the answer is not a preference about the agent but about the blast radius.
+   */
+  allowDestructive?: boolean;
 }
 
 export type AgentSettingField = keyof AgentOverrides;
@@ -34,8 +43,12 @@ export interface EffectiveAgentSettings {
   instructions: string;
   model: string | null;
   reasoningEffort: ReasoningEffortValue | null;
-  skills: string[];
+  disabledKnowledge: string[];
   disabledTools: string[];
+  /** How long a turn may run, in seconds. Null → default (300s). */
+  turnTimeout: number | null;
+  /** Whether the agent may delete modules and variables here. */
+  allowDestructive: boolean;
   /** Which fields the project decides itself, for the UI to mark as overridden. */
   overridden: AgentSettingField[];
 }
@@ -67,8 +80,15 @@ export function mergeAgentSettings(
     instructions: global.instructions,
     model: overrides.model ?? global.model,
     reasoningEffort: overrides.reasoningEffort ?? global.reasoningEffort,
-    skills: overrides.skills ?? global.skills,
+    disabledKnowledge: overrides.disabledKnowledge ?? global.disabledKnowledge,
     disabledTools: overrides.disabledTools ?? global.disabledTools,
+    turnTimeout: overrides.turnTimeout ?? global.turnTimeout,
+    // `??` is wrong for a boolean override: a project that deliberately set
+    // `false` would fall through to a global `true`. Presence is the question.
+    allowDestructive:
+      overrides.allowDestructive !== undefined
+        ? overrides.allowDestructive
+        : global.allowDestructive,
     overridden,
   };
 }
@@ -99,10 +119,10 @@ export function parseOverrides(value: unknown): AgentOverrides {
       : null;
   }
 
-  if (Array.isArray(raw.skills)) {
-    overrides.skills = raw.skills.filter(
+  if (Array.isArray(raw.disabledKnowledge)) {
+    overrides.disabledKnowledge = raw.disabledKnowledge.filter(
       (entry): entry is string =>
-        typeof entry === "string" && isKnownSkill(entry),
+        typeof entry === "string" && isKnownKnowledge(entry),
     );
   }
 
@@ -111,6 +131,19 @@ export function parseOverrides(value: unknown): AgentOverrides {
       (entry): entry is string =>
         typeof entry === "string" && isKnownTool(entry),
     );
+  }
+
+  if ("turnTimeout" in raw) {
+    const t = Number(raw.turnTimeout);
+    overrides.turnTimeout =
+      Number.isFinite(t) && t >= 30 && t <= 1800 ? Math.round(t) : null;
+  }
+
+  // Only a real boolean counts. Anything else is dropped rather than coerced,
+  // because coercing an unexpected value here could only ever err towards
+  // granting a permission.
+  if (typeof raw.allowDestructive === "boolean") {
+    overrides.allowDestructive = raw.allowDestructive;
   }
 
   return overrides;

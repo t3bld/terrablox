@@ -48,7 +48,7 @@ import type {
 /**
  * The subset of a resource the architecture endpoint returns. Narrower than
  * `ModuleResourceDto` on purpose: claiming the full shape would let a reader of
- * this file use `id` or `providerUrl`, which the endpoint does not send.
+ * this file use `id`, which the endpoint does not send.
  */
 type NestedResource = Pick<
   ModuleResourceDto,
@@ -56,7 +56,9 @@ type NestedResource = Pick<
   | "resourceType"
   | "resourceName"
   | "providerName"
+  | "providerUrl"
   | "sourceFile"
+  | "conditionalOn"
   | "resourceUrl"
   | "resourceDescription"
 >;
@@ -70,6 +72,7 @@ interface NestedModule {
   moduleCalls: {
     name: string;
     source: string | null;
+    sourceKind: string | null;
     linkedModule: {
       moduleId: string;
       exactVersion: boolean;
@@ -99,6 +102,24 @@ interface ArchitectureTabProps {
    * *is* the set of modules they call, so those are drawn as boxes too.
    */
   dependencies?: ModuleDependencyDto[];
+  /**
+   * Where this module's own files can be read, so a declaration can be opened.
+   *
+   * Passed in rather than derived here because it takes the module's clone URL,
+   * imported ref and analysed root folder, all of which live on the detail page.
+   * Only this module's files: a box drawn from an expanded submodule belongs to
+   * another repository, and the nested response does not carry its URL — so those
+   * are deliberately left unlinked rather than pointed at the wrong repository.
+   */
+  fileUrl?: (sourceFile: string) => string | null;
+  /**
+   * The architecture/detail switch, drawn over the diagram.
+   *
+   * Passed in rather than owned here because the other level needs the same
+   * control, and a switch that each view drew for itself would be two switches
+   * that could disagree about which one is active.
+   */
+  levelSwitch?: React.ReactNode;
 }
 
 const KIND_LABELS: Record<string, string> = {
@@ -145,6 +166,8 @@ interface ResolvedAddress {
   resource?: NestedResource;
   /** For a `module "x"` box, the source the call points at. */
   moduleSource?: string;
+  /** How to read that source; without it a registry address parses wrongly. */
+  moduleSourceKind?: string | null;
 }
 
 export function ArchitectureTab({
@@ -152,6 +175,8 @@ export function ArchitectureTab({
   resources,
   references,
   dependencies,
+  fileUrl,
+  levelSwitch,
 }: ArchitectureTabProps) {
   const [nested, setNested] = useState<NestedResponse | null>(null);
   const [nestedReady, setNestedReady] = useState(false);
@@ -193,6 +218,7 @@ export function ArchitectureTab({
         .map((d) => ({
           name: d.name,
           source: d.source as string,
+          sourceKind: d.sourceKind,
           moduleId: d.linkedModule?.moduleId,
           requestedRef:
             d.linkedModule && !d.linkedModule.exactVersion
@@ -218,6 +244,7 @@ export function ArchitectureTab({
           .map((c) => ({
             name: c.name,
             source: c.source as string,
+            sourceKind: c.sourceKind,
             moduleId: c.linkedModule?.moduleId,
             requestedRef:
               c.linkedModule && !c.linkedModule.exactVersion
@@ -331,11 +358,14 @@ export function ArchitectureTab({
           ? (dependencies ?? []).map((d) => ({
               name: d.name,
               source: d.source,
+              sourceKind: d.sourceKind,
             }))
           : declaring
             ? nested?.modules[declaring]?.moduleCalls
             : undefined
         : undefined;
+
+      const call = calls?.find((entry) => `module.${entry.name}` === local);
 
       return {
         local,
@@ -344,9 +374,8 @@ export function ArchitectureTab({
         resource: pool?.find(
           (candidate) => resourceAddress(candidate) === local,
         ),
-        moduleSource:
-          calls?.find((call) => `module.${call.name}` === local)?.source ??
-          undefined,
+        moduleSource: call?.source ?? undefined,
+        moduleSourceKind: call?.sourceKind ?? undefined,
       };
     },
     [nested, resources, dependencies],
@@ -432,8 +461,31 @@ export function ArchitectureTab({
       /** Set only when the box stands for exactly one resource. */
       only: !call && rest.length === 1 ? rest[0] : undefined,
       declaredBy: call?.fromModule ?? rest[0]?.fromModule,
+      /**
+       * The undrawn resources serving this box. Resolved through the same call
+       * path as the addresses above, so a role inside a nested module reports
+       * the file it is actually declared in.
+       */
+      supporting: (selected.attachments ?? []).map((attachment) => ({
+        ...attachment,
+        entries: attachment.addresses.map(resolveAddress),
+      })),
     };
   }, [selected, resolveAddress]);
+
+  /**
+   * The GitHub URL for one of this module's files, or null.
+   *
+   * Null covers three cases that all have to behave the same way: no builder was
+   * passed, the file is unknown, and the repository is not one we can address.
+   * The callers then render plain text, which is what they did before any of this
+   * was linkable.
+   */
+  const fileHref = useCallback(
+    (sourceFile: string | null | undefined) =>
+      sourceFile ? (fileUrl?.(sourceFile) ?? null) : null,
+    [fileUrl],
+  );
 
   const toggleExpand = useCallback((path: string) => {
     setExpanded((current) => {
@@ -476,6 +528,11 @@ export function ArchitectureTab({
         sublabel: node.sublabel,
         icon: node.icon,
         count: node.addresses.length,
+        attachments: node.attachments?.map((attachment) => ({
+          service: attachment.service,
+          icon: attachment.icon,
+          count: attachment.addresses.length,
+        })),
         moduleCall: node.isModuleCall,
         href: node.isModuleCall ? hrefByAddress.get(node.id) : undefined,
         expandPath: node.expandable ? node.path : undefined,
@@ -594,15 +651,13 @@ export function ArchitectureTab({
 
   if (graph.nodes.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-12 text-center">
-        <LayoutGrid className="h-8 w-8 text-muted-foreground" />
-        <p className="font-medium text-sm">
-          Nothing to draw at architecture level
-        </p>
-        <p className="max-w-md text-muted-foreground text-xs">
-          This module declares no infrastructure that appears on an architecture
-          diagram. The Connections tab shows the full resource graph.
-        </p>
+      // Sized like the canvas it stands in for and drawn in nothing but muted
+      // tones. Given a border, a filled icon and a semibold line, an empty state
+      // reads as a notice — as though something had gone wrong — when all it has
+      // to say is that there is nothing here.
+      <div className="flex min-h-[18rem] flex-col items-center justify-center gap-2.5 rounded-lg border border-dashed bg-muted/20 py-16 text-center">
+        <LayoutGrid className="h-7 w-7 text-muted-foreground/40" />
+        <p className="text-muted-foreground text-sm">Nothing to draw</p>
       </div>
     );
   }
@@ -635,18 +690,26 @@ export function ArchitectureTab({
       </div>
 
       <div className="flex flex-col gap-4 lg:flex-row">
-        <ArchitectureDiagram
-          className="min-w-0 flex-1"
-          edges={graph.edges}
-          highlightedNodeId={selectedId}
-          nodePositions={visiblePositions}
-          nodes={nodes}
-          onNodeClick={handleNodeClick}
-          onNodePositionsChange={handlePositionsChange}
-          onPaneClick={clearSelection}
-          onResetLayout={handleResetLayout}
-          onToggleExpand={toggleExpand}
-        />
+        {/* `relative` so the switch can sit on the drawing rather than above it:
+            the level belongs to the diagram, and the diagram owns the area. */}
+        <div className="relative flex min-w-0 flex-1">
+          {levelSwitch ? (
+            <div className="absolute top-3 left-3 z-10">{levelSwitch}</div>
+          ) : null}
+
+          <ArchitectureDiagram
+            className="min-w-0 flex-1"
+            edges={graph.edges}
+            highlightedNodeId={selectedId}
+            nodePositions={visiblePositions}
+            nodes={nodes}
+            onNodeClick={handleNodeClick}
+            onNodePositionsChange={handlePositionsChange}
+            onPaneClick={clearSelection}
+            onResetLayout={handleResetLayout}
+            onToggleExpand={toggleExpand}
+          />
+        </div>
 
         {selected && detail ? (
           <GraphDetailPanel
@@ -657,9 +720,15 @@ export function ArchitectureTab({
                 ) : undefined
               ) : (
                 <>
-                  <Badge variant="outline">
-                    {KIND_LABELS[selected.type] ?? selected.type}
-                  </Badge>
+                  {/* "Service" is dropped: it is the catch-all kind, so the badge
+                      said no more than the icon and the title already do. A VPC or
+                      a subnet badge still earns its place, because those boxes
+                      contain others and the kind is why. */}
+                  {selected.type === "service" ? null : (
+                    <Badge variant="outline">
+                      {KIND_LABELS[selected.type] ?? selected.type}
+                    </Badge>
+                  )}
                   {selected.expanded ? (
                     <Badge variant="secondary">Expanded</Badge>
                   ) : null}
@@ -679,13 +748,20 @@ export function ArchitectureTab({
                     label="Repository"
                     mono={false}
                     value={
-                      parseModuleSourceRef(detail.call.moduleSource)?.repo ??
-                      detail.call.moduleSource
+                      parseModuleSourceRef(
+                        detail.call.moduleSource,
+                        detail.call.moduleSourceKind,
+                      )?.repo ?? detail.call.moduleSource
                     }
                   />
                   <DetailRow
                     label="Version"
-                    value={parseModuleSourceRef(detail.call.moduleSource)?.ref}
+                    value={
+                      parseModuleSourceRef(
+                        detail.call.moduleSource,
+                        detail.call.moduleSourceKind,
+                      )?.ref
+                    }
                   />
                 </>
               ) : null}
@@ -697,17 +773,24 @@ export function ArchitectureTab({
               */}
               {detail.only ? (
                 <>
-                  <DetailRow label="Address" value={detail.only.local} />
+                  {/* The address carries the type — `aws_sfn_state_machine.this`
+                      is the type and the label — so a separate Type row repeated
+                      half of it. The link that used to be a button at the bottom
+                      of the panel lives on the address instead, where the thing
+                      being documented is named. */}
                   <DetailRow
-                    label="Type"
-                    value={detail.only.resource?.resourceType}
+                    href={detail.only.resource?.resourceUrl}
+                    label="Address"
+                    value={detail.only.local}
                   />
                   <DetailRow
+                    href={detail.only.resource?.providerUrl}
                     label="Provider"
                     mono={false}
                     value={detail.only.resource?.providerName}
                   />
                   <DetailRow
+                    href={fileHref(detail.only.resource?.sourceFile)}
                     label="Declared in"
                     value={detail.only.resource?.sourceFile}
                   />
@@ -729,6 +812,22 @@ export function ArchitectureTab({
             {detail.only?.resource?.resourceDescription ? (
               <p className="mt-4 text-muted-foreground text-sm">
                 {detail.only.resource.resourceDescription}
+              </p>
+            ) : null}
+
+            {/* The subnet is still drawn public — the code does route it out. This
+                only says the route is behind a condition, which is what a reader
+                needs to check against their own inputs. Whether the condition is
+                true by default cannot be known without evaluating every variable
+                and local it names. */}
+            {selected.publicRouteCondition ? (
+              <p className="mt-4 rounded-md border bg-muted/40 px-2.5 py-2 text-muted-foreground text-xs">
+                Its route to the internet gateway is conditional:{" "}
+                <code className="break-all font-mono">
+                  {selected.publicRouteCondition}
+                </code>{" "}
+                — so whether this subnet is really public depends on the values
+                you pass in.
               </p>
             ) : null}
 
@@ -770,24 +869,6 @@ export function ArchitectureTab({
               </Button>
             ) : null}
 
-            {detail.only?.resource?.resourceUrl ? (
-              <Button
-                asChild
-                className="mt-2 w-full"
-                size="sm"
-                variant="outline"
-              >
-                <a
-                  href={detail.only.resource.resourceUrl}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-                  Open documentation
-                </a>
-              </Button>
-            ) : null}
-
             {detail.resources.length > 1 ? (
               <div className="mt-6">
                 <h5 className="mb-2 font-semibold text-muted-foreground text-xs uppercase tracking-wide">
@@ -810,6 +891,102 @@ export function ArchitectureTab({
                           {entry.resource.sourceFile}
                         </p>
                       ) : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/*
+              The thirteen IAM resources this module spends most of its lines on
+              live here. They are not drawn, because an IAM role is a property of
+              the state machine rather than a component beside it — but "not
+              drawn" must not mean "not findable", or the reader is left counting
+              boxes against a resource list that will never agree.
+            */}
+            {detail.supporting.length > 0 ? (
+              <div className="mt-6">
+                <h5 className="mb-1 font-semibold text-muted-foreground text-xs uppercase tracking-wide">
+                  Supporting resources{" "}
+                  <span className="tabular-nums opacity-70">
+                    {detail.supporting.reduce(
+                      (sum, group) => sum + group.entries.length,
+                      0,
+                    )}
+                  </span>
+                </h5>
+                <div className="space-y-3">
+                  {detail.supporting.map((group) => (
+                    <div key={group.service}>
+                      <p className="mb-1 flex items-center gap-1.5 font-medium text-xs">
+                        {group.icon ? (
+                          // biome-ignore lint/performance/noImgElement: the AWS icons are vendored SVGs, which next/image passes through unchanged
+                          <img
+                            alt=""
+                            className="h-3.5 w-3.5 shrink-0"
+                            src={`/aws-icons/${group.icon}.svg`}
+                          />
+                        ) : null}
+                        {group.service}
+                        <span className="tabular-nums text-muted-foreground">
+                          {group.entries.length}
+                        </span>
+                        {group.shared ? (
+                          <span
+                            className="rounded bg-muted px-1 py-px font-normal text-[10px] text-muted-foreground"
+                            title="Another box on the diagram uses these too, so they are listed under both."
+                          >
+                            shared
+                          </span>
+                        ) : null}
+                      </p>
+                      {/* A link when the file is this module's, plain text when it
+                          is not: an entry from an expanded submodule is declared
+                          in another repository, and only the box's own repository
+                          can be addressed from here. */}
+                      <div className="space-y-1">
+                        {group.entries.map((entry) => {
+                          const href = entry.fromModule
+                            ? null
+                            : fileHref(entry.resource?.sourceFile);
+
+                          const body = (
+                            <>
+                              <p className="break-all font-mono text-xs">
+                                {entry.local}
+                              </p>
+                              {entry.resource?.sourceFile ? (
+                                <p className="flex items-center gap-1 truncate text-[11px] text-muted-foreground">
+                                  {entry.resource.sourceFile}
+                                  {href ? (
+                                    <ExternalLink className="h-3 w-3 shrink-0" />
+                                  ) : null}
+                                </p>
+                              ) : null}
+                            </>
+                          );
+
+                          return href ? (
+                            <a
+                              className="block rounded-md border px-2.5 py-1.5 transition-colors hover:border-primary/50 hover:bg-accent"
+                              href={href}
+                              key={entry.local}
+                              rel="noreferrer"
+                              target="_blank"
+                              title={`Open ${entry.resource?.sourceFile} on GitHub`}
+                            >
+                              {body}
+                            </a>
+                          ) : (
+                            <div
+                              className="rounded-md border px-2.5 py-1.5"
+                              key={entry.local}
+                            >
+                              {body}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ))}
                 </div>

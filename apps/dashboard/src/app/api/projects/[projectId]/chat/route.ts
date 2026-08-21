@@ -1,14 +1,28 @@
 import { NextResponse } from "next/server";
 
+/**
+ * The agent loop may run for minutes on complex tasks (many tool calls), so the
+ * route must not time out before the SDK does. This only matters when deployed on
+ * platforms with a per-route timeout (Vercel, Netlify); locally Next.js has none.
+ */
+export const maxDuration = 300; // seconds — matches SEND_AND_WAIT_TIMEOUT_MS
+
+import { Prisma } from "@terrablox/database";
 import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
 import { getEffectiveAgentSettings } from "@/lib/agent/effective-settings";
+import { getHarnessCuration } from "@/lib/agent/harness-curation";
+import {
+  KNOWLEDGE_MODULE_LIBRARY,
+  KNOWLEDGE_PROJECT_REPO,
+  knowledgeEnabled,
+} from "@/lib/agent/knowledge";
 import { runProjectAgent } from "@/lib/agent/project-agent";
+import { AGENT_PROGRESS_INTERVAL_MS } from "@/lib/agent/runtime-options";
 import {
   mcpServersForSession,
   REASONING_EFFORTS,
   type ReasoningEffortValue,
 } from "@/lib/agent/settings-service";
-import { resolveSkills } from "@/lib/agent/skills";
 import {
   getCurrentUserId,
   getProviderTokenForRequest,
@@ -26,7 +40,24 @@ import {
 } from "@/lib/projects/service";
 import type { AgentStep, ProjectGraph } from "@/lib/projects/types";
 
-const HISTORY_LIMIT = 50;
+/**
+ * How many messages of a project's transcript are read at once.
+ *
+ * The newest ones, which is worth stating because it used to be the oldest: this
+ * was `orderBy: asc` with a `take`, so once a project passed the limit both the
+ * chat panel and the agent were served the *first* fifty messages forever. The
+ * conversation appeared to stop dead at some point in the past.
+ *
+ * How much of this reaches the prompt is decided separately, by
+ * `AGENT_HISTORY_BUDGET_CHARS`.
+ */
+const HISTORY_LIMIT = 200;
+
+/** Newest first from the database, then flipped back into reading order. */
+const HISTORY_QUERY = {
+  orderBy: { createdAt: "desc" },
+  take: HISTORY_LIMIT,
+} as const;
 
 /**
  * The composer sends the model and effort with every turn, so nothing here is
@@ -45,6 +76,26 @@ function resolveEffort(value: unknown): ReasoningEffortValue {
     : (COPILOT_REASONING_EFFORT as ReasoningEffortValue);
 }
 
+/**
+ * The project as it looks to an agent not allowed to read it.
+ *
+ * Structurally a real graph so every tool's validation still works — every
+ * lookup simply misses, which is exactly right: an agent that cannot see a
+ * module must not be able to rename or delete it either. The sha is kept so the
+ * commit path still knows which revision the turn started from.
+ */
+function blindGraph(sha: string): ProjectGraph {
+  return {
+    nodes: [],
+    edges: [],
+    gaps: [],
+    resourceCount: 0,
+    files: [],
+    sha,
+    errors: [],
+  };
+}
+
 export async function GET(
   _req: Request,
   { params }: { params: { projectId: string } },
@@ -61,11 +112,12 @@ export async function GET(
 
   const messages = await database.projectChatMessage.findMany({
     where: { projectId: project.id },
-    orderBy: { createdAt: "asc" },
-    take: HISTORY_LIMIT,
+    ...HISTORY_QUERY,
   });
 
-  return NextResponse.json({ messages: messages.map(toChatMessageDto) });
+  return NextResponse.json({
+    messages: messages.reverse().map(toChatMessageDto),
+  });
 }
 
 /**
@@ -123,38 +175,115 @@ export async function POST(
     data: { projectId: project.id, role: "user", content: message },
   });
 
+  // Mark the project so the chat panel can show a spinner even after a
+  // navigation away and back. Cleared in the finally below.
+  await database.project.update({
+    where: { id: project.id },
+    data: { agentRunning: true, agentSteps: [] },
+  });
+
+  /**
+   * Publishes the turn's progress for `chat/status` to read.
+   *
+   * Throttled, and deliberately not awaited: the write is bookkeeping for the UI,
+   * so it must never slow the turn down or fail it. `flushing` keeps a slow write
+   * from being overtaken by the next one, which would otherwise let an older
+   * trail land last and appear to lose steps.
+   */
+  let lastFlush = 0;
+  let flushing = false;
+  const publishProgress = (steps: AgentStep[]) => {
+    const now = Date.now();
+    if (flushing || now - lastFlush < AGENT_PROGRESS_INTERVAL_MS) return;
+
+    lastFlush = now;
+    flushing = true;
+    // Copied because the agent keeps appending to the live array while this
+    // write is in flight.
+    const snapshot = [...steps];
+
+    void database.project
+      .update({
+        where: { id: project.id },
+        data: { agentSteps: snapshot as unknown as Prisma.InputJsonValue },
+      })
+      .catch(() => {})
+      .finally(() => {
+        flushing = false;
+      });
+  };
+
   try {
-    const [graph, library, history, settings, mcpServers] = await Promise.all([
-      loadProjectGraph(token, project),
-      readModuleLibrary(userId),
-      database.projectChatMessage.findMany({
-        where: { projectId: project.id },
-        orderBy: { createdAt: "asc" },
-        take: HISTORY_LIMIT,
-      }),
-      getEffectiveAgentSettings(userId, project.id),
-      mcpServersForSession(userId),
-    ]);
+    const [graph, library, history, settings, mcpServers, curation] =
+      await Promise.all([
+        loadProjectGraph(token, project),
+        readModuleLibrary(userId),
+        database.projectChatMessage
+          .findMany({ where: { projectId: project.id }, ...HISTORY_QUERY })
+          .then((rows) => rows.reverse()),
+        getEffectiveAgentSettings(userId, project.id),
+        mcpServersForSession(userId),
+        getHarnessCuration(),
+      ]);
+
+    // Knowledge is withheld by not assembling it, not by asking the model to
+    // ignore it. `graph` below is still the real one — it goes back to the
+    // client to refresh the canvas, and mutations commit against the repository
+    // regardless of what the agent was allowed to read.
+    const seesRepo = knowledgeEnabled(
+      settings.disabledKnowledge,
+      KNOWLEDGE_PROJECT_REPO,
+    );
+    const seesLibrary = knowledgeEnabled(
+      settings.disabledKnowledge,
+      KNOWLEDGE_MODULE_LIBRARY,
+    );
 
     const turn = await runProjectAgent(message, {
       projectName: project.name,
       repoFullName: project.repoFullName,
       branch: project.repoBranch,
-      graph,
+      // Read with the user's own token rather than the installation one: the
+      // application repository was picked from what that account can see, and an
+      // App installation is scoped to the repositories it was installed on —
+      // which need not include this one. The branch falls back to `main` only as
+      // a last resort; the picker stores what GitHub reported as default.
+      appRepo: project.appRepoFullName
+        ? {
+            fullName: project.appRepoFullName,
+            branch: project.appRepoBranch ?? "main",
+          }
+        : null,
+      graph: seesRepo ? graph : blindGraph(graph.sha),
       userId,
       projectId: project.id,
       githubToken: copilotToken,
       instructions: settings.instructions,
-      skills: resolveSkills(settings.skills),
+      disabledKnowledge: settings.disabledKnowledge,
       mcpServers,
       model: resolveModel(body?.model),
       reasoningEffort: resolveEffort(body?.reasoningEffort),
       disabledTools: settings.disabledTools,
-      library: library.map((mod) => ({
-        id: mod.id,
-        name: mod.sourceName ?? mod.id,
-        versionTag: mod.versionTag,
-      })),
+      turnTimeout: settings.turnTimeout,
+      allowDestructive: settings.allowDestructive,
+      // Curated in the admin panel, defaults in code. Read per turn rather than
+      // cached, so an edit takes effect on the next message instead of on the
+      // next deploy — which is the entire point of making it editable.
+      operatingRules: curation.operatingRules,
+      toolDescriptions: Object.fromEntries(
+        curation.operations.map((operation) => [
+          operation.name,
+          operation.description,
+        ]),
+      ),
+      onStep: publishProgress,
+      library: seesLibrary
+        ? library.map((mod) => ({
+            id: mod.id,
+            name: mod.sourceName ?? mod.id,
+            versionTag: mod.versionTag,
+          }))
+        : [],
       history: history.map((entry) => ({
         role: entry.role,
         content: entry.content,
@@ -163,31 +292,51 @@ export async function POST(
 
     let currentGraph: ProjectGraph = graph;
     const commits: string[] = [];
+    const mutationErrors: string[] = [];
 
     for (const mutation of turn.mutations) {
-      const result = await applyProjectMutation(
-        token,
-        project,
-        mutation,
-        "agent",
-      );
-      currentGraph = result.graph;
-      if (result.commit) commits.push(result.commit.sha);
+      try {
+        const result = await applyProjectMutation(
+          token,
+          project,
+          mutation,
+          "agent",
+        );
+        currentGraph = result.graph;
+        if (result.commit) commits.push(result.commit.sha);
+      } catch (mutationErr) {
+        // A single failed mutation (e.g. a name collision the tool validation
+        // missed) must not abort the whole turn. The user sees the error in the
+        // steps, and the mutations that did succeed stay committed.
+        const msg =
+          mutationErr instanceof Error
+            ? mutationErr.message
+            : "Unknown mutation error";
+        mutationErrors.push(msg);
+      }
     }
 
     // The commit closes the trail: the reasoning above explains the intent, this
     // is the proof it reached the repository the graph is rebuilt from.
-    const steps: AgentStep[] = commits.length
-      ? [
-          ...turn.steps,
-          {
-            kind: "tool",
-            tool: "commit",
-            summary: `Pushed ${commits.length} commit${commits.length === 1 ? "" : "s"} to ${project.repoFullName}@${project.repoBranch}`,
-            ok: true,
-          },
-        ]
-      : turn.steps;
+    const steps: AgentStep[] = [
+      ...turn.steps,
+      ...(commits.length
+        ? [
+            {
+              kind: "tool" as const,
+              tool: "commit",
+              summary: `Pushed ${commits.length} commit${commits.length === 1 ? "" : "s"} to ${project.repoFullName}@${project.repoBranch}`,
+              ok: true,
+            },
+          ]
+        : []),
+      ...mutationErrors.map((msg) => ({
+        kind: "tool" as const,
+        tool: "mutation",
+        summary: msg,
+        ok: false,
+      })),
+    ];
 
     const assistantMessage = await database.projectChatMessage.create({
       data: {
@@ -230,5 +379,15 @@ export async function POST(
       },
       { status },
     );
+  } finally {
+    // The trail is cleared with the flag: from here on the steps live on the
+    // assistant message, and leaving a copy here would make the next turn open
+    // with the previous one's progress still on screen.
+    await database.project
+      .update({
+        where: { id: project.id },
+        data: { agentRunning: false, agentSteps: Prisma.DbNull },
+      })
+      .catch(() => {});
   }
 }

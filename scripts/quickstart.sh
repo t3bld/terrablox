@@ -216,6 +216,67 @@ step "Applying database migrations"
 pnpm db:migrate
 ok "schema is up to date"
 
+# --- 5b. built-in module catalogue ------------------------------------------
+
+# TerraBlox ships with ~50 standard AWS modules (terraform-aws-modules forks).
+# They need a GitHub token (no scopes required for public repos) and a few
+# minutes to import. The user gets to decide.
+step "Built-in module catalogue"
+
+builtin_flag="$(read_env_var "$APP_ENV" TERRABLOX_BUILTIN_MODULES)"
+
+if [ "$builtin_flag" = "false" ] || [ "$builtin_flag" = "0" ]; then
+	muted "TERRABLOX_BUILTIN_MODULES is false - skipping"
+elif [ ! -t 0 ]; then
+	# Non-interactive (CI, piped): import automatically if token available.
+	builtin_token="${TERRABLOX_SEED_GITHUB_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
+	if [ -z "$builtin_token" ] && command -v gh >/dev/null 2>&1; then
+		builtin_token="$(gh auth token 2>/dev/null || true)"
+	fi
+	if [ -z "$builtin_token" ]; then
+		warn "no GitHub token found - skipping built-in modules"
+		info "run later: GITHUB_TOKEN=\$(gh auth token) pnpm db:builtin:sync"
+	else
+		info "importing the terrablox-aws-* catalogue..."
+		if GITHUB_TOKEN="$builtin_token" pnpm db:builtin:sync; then
+			ok "built-in modules are available to every user"
+		else
+			warn "the catalogue did not import cleanly - re-run: pnpm db:builtin:sync"
+		fi
+	fi
+else
+	# Interactive terminal: ask the user.
+	printf '\n'
+	info "TerraBlox can import ~50 standard AWS Terraform modules (VPC, EKS, RDS, …)"
+	info "so every user has them without importing anything."
+	info "Requires: gh CLI logged in (the token needs no scopes for public repos)."
+	printf '\n'
+	printf '    %sImport the built-in module catalogue now? [Y/n]%s ' "$BOLD" "$RESET"
+	read -r answer </dev/tty || answer=""
+	case "$answer" in
+		[nN]|[nN][oO])
+			muted "skipping - import later with: GITHUB_TOKEN=\$(gh auth token) pnpm db:builtin:sync"
+			;;
+		*)
+			builtin_token="${TERRABLOX_SEED_GITHUB_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
+			if [ -z "$builtin_token" ] && command -v gh >/dev/null 2>&1; then
+				builtin_token="$(gh auth token 2>/dev/null || true)"
+			fi
+			if [ -z "$builtin_token" ]; then
+				warn "no GitHub token found - gh CLI not logged in?"
+				info "run: gh auth login && GITHUB_TOKEN=\$(gh auth token) pnpm db:builtin:sync"
+			else
+				info "importing..."
+				if GITHUB_TOKEN="$builtin_token" pnpm db:builtin:sync; then
+					ok "built-in modules are available to every user"
+				else
+					warn "the catalogue did not import cleanly - re-run: pnpm db:builtin:sync"
+				fi
+			fi
+			;;
+	esac
+fi
+
 # --- 6. dev server ----------------------------------------------------------
 
 if [ "$START_DEV" -eq 0 ]; then

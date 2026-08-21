@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
+import { visibleToUser } from "@/lib/modules/ownership";
 
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -10,8 +11,11 @@ export async function GET() {
   }
 
   try {
+    // Includes the shipped catalogue's tags: these drive the filter chips on the
+    // modules page, and a chip that cannot match anything the user can see is
+    // as wrong as a module they can see but cannot filter to.
     const sources = await database.terraformModuleSource.findMany({
-      where: { userId },
+      where: visibleToUser(userId),
       select: { tags: true },
       take: 200,
     });

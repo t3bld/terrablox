@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,6 +56,97 @@ export function copilotClient(): CopilotClient {
   }
 
   return client;
+}
+
+/** What one model looks like to the settings screen and the chat composer. */
+export interface CopilotModelInfo {
+  id: string;
+  name: string;
+  reasoningEfforts: string[];
+  multiplier: number | null;
+}
+
+/**
+ * How long a listing is reused before the runtime is asked again.
+ *
+ * Entitlements change rarely — a seat being granted, a policy being flipped — so
+ * ten minutes is far shorter than the thing it caches. It exists because the
+ * listing costs a CLI process: roughly half a second to spawn and a second to
+ * answer, which is too much to pay on every render of the settings screen.
+ */
+const MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
+
+const modelCache = new Map<
+  string,
+  { at: number; models: CopilotModelInfo[] }
+>();
+
+/** Keyed by digest so the cache never holds a usable token. */
+function cacheKey(token: string): string {
+  return createHash("sha256").update(token).digest("hex").slice(0, 32);
+}
+
+/**
+ * The models this user's Copilot entitlement allows.
+ *
+ * A client of its own, authenticated with their token and thrown away again.
+ * The shared {@link copilotClient} cannot answer this: it is deliberately
+ * unauthenticated so that sessions can carry different identities, and an
+ * unauthenticated runtime rejects `models.list` outright — which is why this used
+ * to come back empty every single time and leave the model dropdown with nothing
+ * in it but whatever was already stored.
+ *
+ * Returns null when the listing could not be obtained, so the caller can tell
+ * "no entitlement information" from "entitled to nothing".
+ */
+export async function listCopilotModels(
+  githubToken: string,
+): Promise<CopilotModelInfo[] | null> {
+  const key = cacheKey(githubToken);
+  const cached = modelCache.get(key);
+
+  if (cached && Date.now() - cached.at < MODEL_CACHE_TTL_MS) {
+    return cached.models;
+  }
+
+  // Its own directory: two CLI processes sharing session state is not something
+  // to find out about in production.
+  const baseDirectory = join(tmpdir(), "terrablox-copilot-models");
+  mkdirSync(baseDirectory, { recursive: true });
+
+  const client = new CopilotClient({
+    connection: RuntimeConnection.forStdio(),
+    mode: "empty",
+    baseDirectory,
+    gitHubToken: githubToken,
+  });
+
+  try {
+    // Explicit, because `listModels` does not start the runtime itself and fails
+    // with "Client not connected" if nothing else has.
+    await client.start();
+
+    const models = (await client.listModels())
+      .filter((model) => model.policy?.state !== "disabled")
+      // `auto` is not a model, it is Copilot choosing one. Offering it in a list
+      // of model names makes the list mean two different things.
+      .filter((model) => model.id !== "auto")
+      .map((model) => ({
+        id: model.id,
+        name: model.name ?? model.id,
+        reasoningEfforts: model.supportedReasoningEfforts ?? [],
+        multiplier: model.billing?.multiplier ?? null,
+      }));
+
+    modelCache.set(key, { at: Date.now(), models });
+    return models;
+  } catch (error) {
+    console.error("[agent] could not list models", error);
+    return null;
+  } finally {
+    // Left running it would leak a CLI process per cache miss.
+    await client.stop().catch(() => undefined);
+  }
 }
 
 /**

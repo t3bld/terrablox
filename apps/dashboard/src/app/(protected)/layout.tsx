@@ -4,13 +4,43 @@ import { useAuth } from "@terrablox/auth/hooks";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { GithubConnectionBanner } from "@/components/github-connection-banner";
 
+/**
+ * The app shell, empty.
+ *
+ * This is shown on every hard load, because the session is resolved in the
+ * browser: a route's own `loading.tsx` only takes over once that is done. It used
+ * to be a small circle in the middle of a blank page, which is indistinguishable
+ * from a page that has given up — the complaint that a screen "takes forever"
+ * was largely this, arriving before the screen had started loading at all.
+ *
+ * Drawn by hand rather than through `PageSkeleton`: the real shell reads the
+ * signed-in user, which is the thing not known yet.
+ */
 function LoadingScreen() {
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="flex flex-col items-center gap-4">
-        <Skeleton className="h-12 w-12 rounded-full" />
-        <Skeleton className="h-4 w-32" />
+    <div className="flex min-h-screen">
+      <div className="hidden w-64 shrink-0 flex-col gap-4 border-r p-4 md:flex">
+        <Skeleton className="h-8 w-32" />
+        <div className="mt-2 space-y-2">
+          {["nav-1", "nav-2", "nav-3", "nav-4"].map((key) => (
+            <Skeleton className="h-8 w-full" key={key} />
+          ))}
+        </div>
+        <Skeleton className="mt-auto h-10 w-full" />
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-16 shrink-0 items-center gap-3 border-b px-6">
+          <Skeleton className="h-4 w-4" />
+          <Skeleton className="h-4 w-40" />
+        </div>
+        <div className="flex-1 space-y-4 p-6">
+          <Skeleton className="h-8 w-64" />
+          <Skeleton className="h-40 w-full" />
+          <Skeleton className="h-40 w-full" />
+        </div>
       </div>
     </div>
   );
@@ -72,5 +102,13 @@ export default function ProtectedAppLayout({
     return <LoadingScreen />;
   }
 
-  return <>{children}</>;
+  // Above every protected screen, because losing the GitHub connection breaks
+  // all of them at once and each one would otherwise report it as its own
+  // unrelated failure.
+  return (
+    <>
+      <GithubConnectionBanner />
+      {children}
+    </>
+  );
 }

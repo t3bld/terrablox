@@ -13,19 +13,24 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
-import { Input } from "@terrablox/ui/input";
-import { Label } from "@terrablox/ui/label";
-import { Separator } from "@terrablox/ui/separator";
 import { Github } from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+/**
+ * The only way in: GitHub.
+ *
+ * Email and password are gone, and not only to save a form. Everything TerraBlox
+ * does needs a GitHub identity — reading the repository a project is built from,
+ * committing the graph, importing modules, running the agent on the user's own
+ * Copilot seat. An account without GitHub could sign in and then do nothing, so
+ * the sign-in and the connection that makes the app work are now one step.
+ */
 export default function LoginPage() {
-  const router = useRouter();
-  const { signIn, signInWithOAuth, isLoading } = useAuth();
+  const { signInWithOAuth, isLoading } = useAuth();
 
   const [nextPath, setNextPath] = useState("/projects");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
@@ -33,145 +38,55 @@ export default function LoginPage() {
     if (next) setNextPath(next);
   }, []);
 
-  const next = nextPath;
-
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [oauthSubmitting, setOauthSubmitting] = useState<"github" | null>(null);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSignIn = async () => {
     setError(null);
-    setIsSubmitting(true);
+    setSubmitting(true);
 
     try {
-      console.log("Attempting to sign in with:", { email });
-      await signIn(
-        { email, password },
-        {
-          onSuccess: () => {
-            console.log("Sign in successful, redirecting via onSuccess...");
-            router.push(next);
-          },
-        },
-      );
-    } catch (err) {
-      console.error("Sign in failed:", err);
-      setError(err instanceof Error ? err.message : "Failed to sign in");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handleOAuthSignIn = async (provider: "github") => {
-    setError(null);
-    setOauthSubmitting(provider);
-    try {
-      const redirectTo = `${window.location.origin}${next}`;
-      await signInWithOAuth(provider, {
-        redirectTo,
+      await signInWithOAuth("github", {
+        redirectTo: `${window.location.origin}${nextPath}`,
         scopes: ["read:org", "repo"],
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign in");
-      setOauthSubmitting(null);
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4">
+    <div className="flex min-h-screen items-center justify-center px-4">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl">Sign in</CardTitle>
+          <CardTitle className="text-2xl">Sign in to TerraBlox</CardTitle>
           <CardDescription>
-            Enter your email below to sign in to your account.
+            TerraBlox works on your repositories, so it signs you in with
+            GitHub. The same connection reads your modules and commits your
+            changes.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-6">
+        <CardContent className="space-y-4">
           {error ? (
             <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                disabled={isLoading || isSubmitting || !!oauthSubmitting}
-                placeholder="you@example.com"
-              />
-            </div>
+          <Button
+            className="w-full"
+            disabled={isLoading || submitting}
+            onClick={() => void handleSignIn()}
+            type="button"
+          >
+            <Github className="mr-2 h-4 w-4" />
+            {submitting ? "Starting…" : "Continue with GitHub"}
+          </Button>
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="password">Password</Label>
-                <Link
-                  href="/forgot-password"
-                  className="text-sm text-muted-foreground hover:text-foreground"
-                >
-                  Forgot password?
-                </Link>
-              </div>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={isLoading || isSubmitting || !!oauthSubmitting}
-              />
-            </div>
-
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={isLoading || isSubmitting || !!oauthSubmitting}
-            >
-              {isSubmitting ? "Signing in…" : "Sign in"}
-            </Button>
-          </form>
-
-          <div className="relative">
-            <div className="absolute inset-0 flex items-center">
-              <Separator />
-            </div>
-            <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-background px-2 text-muted-foreground">
-                Or continue with
-              </span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => handleOAuthSignIn("github")}
-              disabled={isLoading || isSubmitting || !!oauthSubmitting}
-            >
-              <Github className="mr-2 h-4 w-4" />
-              {oauthSubmitting === "github" ? "Starting…" : "GitHub"}
-            </Button>
-          </div>
-
-          <p className="text-center text-sm text-muted-foreground">
-            Don&apos;t have an account?{" "}
-            <Link
-              href="/signup"
-              className="underline underline-offset-4 hover:text-foreground"
-            >
-              Sign up
-            </Link>
+          {/* Says what the permissions are for before they are asked for, since
+              `repo` is a broad scope and an unexplained prompt invites a no. */}
+          <p className="text-center text-xs text-muted-foreground">
+            TerraBlox asks for repository and organisation read access so it can
+            import modules and write the Terraform it generates. First sign-in
+            creates your account.
           </p>
         </CardContent>
       </Card>

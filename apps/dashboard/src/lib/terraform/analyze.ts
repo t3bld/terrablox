@@ -9,6 +9,7 @@ import {
   emptyAnalysis,
   type TerraformAnalysis,
   type TerraformAnalysisError,
+  type TerraformLocal,
   type TerraformModuleCall,
   type TerraformModuleSourceKind,
   type TerraformOutput,
@@ -83,6 +84,28 @@ function unwrapExpression(value: unknown): string | null {
   return trimmed;
 }
 
+/**
+ * An HCL value as a single string, whatever hcl2json turned it into.
+ *
+ * A literal list or object arrives as a real array or record; an expression
+ * arrives as an interpolated string. Both have to survive into one column, and
+ * JSON is a lossy but readable stand-in for the HCL that produced them — enough
+ * for {@link inferOutputType} to tell a list from a string.
+ */
+function describeValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") return unwrapExpression(value);
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
 function classifyModuleSource(
   source: string | null,
 ): TerraformModuleSourceKind {
@@ -152,6 +175,7 @@ function collectOutputs(body: JsonRecord, file: string): TerraformOutput[] {
       name,
       description: asString(o["description"]),
       sensitive: asBoolean(o["sensitive"]) ?? false,
+      valueExpression: describeValue(o["value"]),
       file,
     } satisfies TerraformOutput;
   });
@@ -192,18 +216,48 @@ function collectResourcesOfKind(
   for (const [type, byName] of Object.entries(declared)) {
     if (!isRecord(byName)) continue;
 
-    for (const name of Object.keys(byName)) {
+    for (const [name, raw] of Object.entries(byName)) {
       out.push({
         kind,
         type,
         name,
         provider: providerFromResourceType(type),
         file,
+        conditionalOn: readMultiplicityGuard(firstBody(raw)),
       });
     }
   }
 
   return out;
+}
+
+/**
+ * The expression that decides whether a block exists at all, or null.
+ *
+ * `for_each` always counts: an empty collection creates nothing, and whether it
+ * is empty depends on input we cannot see. `count` only counts when it is not a
+ * literal number — `count = 2` says how many, `count = var.enabled ? 1 : 0` says
+ * whether, and only the second one makes the resource conditional.
+ *
+ * The expression is kept rather than reduced to a boolean so the UI can name the
+ * variable a reader would have to look up. Terraform's JSON form wraps
+ * interpolations in a string, which is why a non-number is enough to tell them
+ * apart without parsing HCL a second time.
+ */
+function readMultiplicityGuard(body: JsonRecord): string | null {
+  const forEach = body["for_each"];
+  if (forEach !== undefined && forEach !== null) {
+    return asString(forEach) ?? "for_each";
+  }
+
+  const count = body["count"];
+  if (count === undefined || count === null) return null;
+
+  // A literal count is a multiplicity, not a condition — except zero, which is a
+  // block deliberately switched off.
+  if (typeof count === "number") return count === 0 ? "count = 0" : null;
+
+  return asString(count) ?? "count";
 }
 
 /**
@@ -256,11 +310,47 @@ function collectRequiredVersion(body: JsonRecord): string | null {
  * references are resolved. A local declared in `locals.tf` is routinely used by
  * a resource in `main.tf`.
  */
-function collectLocals(body: JsonRecord, into: Map<string, unknown>): void {
+function collectLocals(
+  body: JsonRecord,
+  file: string,
+  into: Map<string, unknown>,
+  declared: TerraformLocal[],
+): void {
   for (const block of blockBodies(body["locals"])) {
     for (const [name, expression] of Object.entries(block)) {
-      if (!into.has(name)) into.set(name, expression);
+      if (into.has(name)) continue;
+      into.set(name, expression);
+
+      // The unwrapped text, so the canvas shows `module.vpc.id` rather than
+      // `${module.vpc.id}`. Non-string expressions (a number, a list) are
+      // stringified, because the node has to render something.
+      declared.push({
+        name,
+        expression:
+          unwrapExpression(expression) ?? stringifyExpression(expression),
+        file,
+      });
     }
+  }
+}
+
+/**
+ * A last resort for expressions the parser did not hand back as a string.
+ *
+ * `locals { ports = [80, 443] }` comes back as an array, and the canvas still
+ * has to show it. JSON is close enough to HCL for lists and objects that it
+ * reads correctly, and it round-trips through {@link coerceHclValue} unchanged.
+ */
+function stringifyExpression(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
   }
 }
 
@@ -385,7 +475,7 @@ export async function analyzeTerraformFiles(
       ...collectResourcesOfKind(body, "data", "data", file.path),
     );
     providers.push(...collectProviders(body));
-    collectLocals(body, locals);
+    collectLocals(body, file.path, locals, analysis.locals);
     collectReferenceBlocks(body, referenceBlocks);
 
     analysis.requiredVersion ??= collectRequiredVersion(body);
@@ -407,6 +497,9 @@ export async function analyzeTerraformFiles(
     (a, b) => a.type.localeCompare(b.type) || a.name.localeCompare(b.name),
   );
   analysis.providers = mergeProviders(providers);
+  analysis.locals = analysis.locals.sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
 
   // Resolved last: locals are module-wide and a reference may point at a block
   // declared in a different file, so every file must be parsed first.

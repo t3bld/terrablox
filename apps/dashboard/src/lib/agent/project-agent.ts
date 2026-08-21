@@ -6,6 +6,12 @@ import {
   type MCPServerConfig,
 } from "@github/copilot-sdk";
 
+import {
+  GithubRequestError,
+  listRepoTree,
+  readRepoFile,
+} from "@/lib/github/repo-files";
+import { isValidLocalName } from "@/lib/projects/locals";
 import type {
   AgentStep,
   ProjectGraph,
@@ -18,8 +24,25 @@ import {
   describeCopilotError,
   discardCopilotClient,
 } from "./copilot";
+import {
+  KNOWLEDGE_APP_REPO,
+  KNOWLEDGE_MODULE_LIBRARY,
+  KNOWLEDGE_PROJECT_REPO,
+  knowledgeEnabled,
+} from "./knowledge";
+import {
+  AGENT_APP_REPO_FILE_CHARS,
+  AGENT_APP_REPO_IGNORED_DIRS,
+  AGENT_APP_REPO_TREE_LIMIT,
+  AGENT_HISTORY_BUDGET_CHARS,
+  AGENT_MAX_APP_REPO_READS,
+  AGENT_MAX_STEPS,
+  AGENT_MAX_TOOL_CALLS,
+  DEFAULT_OPERATING_RULES,
+  DEFAULT_TURN_TIMEOUT_SECONDS,
+  renderOperatingRule,
+} from "./runtime-options";
 import type { ReasoningEffortValue } from "./settings-service";
-import type { AgentSkill } from "./skills";
 import { isKnownTool, PROJECT_AGENT_TOOLS } from "./tool-catalogue";
 
 /**
@@ -46,10 +69,27 @@ export interface AgentContext {
   projectId: string;
   /** The user's GitHub token, which is also what pays for the turn. */
   githubToken: string;
+  /**
+   * The application this infrastructure is for, when the project names one.
+   *
+   * Not prompt text like the rest of the context: the repository is somebody's
+   * whole codebase and cannot be inlined, so this is a pointer the read tools
+   * work from. Null — or a project with no link — means those tools are never
+   * registered, and the prompt says the agent has to ask instead.
+   */
+  appRepo?: { fullName: string; branch: string } | null;
   /** What this user told the agent about how they work. */
   instructions?: string;
-  /** Skills this user switched on, already resolved to their content. */
-  skills?: AgentSkill[];
+  /**
+   * Knowledge sources withheld from this turn.
+   *
+   * The caller has already emptied the corresponding fields — `library` is `[]`
+   * when the library is withheld, and `graph` carries no nodes when the
+   * repository is. This list exists so the prompt can *say* the data is absent
+   * by choice; without it the model reads an empty project as a new one and
+   * cheerfully starts building on top of whatever is really there.
+   */
+  disabledKnowledge?: string[];
   /** Remote MCP servers this user enabled, decrypted and ready to use. */
   mcpServers?: Record<string, MCPServerConfig>;
   /** Copilot model id, or null to let Copilot choose. */
@@ -62,6 +102,44 @@ export interface AgentContext {
   reasoningEffort?: ReasoningEffortValue | null;
   /** Tools the agent may not call in this project. */
   disabledTools?: string[];
+  /**
+   * The operating rules to put at the top of the prompt, already rendered.
+   *
+   * Passed in rather than read here because this module has no database access,
+   * and because a turn must be reproducible from its context alone. Omitted falls
+   * back to the code defaults, which is what keeps the agent working when the
+   * curation table is unreachable.
+   */
+  operatingRules?: string[];
+  /**
+   * Model-facing tool descriptions, by tool name, overriding the catalogue.
+   *
+   * Only the description: the name and the JSON schema stay in code, because a
+   * renamed tool or a broken schema fails in ways nobody sees until a turn
+   * misbehaves.
+   */
+  toolDescriptions?: Record<string, string>;
+  /**
+   * Whether the agent may delete things.
+   *
+   * The prompt used to say "ask before doing anything destructive", which was a
+   * request the model could decline and nothing more — permission prompts are
+   * auto-approved here, because the turn runs headless. Off, the two destructive
+   * operations are simply not registered, so this is a capability the agent does
+   * not have rather than a rule it is trusted to follow.
+   */
+  allowDestructive?: boolean;
+  /** How long this turn may run, in seconds. Null → default (300s). */
+  turnTimeout?: number | null;
+  /**
+   * Called whenever the trail grows, with the whole trail so far.
+   *
+   * A turn that builds a stack can run for minutes, and until it returned the UI
+   * had nothing to show but a spinner — indistinguishable from a hang. The caller
+   * decides where to put the progress; this only reports it. Errors thrown here
+   * would kill a working turn, so the caller must swallow its own.
+   */
+  onStep?: (steps: AgentStep[]) => void;
 }
 
 export interface AgentTurn {
@@ -79,7 +157,31 @@ export interface AgentTurn {
  * transcript, so a model that thinks in essays must not be able to grow a row
  * without bound.
  */
-const MAX_STEPS = 40;
+/**
+ * How long the agent may think per turn.
+ *
+ * `sendAndWait` defaults to 60 000 ms, which is too short for multi-step tasks
+ * like "build me a whole infrastructure". Each tool call is a round trip to the
+ * runtime, and a complex task easily chains 10–20 of them.
+ *
+ * 5 minutes is generous but finite: a turn that stalls beyond that is not
+ * thinking harder, it has hit an issue the user needs to hear about.
+ *
+ * Overridable per user / per project via agent settings (`turnTimeout` in
+ * seconds, 30–1800).
+ */
+const DEFAULT_TURN_TIMEOUT_MS = DEFAULT_TURN_TIMEOUT_SECONDS * 1000;
+
+const MAX_STEPS = AGENT_MAX_STEPS;
+
+/**
+ * The operations that delete something, and every reference to it.
+ *
+ * Named here rather than flagged in the catalogue because this is the agent's
+ * question, not the catalogue's: the same operations remain available on the
+ * canvas, where a person is looking at what they are removing.
+ */
+const DESTRUCTIVE_TOOLS = ["remove_module", "remove_local"] as const;
 const MAX_THOUGHT_LENGTH = 600;
 
 export async function runProjectAgent(
@@ -88,6 +190,14 @@ export async function runProjectAgent(
 ): Promise<AgentTurn> {
   const mutations: ProjectGraphMutation[] = [];
   const steps: AgentStep[] = [];
+  /**
+   * Records a step and tells the caller, so progress is visible while the turn
+   * is still running rather than only in the finished message.
+   */
+  const record = (step: AgentStep) => {
+    pushStep(steps, step);
+    context.onStep?.(steps);
+  };
   const client = copilotClient();
   let session: CopilotSession | undefined;
 
@@ -102,7 +212,7 @@ export async function runProjectAgent(
       sessionId: `terrablox-${context.userId}-${context.projectId}-${Date.now()}`,
       model: context.model || COPILOT_MODEL,
       gitHubToken: context.githubToken,
-      tools: buildTools(context, mutations, steps),
+      tools: buildTools(context, mutations, record),
       ...(usesMcp ? { mcpServers } : {}),
       // Omitted rather than defaulted: a model that does not support the
       // setting rejects the session, so "leave it alone" has to mean absent.
@@ -116,14 +226,14 @@ export async function runProjectAgent(
       onEvent: (event) => {
         if (event.type !== "assistant.reasoning") return;
         const text = event.data.content?.trim();
-        if (text) pushStep(steps, { kind: "thought", text });
+        if (text) record({ kind: "thought", text });
       },
       // Without this the runtime raises a prompt and waits for a human who is
       // not there, and the model reports the call back as "permission denied".
       // The turn runs headless, so the decision has to be made here. What may
       // ask at all is already fenced in by `availableTools` below.
       onPermissionRequest: (request) => {
-        pushStep(steps, {
+        record({
           kind: "tool",
           tool: request.kind,
           summary: "Allowed for this turn",
@@ -143,7 +253,11 @@ export async function runProjectAgent(
       systemMessage: { content: systemPrompt(context) },
     });
 
-    const response = await session.sendAndWait({ prompt: message });
+    const timeoutMs = context.turnTimeout
+      ? context.turnTimeout * 1000
+      : DEFAULT_TURN_TIMEOUT_MS;
+
+    const response = await session.sendAndWait({ prompt: message }, timeoutMs);
 
     return {
       reply:
@@ -153,6 +267,13 @@ export async function runProjectAgent(
       steps,
     };
   } catch (error) {
+    // `sendAndWait` only stops *waiting* — the SDK says so plainly, and its
+    // implementation races the wait against a timer. Without this the runtime
+    // would carry on thinking for a turn nobody is listening to any more, on the
+    // user's own Copilot quota. `abort` is the SDK's cancellation for exactly
+    // that, and is harmless when nothing is in flight.
+    await session?.abort().catch(() => {});
+
     discardCopilotClient(error);
     throw new Error(describeCopilotError(error));
   } finally {
@@ -176,26 +297,106 @@ export async function runProjectAgent(
 function buildTools(
   context: AgentContext,
   sink: ProjectGraphMutation[],
-  steps: AgentStep[],
+  record: (step: AgentStep) => void,
 ) {
   const disabled = new Set(context.disabledTools ?? []);
+
+  // Withheld rather than refused at call time, for the same reason the library
+  // withholds `add_module`: the model is told in the prompt which operations are
+  // unavailable, so it says what it cannot do instead of promising a deletion and
+  // then failing. Deleting a module rewrites every reference to it, which is the
+  // one change on this canvas that a user cannot reconstruct by looking at it.
+  if (!context.allowDestructive) {
+    for (const tool of DESTRUCTIVE_TOOLS) disabled.add(tool);
+  }
+
+  // Withheld together with the library itself. `add_module` takes a library id
+  // and nothing else, so without a library it can only ever refuse — and a tool
+  // that can only refuse is worse than an absent one, because the model will
+  // promise the user a module first and discover the problem afterwards.
+  if (!knowledgeEnabled(context.disabledKnowledge, KNOWLEDGE_MODULE_LIBRARY)) {
+    disabled.add("add_module");
+  }
+
+  // Same reasoning once more: with no repository linked there is nothing for
+  // these two to read, so they are absent rather than present-and-failing. A
+  // project with no application is the common case, not an error.
+  const appRepo =
+    context.appRepo &&
+    knowledgeEnabled(context.disabledKnowledge, KNOWLEDGE_APP_REPO)
+      ? context.appRepo
+      : null;
+
+  if (!appRepo) {
+    disabled.add("list_app_files");
+    disabled.add("read_app_file");
+  }
+
+  // Kind-aware since locals joined the graph: a module and a local may share a
+  // name, and "is there a node called vpc" stopped being the right question.
+  // Both checks include already-queued mutations, so a second `add_local` in
+  // the same turn sees the first rather than queuing a duplicate that fails on
+  // commit.
   const hasNode = (name: string) =>
-    context.graph.nodes.some((node) => node.id === name);
+    context.graph.nodes.some(
+      (node) => node.id === name && node.kind === "module",
+    ) || sink.some((m) => m.action === "add-module" && m.name === name);
+
+  const hasLocal = (name: string) =>
+    context.graph.nodes.some(
+      (node) => node.id === name && node.kind === "local",
+    ) || sink.some((m) => m.action === "add-local" && m.name === name);
+
+  /** Bound to this turn's curated descriptions; the schema stays from code. */
+  const spec = (name: (typeof PROJECT_AGENT_TOOLS)[number]["name"]) =>
+    toolSpec(name, context.toolDescriptions);
+
+  const refuse = (tool: string, error: string) => {
+    record({ kind: "tool", tool, summary: error, ok: false });
+    return { error };
+  };
+
+  /**
+   * Charges one read against the turn's own budget, separate from `queue()`.
+   *
+   * Reads commit nothing, so they must not spend the operation budget — a turn
+   * that studied an application closely would otherwise have nothing left to
+   * build with. They still get a ceiling, because each one is a GitHub request on
+   * the user's rate limit. Returns a refusal to hand straight back, or nothing
+   * when there was budget left.
+   */
+  let reads = 0;
+  const spendRead = (tool: string) => {
+    if (reads >= AGENT_MAX_APP_REPO_READS) {
+      return refuse(
+        tool,
+        `Reading budget spent: a single turn may read the application repository at most ${AGENT_MAX_APP_REPO_READS} times. Work with what you have already seen, and say what you were still looking for.`,
+      );
+    }
+    reads += 1;
+    return null;
+  };
 
   const queue = (tool: string, mutation: ProjectGraphMutation) => {
+    // The budget is enforced here rather than counted for the record, because
+    // every queued operation becomes a commit once the turn ends. Refusing with
+    // a reason lets the model wind up and report; dropping the call silently
+    // would leave it convinced the edit had been made.
+    if (sink.length >= AGENT_MAX_TOOL_CALLS) {
+      return refuse(
+        tool,
+        `Operation budget spent: a single turn may queue at most ${AGENT_MAX_TOOL_CALLS} changes. Tell the user what you have already queued and ask them to continue in a new message.`,
+      );
+    }
+
     sink.push(mutation);
-    pushStep(steps, {
+    record({
       kind: "tool",
       tool,
       summary: describeMutation(mutation),
       ok: true,
     });
     return { queued: true, pending: sink.length };
-  };
-
-  const refuse = (tool: string, error: string) => {
-    pushStep(steps, { kind: "tool", tool, summary: error, ok: false });
-    return { error };
   };
 
   return [
@@ -236,21 +437,346 @@ function buildTools(
     }),
     defineTool<{ target: string; targetInput: string }>("disconnect", {
       ...spec("disconnect"),
-      handler: async ({ target, targetInput }) =>
-        hasNode(target)
-          ? queue("disconnect", { action: "disconnect", target, targetInput })
-          : refuse("disconnect", unknownModule(target, context)),
+      handler: async ({ target, targetInput }) => {
+        if (!hasNode(target)) {
+          return refuse("disconnect", unknownModule(target, context));
+        }
+        // Sent to the variable tool rather than done here, so that switching one
+        // of the two off is a real restriction. Both end in the same mutation, so
+        // without this check the module tool would quietly cover both.
+        if (readsLocal(context, target, targetInput)) {
+          return refuse(
+            "disconnect",
+            `${target}.${targetInput} is fed by a variable, not by a module. Use disconnect_local.`,
+          );
+        }
+        return queue("disconnect", {
+          action: "disconnect",
+          target,
+          targetInput,
+        });
+      },
     }),
-    defineTool<{ name: string; newName: string }>("rename_module", {
-      ...spec("rename_module"),
-      handler: async ({ name, newName }) =>
-        hasNode(name)
-          ? queue("rename_module", { action: "rename-module", name, newName })
-          : refuse("rename_module", unknownModule(name, context)),
+    defineTool<{
+      name: string;
+      newName?: string;
+      arguments?: Array<{ input: string; value: string }>;
+    }>("edit_module", {
+      ...spec("edit_module"),
+      handler: async ({ name, newName, arguments: args }) => {
+        if (!hasNode(name)) {
+          return refuse("edit_module", unknownModule(name, context));
+        }
+
+        const settings = (args ?? []).filter(
+          (entry) => entry?.input && typeof entry.value === "string",
+        );
+
+        if (!newName && settings.length === 0) {
+          return refuse(
+            "edit_module",
+            "Nothing to change. Pass `newName`, `arguments`, or both.",
+          );
+        }
+
+        // Arguments first: after a rename they would have to name the module by
+        // its new label, and queueing them in this order means the model does not
+        // have to reason about that.
+        for (const entry of settings) {
+          queue("edit_module", {
+            action: "set-argument",
+            name,
+            input: entry.input,
+            value: entry.value,
+          });
+        }
+
+        if (newName) {
+          return queue("edit_module", {
+            action: "rename-module",
+            name,
+            newName,
+          });
+        }
+
+        return { queued: true, pending: sink.length };
+      },
+    }),
+    defineTool<{
+      name: string;
+      value: string;
+      connectTo?: { target: string; targetInput: string };
+    }>("add_local", {
+      ...spec("add_local"),
+      handler: async ({ name, value, connectTo }) => {
+        if (!isValidLocalName(name)) {
+          return refuse(
+            "add_local",
+            `"${name}" is not a valid local name. Use letters, digits and underscores, starting with a letter.`,
+          );
+        }
+        if (hasLocal(name)) {
+          return refuse(
+            "add_local",
+            `A value called "${name}" already exists.`,
+          );
+        }
+        if (connectTo && !hasNode(connectTo.target)) {
+          return refuse("add_local", unknownModule(connectTo.target, context));
+        }
+
+        return queue("add_local", {
+          action: "add-local",
+          name,
+          value,
+          ...(connectTo ? { connectTo } : {}),
+        });
+      },
+    }),
+    defineTool<{ name: string; newName?: string; value?: string }>(
+      "edit_local",
+      {
+        ...spec("edit_local"),
+        handler: async ({ name, newName, value }) => {
+          if (!hasLocal(name)) {
+            return refuse("edit_local", unknownLocal(name, context));
+          }
+          if (newName !== undefined && !isValidLocalName(newName)) {
+            return refuse(
+              "edit_local",
+              `"${newName}" is not a valid variable name. Use letters, digits and underscores, starting with a letter.`,
+            );
+          }
+          if (newName === undefined && value === undefined) {
+            return refuse(
+              "edit_local",
+              "Nothing to change. Pass `newName`, `value`, or both.",
+            );
+          }
+
+          // The value first, for the same reason as `edit_module`: afterwards the
+          // variable answers to a different name.
+          if (value !== undefined) {
+            queue("edit_local", { action: "set-local", name, value });
+          }
+
+          if (newName !== undefined) {
+            return queue("edit_local", {
+              action: "rename-local",
+              name,
+              newName,
+            });
+          }
+
+          return { queued: true, pending: sink.length };
+        },
+      },
+    ),
+    defineTool<{ name: string }>("remove_local", {
+      ...spec("remove_local"),
+      handler: async ({ name }) =>
+        hasLocal(name)
+          ? queue("remove_local", { action: "remove-local", name })
+          : refuse("remove_local", unknownLocal(name, context)),
+    }),
+    defineTool<{ local: string; target: string; targetInput: string }>(
+      "connect_local",
+      {
+        ...spec("connect_local"),
+        handler: async ({ local, target, targetInput }) => {
+          if (!hasLocal(local)) {
+            return refuse("connect_local", unknownLocal(local, context));
+          }
+          if (!hasNode(target)) {
+            return refuse("connect_local", unknownModule(target, context));
+          }
+          return queue("connect_local", {
+            action: "connect-local",
+            local,
+            target,
+            targetInput,
+          });
+        },
+      },
+    ),
+    defineTool<{ target: string; targetInput: string }>("disconnect_local", {
+      ...spec("disconnect_local"),
+      handler: async ({ target, targetInput }) => {
+        if (!hasNode(target)) {
+          return refuse("disconnect_local", unknownModule(target, context));
+        }
+        if (!readsLocal(context, target, targetInput)) {
+          return refuse(
+            "disconnect_local",
+            `${target}.${targetInput} does not read a variable. Use disconnect to clear an input fed by another module.`,
+          );
+        }
+        // The same mutation as `disconnect`: clearing an argument is one edit
+        // whatever fed it. The two tools differ in what they will clear, not in
+        // what they do.
+        return queue("disconnect_local", {
+          action: "disconnect",
+          target,
+          targetInput,
+        });
+      },
+    }),
+    defineTool<{ path?: string }>("list_app_files", {
+      ...spec("list_app_files"),
+      handler: async ({ path }) => {
+        if (!appRepo) return refuse("list_app_files", NO_APP_REPO);
+
+        const spend = spendRead("list_app_files");
+        if (spend) return spend;
+
+        try {
+          const tree = await listRepoTree(context.githubToken, {
+            repoFullName: appRepo.fullName,
+            ref: appRepo.branch,
+          });
+
+          const prefix = normaliseAppPath(path);
+          const files = tree.entries
+            .filter((entry) => entry.type === "blob")
+            .map((entry) => entry.path)
+            .filter((entry) => !prefix || entry.startsWith(`${prefix}/`))
+            .filter((entry) => !isIgnoredAppPath(entry))
+            .sort();
+
+          const shown = files.slice(0, AGENT_APP_REPO_TREE_LIMIT);
+          const omitted = files.length - shown.length;
+
+          record({
+            kind: "tool",
+            tool: "list_app_files",
+            summary: `Listed ${shown.length} file${shown.length === 1 ? "" : "s"} in ${appRepo.fullName}${prefix ? `/${prefix}` : ""}`,
+            ok: true,
+          });
+
+          return {
+            repository: appRepo.fullName,
+            ref: appRepo.branch,
+            ...(prefix ? { path: prefix } : {}),
+            files: shown,
+            ...(omitted > 0
+              ? {
+                  truncated: `${omitted} more file(s) not shown. Pass \`path\` to list one directory at a time.`,
+                }
+              : {}),
+          };
+        } catch (error) {
+          return refuse("list_app_files", describeAppRepoError(error, appRepo));
+        }
+      },
+    }),
+    defineTool<{ path: string }>("read_app_file", {
+      ...spec("read_app_file"),
+      handler: async ({ path }) => {
+        if (!appRepo) return refuse("read_app_file", NO_APP_REPO);
+
+        const wanted = normaliseAppPath(path);
+        if (!wanted) {
+          return refuse("read_app_file", "Pass the path of a file to read.");
+        }
+
+        const spend = spendRead("read_app_file");
+        if (spend) return spend;
+
+        try {
+          const file = await readRepoFile(context.githubToken, {
+            repoFullName: appRepo.fullName,
+            path: wanted,
+            ref: appRepo.branch,
+          });
+
+          if (!file) {
+            return refuse(
+              "read_app_file",
+              `No file at ${wanted} in ${appRepo.fullName}. Use list_app_files to see what is there.`,
+            );
+          }
+
+          const truncated = file.content.length > AGENT_APP_REPO_FILE_CHARS;
+
+          record({
+            kind: "tool",
+            tool: "read_app_file",
+            summary: `Read ${wanted} from ${appRepo.fullName}`,
+            ok: true,
+          });
+
+          return {
+            repository: appRepo.fullName,
+            path: wanted,
+            content: truncated
+              ? file.content.slice(0, AGENT_APP_REPO_FILE_CHARS)
+              : file.content,
+            ...(truncated
+              ? {
+                  truncated: `Only the first ${AGENT_APP_REPO_FILE_CHARS} characters are shown.`,
+                }
+              : {}),
+          };
+        } catch (error) {
+          return refuse("read_app_file", describeAppRepoError(error, appRepo));
+        }
+      },
     }),
     // Withheld rather than refused at call time: a tool the model cannot see is
     // one it will not promise the user and then fail to deliver.
   ].filter((tool) => !disabled.has(tool.name));
+}
+
+/** Said the same way wherever a read tool runs without a repository behind it. */
+const NO_APP_REPO =
+  "No application repository is linked to this project. Ask the user to link one in the agent settings, or ask them about the application directly.";
+
+/**
+ * Strips a path down to something safe to put in a GitHub URL.
+ *
+ * The model supplies these, and a `..` segment in one would address a directory
+ * outside the repository the user actually linked. Dropping the segments rather
+ * than refusing keeps a harmless leading `./` from costing a turn a tool call.
+ */
+function normaliseAppPath(path: string | undefined): string {
+  return (path ?? "")
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .split("/")
+    .filter((segment) => segment && segment !== "." && segment !== "..")
+    .join("/");
+}
+
+/** Whether any segment of a path is a dependency or build directory. */
+function isIgnoredAppPath(path: string): boolean {
+  const segments = path.split("/");
+  // The last segment is the file itself, which is never a directory name.
+  return segments
+    .slice(0, -1)
+    .some((segment) => AGENT_APP_REPO_IGNORED_DIRS.includes(segment));
+}
+
+/**
+ * A GitHub failure in words the model can act on.
+ *
+ * The raw message carries a status code and a JSON body, which a model tends to
+ * either repeat at the user or read as its own mistake and retry. The two cases
+ * worth distinguishing are both about access rather than about the call.
+ */
+function describeAppRepoError(
+  error: unknown,
+  appRepo: { fullName: string; branch: string },
+): string {
+  if (error instanceof GithubRequestError) {
+    if (error.status === 404) {
+      return `Cannot reach ${appRepo.fullName} at ${appRepo.branch}. Either the branch does not exist or the linked account can no longer see the repository. Tell the user; do not retry.`;
+    }
+    if (error.status === 401 || error.status === 403) {
+      return `Not allowed to read ${appRepo.fullName}. Tell the user their GitHub access to the linked application repository needs checking; do not retry.`;
+    }
+  }
+
+  return `Could not read ${appRepo.fullName}: ${error instanceof Error ? error.message : "unknown error"}.`;
 }
 
 /** Appends a step, dropping the overflow rather than the earliest context. */
@@ -277,17 +803,69 @@ function describeMutation(mutation: ProjectGraphMutation): string {
       return `Clear ${mutation.target}.${mutation.targetInput}`;
     case "rename-module":
       return `Rename ${mutation.name} to ${mutation.newName}`;
+    case "set-argument":
+      return `Set ${mutation.name}.${mutation.input}`;
+    case "add-local":
+      return mutation.connectTo
+        ? `Add variable ${mutation.name} and wire it to ${mutation.connectTo.target}.${mutation.connectTo.targetInput}`
+        : `Add variable ${mutation.name}`;
+    case "set-local":
+      return `Set variable ${mutation.name}`;
+    case "rename-local":
+      return `Rename variable ${mutation.name} to ${mutation.newName}`;
+    case "remove-local":
+      return `Remove variable ${mutation.name}`;
+    case "connect-local":
+      return `Wire ${mutation.target}.${mutation.targetInput} to local.${mutation.local}`;
     default:
       return mutation.action;
   }
 }
 
-/** The description and JSON schema declared once in PROJECT_AGENT_TOOLS. */
-function spec(name: (typeof PROJECT_AGENT_TOOLS)[number]["name"]) {
+/**
+ * Whether a module input is currently fed by a variable.
+ *
+ * Read from the graph the turn started with, which is also what the model was
+ * shown, so a refusal it gets back matches what it was told.
+ */
+function readsLocal(
+  context: AgentContext,
+  target: string,
+  targetInput: string,
+): boolean {
+  return context.graph.edges.some(
+    (edge) =>
+      edge.target === target &&
+      edge.sourceKind === "local" &&
+      edge.links.some((link) => link.targetInput === targetInput),
+  );
+}
+
+function unknownLocal(name: string, context: AgentContext): string {
+  const known = context.graph.nodes
+    .filter((node) => node.kind === "local")
+    .map((node) => node.id)
+    .join(", ");
+
+  return `No value "${name}" in this project. Available: ${known || "none"}.`;
+}
+
+/**
+ * The description and JSON schema declared once in PROJECT_AGENT_TOOLS.
+ *
+ * The description may be overridden from the admin panel, the schema may not: a
+ * reworded description is a prompt change the model copes with, while a changed
+ * schema is a tool that stops matching its handler and fails in a way nobody sees
+ * until a turn misbehaves.
+ */
+function toolSpec(
+  name: (typeof PROJECT_AGENT_TOOLS)[number]["name"],
+  descriptions: Record<string, string> | undefined,
+) {
   const tool = PROJECT_AGENT_TOOLS.find((entry) => entry.name === name);
   if (!tool) throw new Error(`No tool definition for ${name}.`);
   return {
-    description: tool.description,
+    description: descriptions?.[name] ?? tool.description,
     parameters: tool.parameters,
     // A prompt here would wait for a human who is not in the loop: these tools
     // only queue a mutation, and the commit afterwards is ours to authorise.
@@ -296,7 +874,10 @@ function spec(name: (typeof PROJECT_AGENT_TOOLS)[number]["name"]) {
 }
 
 function unknownModule(name: string, context: AgentContext): string {
-  const known = context.graph.nodes.map((node) => node.id).join(", ");
+  const known = context.graph.nodes
+    .filter((node) => node.kind === "module")
+    .map((node) => node.id)
+    .join(", ");
   return `There is no module block called "${name}". On the canvas: ${known || "nothing yet"}.`;
 }
 
@@ -310,8 +891,25 @@ function unknownModule(name: string, context: AgentContext): string {
 function systemPrompt(context: AgentContext): string {
   const { graph } = context;
 
-  const modules = graph.nodes.length
-    ? graph.nodes
+  const hasLibrary = knowledgeEnabled(
+    context.disabledKnowledge,
+    KNOWLEDGE_MODULE_LIBRARY,
+  );
+  const hasRepo = knowledgeEnabled(
+    context.disabledKnowledge,
+    KNOWLEDGE_PROJECT_REPO,
+  );
+  const appRepo =
+    context.appRepo &&
+    knowledgeEnabled(context.disabledKnowledge, KNOWLEDGE_APP_REPO)
+      ? context.appRepo
+      : null;
+
+  const moduleNodes = graph.nodes.filter((node) => node.kind === "module");
+  const localNodes = graph.nodes.filter((node) => node.kind === "local");
+
+  const modules = moduleNodes.length
+    ? moduleNodes
         .map(
           (node) =>
             `- ${node.id}${node.moduleName ? ` (module ${node.moduleName}${node.version ? `@${node.version}` : ""})` : ""}`,
@@ -319,12 +917,19 @@ function systemPrompt(context: AgentContext): string {
         .join("\n")
     : "(none)";
 
+  const locals = localNodes.length
+    ? localNodes
+        .map((node) => `- local.${node.id} = ${node.expression ?? "(unset)"}`)
+        .join("\n")
+    : "(none)";
+
   const wiring = graph.edges.length
     ? graph.edges
         .flatMap((edge) =>
-          edge.links.map(
-            (link) =>
-              `- ${edge.target}.${link.targetInput} = ${edge.source}.${link.sourceOutput ?? "?"}`,
+          edge.links.map((link) =>
+            edge.sourceKind === "local"
+              ? `- ${edge.target}.${link.targetInput} = local.${edge.source}`
+              : `- ${edge.target}.${link.targetInput} = ${edge.source}.${link.sourceOutput ?? "?"}`,
           ),
         )
         .join("\n")
@@ -354,39 +959,81 @@ function systemPrompt(context: AgentContext): string {
 
   // Last few turns only. The graph above already reflects everything earlier
   // turns changed, so older messages add tokens without adding facts.
-  const history = context.history
-    .slice(-8)
-    .map((entry) => `${entry.role}: ${entry.content}`)
-    .join("\n");
+  const memory = recallConversation(context.history);
 
   return [
     `You are the TerraBlox agent for the project "${context.projectName}", backed by ${context.repoFullName} on branch ${context.branch}.`,
     "",
-    "You edit Terraform root configurations only through the tools you were given. Never invent HCL in your reply as a substitute for calling a tool.",
-    "Every tool call is committed to the repository after your turn, so ask before doing anything destructive such as removing a module.",
-    "Keep replies short and concrete. Say what you changed, not how the tools work.",
+    // Editable in the admin panel, defaults in `harness-curation`. Rendered
+    // there, so a rule quoting the operation budget cannot quote a wrong one.
+    ...(context.operatingRules ??
+      DEFAULT_OPERATING_RULES.map(renderOperatingRule)),
     // Named explicitly, because otherwise the model reads a missing tool as its
     // own failure and apologises instead of telling the user where the switch is.
     ...disabledToolNotice(context.disabledTools),
+    // Same reasoning for knowledge, and one degree more important: an empty
+    // project and a hidden project look identical from inside the prompt, and
+    // only one of them is safe to start building on.
+    ...withheldKnowledgeNotice(hasLibrary, hasRepo),
     "",
-    `## Modules on the canvas (${graph.nodes.length})`,
-    modules,
-    "",
-    "## Wiring",
-    wiring,
-    "",
-    "## Unset required inputs",
-    gaps,
-    "",
-    "## Module library available to add",
-    library,
-    "",
-    `Root-level resource/data blocks: ${graph.resourceCount}. Files: ${graph.files.join(", ") || "none"}.`,
-    // Skills and the user's own instructions come last, after the facts, so
-    // they read as standing preferences rather than as part of the graph. The
-    // operating rules at the top still win: this text is the user's, but the
-    // guarantee that edits go through tools is ours.
-    ...skillSections(context.skills),
+    ...(hasRepo
+      ? [
+          `## Modules on the canvas (${moduleNodes.length})`,
+          modules,
+          "",
+          `## Variables, i.e. \`locals\` (${localNodes.length})`,
+          locals,
+          "",
+          "A variable is the right answer when an input needs a constant, when the same",
+          "constant is needed in two places, or when a computed expression deserves a",
+          "name. Wiring one module's output straight into another module's input needs",
+          "no variable in between.",
+          "",
+          "## Wiring",
+          wiring,
+          "",
+          "## Unset required inputs",
+          gaps,
+          "",
+          `Root-level resource/data blocks: ${graph.resourceCount}. Files: ${graph.files.join(", ") || "none"}.`,
+        ]
+      : []),
+    ...(hasLibrary ? ["", "## Module library available to add", library] : []),
+    // Placed after the project and the library, because it is the only section
+    // that asks the model to go and do something before answering rather than
+    // telling it something. It reads as an instruction, and an instruction wants
+    // the facts above it already in view.
+    ...(appRepo
+      ? [
+          "",
+          "## The application this infrastructure is for",
+          `Linked repository: ${appRepo.fullName}, branch ${appRepo.branch}. You can read it with \`list_app_files\` and \`read_app_file\`, and you cannot write to it.`,
+          "",
+          "Read it before proposing infrastructure. What an application needs is a fact about",
+          "how it is built, not a preference to be guessed at: its language and framework,",
+          "whether it ships a container, which ports it listens on, which databases, caches,",
+          "queues and buckets it talks to, what its configuration and secrets look like, and",
+          "how it is currently built and deployed. Start with `list_app_files`, then read the",
+          "files that state requirements — Dockerfile, compose files, dependency manifests,",
+          "environment samples, CI workflows — rather than reading the whole repository.",
+          "",
+          "Say what you found and what you concluded from it, so the user can correct a wrong",
+          "reading before it becomes infrastructure. If the repository turns out not to answer",
+          "the question, ask them instead of assuming.",
+        ]
+      : [
+          "",
+          "## The application this infrastructure is for",
+          // The two reasons for having no application read differently to a user:
+          // one is a project that was never linked, the other is a deliberate
+          // restriction. Saying "not linked" to someone who switched it off
+          // themselves sends them to the wrong screen.
+          context.appRepo
+            ? `This project is linked to ${context.appRepo.fullName}, but the user has withheld it from you: you cannot read the application's code in this turn. Say that application repository access is switched off in the agent settings, and ask them about the application instead of assuming.`
+            : "No application repository is linked to this project, so you cannot see the application's code. Ask the user what runs on this infrastructure — runtime, ports, data stores, how it is deployed — rather than assuming, and mention that linking a repository in the agent settings would let you read it yourself.",
+        ]),
+    // The user's own instructions come last, after the facts, so
+    // they read as standing preferences rather than as part of the graph.
     ...(context.instructions?.trim()
       ? [
           "",
@@ -395,8 +1042,92 @@ function systemPrompt(context: AgentContext): string {
           context.instructions.trim(),
         ]
       : []),
-    ...(history ? ["", "## Conversation so far", history] : []),
+    ...(memory.text
+      ? [
+          "",
+          "## Conversation so far",
+          // Said out loud, because a model that cannot see the start of a
+          // conversation should not assume it is reading the whole of it.
+          ...(memory.truncated
+            ? [
+                `(The earliest ${memory.dropped} message(s) are not shown — this conversation is longer than fits here.)`,
+              ]
+            : []),
+          memory.text,
+        ]
+      : []),
   ].join("\n");
+}
+
+/**
+ * The project's conversation, newest-first until the budget runs out.
+ *
+ * One memory per project, holding as much of its own history as can be carried.
+ * Filling backwards is what makes the limit bite in the right place: the turns
+ * that matter to the question being asked are the recent ones, and it is the
+ * opening small talk that gets dropped.
+ */
+function recallConversation(
+  history: Array<{ role: string; content: string }>,
+): {
+  text: string;
+  truncated: boolean;
+  dropped: number;
+} {
+  const lines: string[] = [];
+  let used = 0;
+  let taken = 0;
+
+  for (let i = history.length - 1; i >= 0; i--) {
+    const entry = history[i];
+    if (!entry) continue;
+
+    const line = `${entry.role}: ${entry.content}`;
+    // The newest message is kept whatever its size: dropping the thing that was
+    // just said would be worse than a slightly over-budget prompt.
+    if (used + line.length > AGENT_HISTORY_BUDGET_CHARS && taken > 0) break;
+
+    lines.push(line);
+    used += line.length + 1;
+    taken++;
+  }
+
+  lines.reverse();
+
+  return {
+    text: lines.join("\n"),
+    truncated: taken < history.length,
+    dropped: history.length - taken,
+  };
+}
+
+/**
+ * Tells the model which facts it is missing, and that they were withheld.
+ *
+ * Silence would be worse than absence here. With no project in the prompt the
+ * model has no way to tell "this repository is empty" from "you are not allowed
+ * to see this repository", and the first reading leads it to propose building a
+ * stack from scratch on top of one that already exists.
+ */
+function withheldKnowledgeNotice(
+  hasLibrary: boolean,
+  hasRepo: boolean,
+): string[] {
+  const lines: string[] = [];
+
+  if (!hasRepo) {
+    lines.push(
+      "The user has withheld the project's current Terraform from you. You cannot see which modules, values or wiring already exist, so do not claim the project is empty and do not change or remove anything you cannot see. Say that repository knowledge is switched off in the agent settings, and offer only what is safe without it.",
+    );
+  }
+
+  if (!hasLibrary) {
+    lines.push(
+      "The user has withheld the module library from you, so you cannot add modules at all. If asked for one, say the module library is switched off in the agent settings.",
+    );
+  }
+
+  return lines;
 }
 
 /** Tells the model a capability was withheld by the user, not lost to a bug. */
@@ -407,10 +1138,4 @@ function disabledToolNotice(disabled: string[] | undefined): string[] {
   return [
     `The user has switched off these tools for this project: ${names.join(", ")}. You do not have them. If asked for one, say it is disabled in the agent settings and offer the closest thing you can still do.`,
   ];
-}
-
-function skillSections(skills: AgentSkill[] | undefined): string[] {
-  if (!skills?.length) return [];
-
-  return ["", "## Skills the user enabled", ...skills.map((s) => s.content)];
 }

@@ -157,11 +157,26 @@ export function DependenciesTab({
     );
   }, [usedBy, needle]);
 
+  // Every section here is hidden when it is empty, so a module that declares
+  // none of the three would otherwise leave a search box sitting over nothing.
+  if (
+    providers.length === 0 &&
+    dependencies.length === 0 &&
+    usedBy.length === 0
+  ) {
+    return (
+      <p className="flex min-h-[12rem] items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 text-center text-muted-foreground text-sm">
+        This module requires no providers, calls no other modules, and nothing
+        imported here calls it.
+      </p>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <SearchField
         onChange={setQuery}
-        placeholder="Filter providers and modules…"
+        placeholder="Filter providers and modules"
         value={query}
       />
 
@@ -198,29 +213,29 @@ export function DependenciesTab({
         </FieldList>
       ) : null}
 
-      <FieldList
-        collapsible
-        onToggle={() => setShowDependencies((open) => !open)}
-        open={dependencies.length > 0 && showDependencies}
-        shown={filtered.length}
-        title="Modules"
-        total={dependencies.length}
-      >
-        {filtered.length === 0 ? (
-          <EmptyMessage>
-            {dependencies.length === 0
-              ? "This module does not call any other modules."
-              : "No dependencies match the current filter."}
-          </EmptyMessage>
-        ) : (
-          filtered.map((d) => (
-            <DependencyRow
-              dependency={d}
-              key={`${d.sourceFile ?? ""}:${d.id}`}
-            />
-          ))
-        )}
-      </FieldList>
+      {dependencies.length > 0 ? (
+        <FieldList
+          collapsible
+          onToggle={() => setShowDependencies((open) => !open)}
+          open={showDependencies}
+          shown={filtered.length}
+          title="Modules"
+          total={dependencies.length}
+        >
+          {filtered.length === 0 ? (
+            <EmptyMessage>
+              No dependencies match the current filter.
+            </EmptyMessage>
+          ) : (
+            filtered.map((d) => (
+              <DependencyRow
+                dependency={d}
+                key={`${d.sourceFile ?? ""}:${d.id}`}
+              />
+            ))
+          )}
+        </FieldList>
+      ) : null}
 
       {usedBy.length > 0 ? (
         <FieldList
