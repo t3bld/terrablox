@@ -5,7 +5,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
 import { Input } from "@terrablox/ui/input";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
-import { AlertTriangle, ChevronDown, Search } from "lucide-react";
+import {
+  BookMarked,
+  Bot,
+  ChevronDown,
+  LayoutGrid,
+  Search,
+  Wallet,
+} from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 
 import {
@@ -14,23 +21,47 @@ import {
 } from "@/components/admin/harness-editor";
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
+import {
+  type TabDefinition,
+  TabsNav,
+  tabPanelProps,
+} from "@/components/layout/tabs-nav";
+import { useHashTab } from "@/lib/use-hash-tab";
+
+/**
+ * One tab per curation domain, each opening on its own coverage figures.
+ *
+ * Coverage is per domain rather than page-wide: "how much of what people import
+ * has a cost class" is a fact about the cost tables and belongs above them,
+ * where someone can act on it. As one shared card at the top it was a summary of
+ * two unrelated things that the reader then had to carry to the right tab.
+ */
+type AdminTab = "cost" | "architecture" | "agent" | "conventions";
+
+const ADMIN_TABS: readonly AdminTab[] = [
+  "cost",
+  "architecture",
+  "agent",
+  "conventions",
+];
 
 /**
  * What TerraBlox knows because somebody wrote it down.
  *
- * Reachable at `/admin` and linked from nowhere, which is how it should be — but
- * unlinked is not private, and the banner at the top says so. Every signed-in user
- * can type the URL. That is acceptable only because there is nothing here but
- * classification tables that also ship in the source; the moment this page grows a
- * write button or shows another tenant's data, it needs a real gate.
+ * Reachable at `/admin`, and linked from the user menu for every signed-in user
+ * — there is no role check behind it. That is acceptable only because there is
+ * nothing here but classification tables that also ship in the source; the
+ * moment this page shows another tenant's data, it needs a real gate. The one
+ * write surface, the harness editor, already carries its own scope.
  *
- * The coverage figures are the reason it exists. A curated table looks complete in
- * the source and is only ever as good as its overlap with what people import, and
- * that overlap cannot be seen from the file.
+ * The coverage figures are the reason it exists. A curated table looks complete
+ * in the source and is only ever as good as its overlap with what people
+ * import, and that overlap cannot be seen from the file.
  */
 export default function AdminPage() {
   const [data, setData] = useState<CurationResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useHashTab<AdminTab>(ADMIN_TABS, "cost");
 
   useEffect(() => {
     let cancelled = false;
@@ -55,29 +86,57 @@ export default function AdminPage() {
     };
   }, []);
 
+  // Counts come from the payload, so they are absent until it lands. `TabsNav`
+  // hides an undefined count, which is what keeps the strip from jumping.
+  const tabs = useMemo<TabDefinition<AdminTab>[]>(
+    () => [
+      {
+        value: "cost",
+        label: "Cost",
+        icon: Wallet,
+        count: data?.cost.curated.length,
+      },
+      {
+        value: "architecture",
+        label: "Architecture",
+        icon: LayoutGrid,
+        count: data?.architecture.curated.length,
+      },
+      {
+        value: "agent",
+        label: "Agent",
+        icon: Bot,
+        count: data?.agent.planes.length,
+      },
+      {
+        value: "conventions",
+        label: "Conventions",
+        icon: BookMarked,
+        count: data?.conventions.conventionalLabels.length,
+      },
+    ],
+    [data],
+  );
+
   return (
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <PageHeader breadcrumbs={[{ label: "Curation" }]} />
+        <PageHeader breadcrumbs={[{ label: "Admin Settings" }]} />
 
-        <main className="flex-1 space-y-6 p-6">
-          <div
-            className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2.5 text-xs"
-            role="note"
-          >
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-            <p>
-              <span className="font-medium">
-                Not linked anywhere, and not access-controlled either.
-              </span>{" "}
-              Any signed-in user who knows the URL can read this page. It holds
-              no secrets and no other user's data — only the classification
-              tables that also ship in the source — but do not add anything here
-              that would not survive that.
-            </p>
-          </div>
+        {/* Between the header and the padded body, the way every other tabbed
+            screen does it: the strip's bottom border has to reach both edges to
+            read as the divider under the header rather than a control inside the
+            content. */}
+        <TabsNav
+          idPrefix="admin"
+          label="Curation categories"
+          onChange={setTab}
+          tabs={tabs}
+          value={tab}
+        />
 
+        <main {...tabPanelProps("admin", tab)} className="flex-1 space-y-6 p-6">
           {error ? (
             <p className="text-sm text-destructive">{error}</p>
           ) : !data ? (
@@ -86,7 +145,7 @@ export default function AdminPage() {
               <Skeleton className="h-64 w-full" />
             </>
           ) : (
-            <AdminContent data={data} />
+            <AdminContent data={data} tab={tab} />
           )}
         </main>
       </SidebarInset>
@@ -94,60 +153,129 @@ export default function AdminPage() {
   );
 }
 
-function AdminContent({ data }: { data: CurationResponse }) {
+function AdminContent({
+  data,
+  tab,
+}: {
+  data: CurationResponse;
+  tab: AdminTab;
+}) {
   const { catalogue, cost, architecture, services, agent, conventions } = data;
 
+  if (tab === "cost") return <CostPanel catalogue={catalogue} cost={cost} />;
+
+  if (tab === "architecture") {
+    return (
+      <ArchitecturePanel
+        architecture={architecture}
+        catalogue={catalogue}
+        services={services}
+      />
+    );
+  }
+
+  if (tab === "agent") {
+    return (
+      <>
+        {/* The only write surface on the page; everything else is a view of a
+            table that ships in the source. */}
+        <HarnessEditor defaults={data.harnessDefaults} initial={data.harness} />
+        <HarnessStructure agent={agent} />
+      </>
+    );
+  }
+
+  return (
+    <Section
+      count={conventions.conventionalLabels.length}
+      subtitle="Block labels treated as saying nothing, and the folder a repository is expected to keep submodules in."
+      title="Conventions"
+    >
+      <div className="space-y-3">
+        <Labelled title="Labels hidden as conventional">
+          <Chips items={conventions.conventionalLabels} />
+        </Labelled>
+        <Labelled title="Submodule folder">
+          <Chips items={[conventions.submodulesFolder]} />
+        </Labelled>
+      </div>
+    </Section>
+  );
+}
+
+/**
+ * How much of what people actually import this domain's table answers.
+ *
+ * The imported total is repeated in both domains rather than shown once: it is
+ * the denominator of the ratio beside it, and a percentage whose base sits on
+ * another tab is a number the reader has to go and look up.
+ */
+function Coverage({
+  catalogue,
+  label,
+  classified,
+  unclassified,
+  usesUnclassified,
+}: {
+  catalogue: CurationResponse["catalogue"];
+  label: string;
+  classified: number;
+  unclassified: number;
+  usesUnclassified: number;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Coverage</CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-4 sm:grid-cols-2">
+        <Figure
+          label="Resource types imported here"
+          note={`across ${catalogue.uses.toLocaleString("en")} blocks`}
+          value={catalogue.types}
+        />
+        <Figure
+          label={label}
+          note={`${unclassified} unclassified · ${usesUnclassified} blocks`}
+          value={`${classified} / ${catalogue.types}`}
+          percent={classified / catalogue.types}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+function CostPanel({
+  catalogue,
+  cost,
+}: {
+  catalogue: CurationResponse["catalogue"];
+  cost: CurationResponse["cost"];
+}) {
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle>Coverage</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-3">
-          <Figure
-            label="Resource types imported here"
-            note={`across ${catalogue.uses.toLocaleString("en")} blocks`}
-            value={catalogue.types}
-          />
-          <Figure
-            label="With a cost class"
-            note={`${cost.coverage.unclassified.length} unclassified · ${cost.coverage.usesUnclassified} blocks`}
-            value={`${cost.coverage.classified} / ${catalogue.types}`}
-            percent={cost.coverage.classified / catalogue.types}
-          />
-          <Figure
-            label="On the architecture diagram"
-            note={`${architecture.coverage.unclassified.length} unclassified · ${architecture.coverage.usesUnclassified} blocks`}
-            value={`${architecture.coverage.classified} / ${catalogue.types}`}
-            percent={architecture.coverage.classified / catalogue.types}
-          />
-        </CardContent>
-      </Card>
+      <Coverage
+        catalogue={catalogue}
+        classified={cost.coverage.classified}
+        label="With a cost class"
+        unclassified={cost.coverage.unclassified.length}
+        usesUnclassified={cost.coverage.usesUnclassified}
+      />
 
-      {/* The actionable half: what is imported and still has no answer, most used
-          first. Everything below this is reference. */}
-      <HarnessEditor defaults={data.harnessDefaults} initial={data.harness} />
-
+      {/* Ahead of the curated tables: this is the only list here that is work
+          rather than reference. */}
       <Section
         count={cost.coverage.unclassified.length}
         subtitle="Imported here, no cost class. Most used first — these are what a curation pass should work through."
-        title="Unclassified: cost"
+        title="Unclassified"
       >
         <UsesTable rows={cost.coverage.unclassified} />
       </Section>
 
       <Section
-        count={architecture.coverage.unclassified.length}
-        subtitle="Imported here, no entry in the architecture table, so left off the diagram rather than drawn."
-        title="Unclassified: architecture"
-      >
-        <UsesTable rows={architecture.coverage.unclassified} />
-      </Section>
-
-      <Section
         count={cost.curated.length}
         subtitle="Hand-written, one entry per resource type. The class, what it bills on, and the input names that size it."
-        title="Cost drivers"
+        title="Drivers"
       >
         <Searchable
           keyOf={(row) => `${row.type} ${row.costClass} ${row.driver ?? ""}`}
@@ -187,7 +315,7 @@ function AdminContent({ data }: { data: CurationResponse }) {
       <Section
         count={cost.freeList.length}
         subtitle="Types taken as carrying no charge of their own, from the classification Infracost maintains. No prose, because there is nothing to explain."
-        title="Cost: known-free list"
+        title="Known-free list"
       >
         <Chips items={cost.freeList} />
       </Section>
@@ -195,15 +323,45 @@ function AdminContent({ data }: { data: CurationResponse }) {
       <Section
         count={cost.suffixRule.length}
         subtitle="Name endings treated as a setting on another resource. Applied only after the two lists above miss. `_configuration`, `_key` and `_cache` are deliberately absent — they bill."
-        title="Cost: structural rule"
+        title="Structural rule"
       >
         <Chips items={cost.suffixRule} />
+      </Section>
+    </>
+  );
+}
+
+function ArchitecturePanel({
+  architecture,
+  catalogue,
+  services,
+}: {
+  architecture: CurationResponse["architecture"];
+  catalogue: CurationResponse["catalogue"];
+  services: CurationResponse["services"];
+}) {
+  return (
+    <>
+      <Coverage
+        catalogue={catalogue}
+        classified={architecture.coverage.classified}
+        label="On the architecture diagram"
+        unclassified={architecture.coverage.unclassified.length}
+        usesUnclassified={architecture.coverage.usesUnclassified}
+      />
+
+      <Section
+        count={architecture.coverage.unclassified.length}
+        subtitle="Imported here, no entry in the architecture table, so left off the diagram rather than drawn."
+        title="Unclassified"
+      >
+        <UsesTable rows={architecture.coverage.unclassified} />
       </Section>
 
       <Section
         count={architecture.curated.length}
         subtitle="What each resource type is on a diagram: a service box, a frame that contains others, or detail nobody draws."
-        title="Architecture map"
+        title="Diagram map"
       >
         <Searchable
           keyOf={(row) => `${row.type} ${row.role} ${row.label ?? ""}`}
@@ -264,71 +422,60 @@ function AdminContent({ data }: { data: CurationResponse }) {
           </Labelled>
         </div>
       </Section>
-
-      <Section
-        count={agent.planes.length}
-        subtitle="Read-only, because these are claims about what the code does rather than wording: which plane an element sits on, how it is enforced, and where to check it."
-        title="Harness structure"
-      >
-        <div className="space-y-4 text-xs">
-          <Labelled title="Harness, by plane">
-            <div className="space-y-2">
-              {agent.planes.map((plane) => (
-                <div key={plane.id}>
-                  <p className="font-medium">{plane.label}</p>
-                  <ul className="mt-0.5 space-y-0.5">
-                    {plane.elements.map((element) => (
-                      <li
-                        className="flex flex-wrap items-baseline gap-x-2"
-                        key={element.label}
-                      >
-                        <span>{element.label}</span>
-                        <Badge className="font-normal" variant="outline">
-                          {element.enforcement}
-                        </Badge>
-                        <span className="font-mono text-[10px] text-muted-foreground">
-                          {element.source}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          </Labelled>
-
-          <Labelled title="Limits">
-            <KeyValues
-              record={Object.fromEntries(
-                Object.entries(agent.limits).map(([key, value]) => [
-                  key,
-                  String(value),
-                ]),
-              )}
-            />
-          </Labelled>
-
-          <Labelled title="Fallback models">
-            <Chips items={agent.fallbackModels} />
-          </Labelled>
-        </div>
-      </Section>
-
-      <Section
-        count={conventions.conventionalLabels.length}
-        subtitle="Block labels treated as saying nothing, and the folder a repository is expected to keep submodules in."
-        title="Conventions"
-      >
-        <div className="space-y-3">
-          <Labelled title="Labels hidden as conventional">
-            <Chips items={conventions.conventionalLabels} />
-          </Labelled>
-          <Labelled title="Submodule folder">
-            <Chips items={[conventions.submodulesFolder]} />
-          </Labelled>
-        </div>
-      </Section>
     </>
+  );
+}
+
+function HarnessStructure({ agent }: { agent: CurationResponse["agent"] }) {
+  return (
+    <Section
+      count={agent.planes.length}
+      subtitle="Read-only, because these are claims about what the code does rather than wording: which plane an element sits on, how it is enforced, and where to check it."
+      title="Harness structure"
+    >
+      <div className="space-y-4 text-xs">
+        <Labelled title="Harness, by plane">
+          <div className="space-y-2">
+            {agent.planes.map((plane) => (
+              <div key={plane.id}>
+                <p className="font-medium">{plane.label}</p>
+                <ul className="mt-0.5 space-y-0.5">
+                  {plane.elements.map((element) => (
+                    <li
+                      className="flex flex-wrap items-baseline gap-x-2"
+                      key={element.label}
+                    >
+                      <span>{element.label}</span>
+                      <Badge className="font-normal" variant="outline">
+                        {element.enforcement}
+                      </Badge>
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        {element.source}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </Labelled>
+
+        <Labelled title="Limits">
+          <KeyValues
+            record={Object.fromEntries(
+              Object.entries(agent.limits).map(([key, value]) => [
+                key,
+                String(value),
+              ]),
+            )}
+          />
+        </Labelled>
+
+        <Labelled title="Fallback models">
+          <Chips items={agent.fallbackModels} />
+        </Labelled>
+      </div>
+    </Section>
   );
 }
 
@@ -361,7 +508,15 @@ function Figure({
   );
 }
 
-/** Collapsed by default: the page is an inventory, not a reading task. */
+/**
+ * Open by default, now that the tab bar does the narrowing.
+ *
+ * These were collapsed while all twelve sections shared one column, where
+ * expanding one meant scrolling past the rest. Within a tab there are at most
+ * three, each with its own height cap and inner scroll — and a tab that opened
+ * onto nothing but three closed headers would read as a tab with no content. The
+ * toggle stays for folding a long table out of the way.
+ */
 function Section({
   title,
   subtitle,
@@ -373,7 +528,7 @@ function Section({
   count: number;
   children: ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
 
   return (
     <Card>

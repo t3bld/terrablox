@@ -31,6 +31,17 @@ import { MIN_WIRING_SCORE, wiringScore } from "./wiring";
 export interface LibraryModule extends LinkCandidate {
   variables: unknown;
   outputs: unknown;
+  /**
+   * What the module is for, from the repository it was imported from.
+   *
+   * Optional because the graph builder does not need it — it matters to whoever
+   * is *choosing* a module rather than drawing one, which in practice means the
+   * agent. A library reduced to ids and version tags is a list the agent can
+   * only pick from at random.
+   */
+  description?: string | null;
+  /** Curation tags on the source, e.g. `network`, `aws`. Same reason. */
+  tags?: string[];
 }
 
 function toInputPorts(variables: ModuleVariableDto[]): ProjectGraphPort[] {
@@ -311,28 +322,50 @@ export function libraryModuleName(module: LibraryModule): string {
 }
 
 /**
- * Required inputs that nothing fills yet, with the modules that could.
+ * A node as gap detection needs it, and nothing more.
+ *
+ * Structural rather than `ProjectGraphNode` so the same detection runs over a
+ * graph that does not exist yet. The agent queues its edits and commits them
+ * after the turn, so the only way it can check its own work *during* the turn is
+ * against a projection — and a projection that had to be a full graph node would
+ * have to invent a file path, a source address and a position for a module block
+ * nobody has written yet.
+ */
+export interface GapNode {
+  id: string;
+  label: string;
+  inputs: ReadonlyArray<{
+    name: string;
+    required?: boolean;
+    type?: string | null;
+  }>;
+  outputs: ReadonlyArray<{ name: string }>;
+  setArguments: ReadonlyArray<string>;
+}
+
+/** A module not on the canvas that would fill a gap once it were. */
+export interface GapProvider {
+  moduleId: string;
+  name: string;
+  outputs: ReadonlyArray<string>;
+}
+
+/**
+ * Required inputs that nothing fills yet, with what could fill them.
  *
  * This is what turns the canvas from a drawing into a checklist: a module is
  * only useful once its dependencies are satisfied, and the user should not have
  * to open the documentation to find out which module produces a `vpc_id`.
+ *
+ * Split from {@link findGaps} so the agent's projection can reuse it. One
+ * implementation matters here more than usual: the checklist the agent works
+ * against has to be the checklist the canvas shows, or it will report a project
+ * finished that the canvas still marks incomplete.
  */
-export function findGaps(
-  nodes: ProjectGraphNode[],
-  library: LibraryModule[],
+export function computeGaps(
+  nodes: readonly GapNode[],
+  providers: readonly GapProvider[],
 ): ProjectGraphGap[] {
-  const placedModuleIds = new Set(
-    nodes.map((node) => node.moduleId).filter(Boolean),
-  );
-
-  const providers = library
-    .filter((module) => !placedModuleIds.has(module.id))
-    .map((module) => ({
-      moduleId: module.id,
-      name: libraryModuleName(module),
-      outputs: parseOutputs(module.outputs).map((output) => output.name),
-    }));
-
   const gaps: ProjectGraphGap[] = [];
 
   for (const node of nodes) {
@@ -377,6 +410,28 @@ export function findGaps(
   }
 
   return gaps;
+}
+
+/** {@link computeGaps} against the real graph and the whole library. */
+export function findGaps(
+  nodes: ProjectGraphNode[],
+  library: LibraryModule[],
+): ProjectGraphGap[] {
+  const placedModuleIds = new Set(
+    nodes.map((node) => node.moduleId).filter(Boolean),
+  );
+
+  return computeGaps(
+    nodes,
+    library
+      // A module already on the canvas is not a suggestion to add one.
+      .filter((module) => !placedModuleIds.has(module.id))
+      .map((module) => ({
+        moduleId: module.id,
+        name: libraryModuleName(module),
+        outputs: parseOutputs(module.outputs).map((output) => output.name),
+      })),
+  );
 }
 
 /** Labels already taken in the configuration, so new blocks avoid them. */

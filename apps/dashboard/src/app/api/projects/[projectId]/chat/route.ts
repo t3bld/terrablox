@@ -16,7 +16,11 @@ import {
   KNOWLEDGE_PROJECT_REPO,
   knowledgeEnabled,
 } from "@/lib/agent/knowledge";
-import { runProjectAgent } from "@/lib/agent/project-agent";
+import { toAgentLibrary } from "@/lib/agent/library-view";
+import {
+  type AgentPipelineCheck,
+  runProjectAgent,
+} from "@/lib/agent/project-agent";
 import { AGENT_PROGRESS_INTERVAL_MS } from "@/lib/agent/runtime-options";
 import {
   mcpServersForSession,
@@ -29,7 +33,7 @@ import {
   getUserGithubToken,
 } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { GithubRequestError } from "@/lib/github/repo-files";
+import { GithubRequestError, listWorkflowRuns } from "@/lib/github/repo-files";
 import { toChatMessageDto } from "@/lib/projects/serialize";
 import {
   applyProjectMutation,
@@ -37,6 +41,7 @@ import {
   loadProjectGraph,
   MutationError,
   readModuleLibrary,
+  readModuleResourceTypes,
 } from "@/lib/projects/service";
 import type { AgentStep, ProjectGraph } from "@/lib/projects/types";
 
@@ -94,6 +99,42 @@ function blindGraph(sha: string): ProjectGraph {
     sha,
     errors: [],
   };
+}
+
+/**
+ * The newest pipeline run on the project's own branch, or null.
+ *
+ * The closest thing to `terraform validate` a turn can be given. Running Terraform
+ * here is not an option — it needs the binary, the providers downloaded and the
+ * private module sources fetched, which is minutes of work and a network the
+ * request handler should not be doing — but the user's pipeline already runs
+ * exactly that on every commit. Its verdict on the previous turn is a fact, and a
+ * cheap one.
+ *
+ * Never fatal. Reading runs needs the `actions: read` permission, which the
+ * installation may not have been granted, and a turn must not fail because a
+ * status could not be read.
+ */
+async function readLastCheck(
+  token: string,
+  repoFullName: string,
+  branch: string,
+): Promise<AgentPipelineCheck | null> {
+  try {
+    const runs = await listWorkflowRuns(token, { repoFullName, perPage: 20 });
+    const run = runs.find((entry) => entry.headBranch === branch);
+    if (!run) return null;
+
+    return {
+      name: run.name,
+      status: run.status,
+      conclusion: run.conclusion,
+      htmlUrl: run.htmlUrl,
+      createdAt: run.createdAt,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export async function GET(
@@ -214,7 +255,7 @@ export async function POST(
   };
 
   try {
-    const [graph, library, history, settings, mcpServers, curation] =
+    const [graph, library, history, settings, mcpServers, curation, lastCheck] =
       await Promise.all([
         loadProjectGraph(token, project),
         readModuleLibrary(userId),
@@ -224,6 +265,7 @@ export async function POST(
         getEffectiveAgentSettings(userId, project.id),
         mcpServersForSession(userId),
         getHarnessCuration(),
+        readLastCheck(token, project.repoFullName, project.repoBranch),
       ]);
 
     // Knowledge is withheld by not assembling it, not by asking the model to
@@ -277,13 +319,19 @@ export async function POST(
         ]),
       ),
       onStep: publishProgress,
-      library: seesLibrary
-        ? library.map((mod) => ({
-            id: mod.id,
-            name: mod.sourceName ?? mod.id,
-            versionTag: mod.versionTag,
-          }))
-        : [],
+      // The whole module rather than a three-field summary. The ports were always
+      // loaded here and thrown away one line before the prompt, which left the
+      // agent able to place a module and unable to wire it. The prompt still only
+      // renders a line per module — see `summariseLibraryModule`.
+      library: seesLibrary ? toAgentLibrary(library) : [],
+      // Looked up per call, for the two or three modules a turn asks about. Folding
+      // resources into the library read would multiply the cost of every graph load
+      // to answer a question only the agent asks.
+      moduleResources: (moduleIds) =>
+        readModuleResourceTypes(userId, moduleIds),
+      // Withheld with the repository: the run's verdict is a statement about the
+      // Terraform on the branch, which is the thing being withheld.
+      lastCheck: seesRepo ? lastCheck : null,
       history: history.map((entry) => ({
         role: entry.role,
         content: entry.content,

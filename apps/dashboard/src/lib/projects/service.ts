@@ -165,7 +165,52 @@ export async function readModuleLibrary(
     submoduleName: mod.submoduleName,
     variables: mod.variables,
     outputs: mod.outputs,
+    // Free of an extra query — the source is already joined for its name — and
+    // the difference between a library the agent can choose from and one it can
+    // only guess at.
+    description: mod.source?.description ?? null,
+    tags: mod.source?.tags ?? [],
   }));
+}
+
+/**
+ * The resource types a set of modules creates, by module id.
+ *
+ * Separate from {@link readModuleLibrary} and deliberately not part of it. A
+ * module's resources are tens of rows each, and every project graph load reads
+ * the whole library — folding them in would multiply the cost of drawing a canvas
+ * to serve a question only the agent asks, about the two or three modules it is
+ * actually considering.
+ *
+ * Only the type and the kind: the caller wants to know what will exist and what
+ * it will bill, not where in the module it was declared.
+ */
+export async function readModuleResourceTypes(
+  userId: string,
+  moduleIds: string[],
+): Promise<Record<string, Array<{ kind: string; resourceType: string }>>> {
+  if (moduleIds.length === 0) return {};
+
+  const rows = await database.providerResource.findMany({
+    // Scoped through the module rather than trusting the ids: they arrive from a
+    // model, and another user's module id is a valid-looking string.
+    where: { moduleId: { in: moduleIds }, module: visibleToUser(userId) },
+    select: { moduleId: true, kind: true, resourceType: true },
+  });
+
+  const byModule: Record<
+    string,
+    Array<{ kind: string; resourceType: string }>
+  > = {};
+
+  for (const row of rows) {
+    const existing = byModule[row.moduleId];
+    const entry = { kind: row.kind, resourceType: row.resourceType };
+    if (existing) existing.push(entry);
+    else byModule[row.moduleId] = [entry];
+  }
+
+  return byModule;
 }
 
 function readPositions(

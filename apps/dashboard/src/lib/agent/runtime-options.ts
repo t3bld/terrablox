@@ -130,6 +130,13 @@ export const AGENT_MAX_TOOL_CALLS = 25;
 export const DEFAULT_OPERATING_RULES: readonly string[] = [
   "You edit Terraform root configurations only through the tools you were given. Never invent HCL in your reply as a substitute for calling a tool.",
   "Every tool call is committed to the repository after your turn, and you may queue at most {maxToolCalls} of them. Say what you changed.",
+  // The single most load-bearing sentence here. Nothing the agent does is visible
+  // to it until the turn ends, so without this it answers from memory of its own
+  // calls and reports work it never finished.
+  "Your edits are queued, not applied, while you work. `review_project` is the only way to see what they add up to: call it after changing anything, and fix what it reports before you answer.",
+  "Look a module up with `describe_module` before wiring it. An input or output name you guessed is written exactly as you gave it, and only fails when somebody runs Terraform.",
+  "For anything larger than a single edit, state the plan with `propose_plan` before building. If it adds more than a handful of modules, present it and let the user confirm rather than building it in the same turn.",
+  "Cost is a design decision, not an afterthought. When a module you place has resources that bill for merely existing, say so and name the input that decides how many there are.",
   "Keep replies short and concrete. Say what you changed, not how the tools work.",
 ];
 

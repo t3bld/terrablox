@@ -269,12 +269,33 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     id: "library",
     plane: "context",
     label: "Module library",
-    brief: "The modules it may place on the canvas.",
+    brief:
+      "The modules it may place, one line each: what it is, how many ports.",
     description:
-      "The modules available to place. Switching it off also withholds the operation that places them, because a tool that can only fail is worse than an absent one.",
+      "The modules available to place, summarised one line each — name, description, tags and port counts — with the full ports available on request through Describe Module. Switching it off withholds the operations that place and look up a module too, because a tool that can only fail is worse than an absent one.",
     enforcement: "prompt",
     setting: "disabledKnowledge",
-    source: "knowledge.ts → module-library",
+    source: "library-view.ts → summariseLibraryModule",
+  },
+  {
+    id: "ports",
+    plane: "context",
+    label: "Ports and candidates",
+    brief: "Each module's inputs and outputs, and what could fill each gap.",
+    description:
+      "Every placed module's inputs — with their types, which are required, and what each one currently holds — and its outputs. Unfilled required inputs come with both halves of the answer: outputs already on the canvas that would fit, and library modules that would produce one once added. Without this the agent could see that a module existed and not what it had, so an optional input was unsettable.",
+    enforcement: "prompt",
+    source: "project-agent.ts → describePorts, graph.ts → computeGaps",
+  },
+  {
+    id: "pipeline",
+    plane: "context",
+    label: "Last pipeline result",
+    brief: "Whether the branch last passed `terraform validate` in your CI.",
+    description:
+      "How the newest workflow run on this branch ended. It is the only verdict from a real Terraform the agent ever sees: the pipeline runs `fmt`, `init` and `validate` on every commit, minutes later and outside any turn, so it arrives as a fact about the previous turn's work rather than this one's. Absent when the installation cannot read Actions, which is not an error.",
+    enforcement: "prompt",
+    source: "chat/route.ts → readLastCheck",
   },
   {
     id: "instructions",
@@ -295,7 +316,7 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     label: "Operations",
     brief: "The edits it can make. One switched off is not registered.",
     description:
-      "The ten edits the agent can make to a project. An operation switched off is not registered on the session, so the agent cannot call it and is told in the prompt that it is unavailable — rather than trying and failing.",
+      "Everything the agent can do to a project: the edits to modules and variables, the lookups that tell it what a module has, and the review that tells it what its own queued edits add up to. An operation switched off is not registered on the session, so the agent cannot call it and is told in the prompt that it is unavailable — rather than trying and failing.",
     enforcement: "capability",
     setting: "disabledTools",
     source: "tool-catalogue.ts, project-agent.ts → buildTools",
@@ -332,6 +353,27 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
       "A call naming a module that does not exist, a name already taken, or a library id we cannot find is refused with a reason the model can act on in the same turn — not after a commit.",
     enforcement: "mediated",
     source: "project-agent.ts → refuse()",
+  },
+  {
+    id: "port-validation",
+    plane: "mediation",
+    label: "Ports and types checked on arrival",
+    brief:
+      "An input or output name no module declares is refused, with a guess.",
+    description:
+      "A connection is checked port by port, not just block by block: an output the source does not expose, an argument the target never declared, or a literal whose shape cannot match the declared type is refused with the closest real name. This is the class of mistake that used to reach the repository silently — Terraform only objects at plan time, long after the turn that wrote it.",
+    enforcement: "mediated",
+    source: "project-agent.ts → checkInput, checkOutput; type-check.ts",
+  },
+  {
+    id: "projection",
+    plane: "mediation",
+    label: "Queued edits projected",
+    brief: "Each check runs against the project as the queue will leave it.",
+    description:
+      "Because edits are queued rather than applied, every check runs against a projection: the graph the turn started with, plus each queued mutation replayed in memory. That is what lets a module added ten calls ago be wired correctly, and what Review Project reports on. It mirrors the mutation path closely enough to name the same block a collision will rename.",
+    enforcement: "mediated",
+    source: "graph-projection.ts → GraphProjection",
   },
   {
     id: "queue",
@@ -375,6 +417,16 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     enforcement: "control-loop",
     setting: "turnTimeout",
     source: "project-agent.ts → session.abort() then deleteSession",
+  },
+  {
+    id: "plan-first",
+    plane: "control",
+    label: "Plan before building",
+    brief: "A large plan ends the turn and waits for your next message.",
+    description:
+      "For anything beyond a single edit the agent states its plan first, and a plan adding more than a handful of modules is meant to end the turn so you can confirm it. Advisory rather than enforced, and honestly so: the turn runs headless, so there is nobody to answer a question mid-turn — the confirmation can only arrive as your next message.",
+    enforcement: "prompt",
+    source: "project-agent.ts → propose_plan, PLAN_CONFIRM_THRESHOLD",
   },
   {
     id: "fresh-session",

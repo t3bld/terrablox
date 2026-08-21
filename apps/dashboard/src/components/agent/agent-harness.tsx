@@ -37,6 +37,8 @@ import {
 const MAX_INSTRUCTIONS = 4000;
 
 const TOOL_GROUP_LABELS: Record<string, string> = {
+  library: "Module library",
+  review: "Planning and review",
   modules: "Modules",
   locals: "Variables",
   "app-repo": "Application repository",

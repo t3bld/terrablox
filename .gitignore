@@ -45,3 +45,5 @@ yarn-error.log*
 
 # MCP config (contains personal access tokens) - keep .mcp.json.example committed
 .mcp.json
+
+todo.md

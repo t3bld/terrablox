@@ -17,6 +17,8 @@ import type {
   ProjectGraph,
   ProjectGraphMutation,
 } from "@/lib/projects/types";
+import { coerceHclValue } from "@/lib/projects/wiring";
+import { checkValueAgainstType } from "@/lib/terraform/type-check";
 
 import {
   COPILOT_MODEL,
@@ -24,12 +26,20 @@ import {
   describeCopilotError,
   discardCopilotClient,
 } from "./copilot";
+import { closestName, GraphProjection } from "./graph-projection";
 import {
   KNOWLEDGE_APP_REPO,
   KNOWLEDGE_MODULE_LIBRARY,
   KNOWLEDGE_PROJECT_REPO,
   knowledgeEnabled,
 } from "./knowledge";
+import {
+  type AgentLibraryModule,
+  DESCRIBE_PORT_LIMIT,
+  renderPort,
+  summariseCost,
+  summariseLibraryModule,
+} from "./library-view";
 import {
   AGENT_APP_REPO_FILE_CHARS,
   AGENT_APP_REPO_IGNORED_DIRS,
@@ -57,12 +67,39 @@ import { isKnownTool, PROJECT_AGENT_TOOLS } from "./tool-catalogue";
 /** Tool definitions, in the shape function-calling APIs expect. */
 export { PROJECT_AGENT_TOOLS } from "./tool-catalogue";
 
+/**
+ * The result of the last pipeline run on the project's branch.
+ *
+ * The closest thing to `terraform validate` a turn can see. The real validation
+ * runs in the user's own CI, minutes after a commit and outside any turn, so it
+ * cannot be waited for — but its verdict on the *previous* turn's work is a fact
+ * worth carrying into this one. A model told its last commit failed validation
+ * fixes it; a model told nothing builds on top of it.
+ */
+export interface AgentPipelineCheck {
+  name: string;
+  /** `queued`, `in_progress`, `completed`. */
+  status: string;
+  /** `success`, `failure`, `cancelled`, … or null while it is still running. */
+  conclusion: string | null;
+  htmlUrl: string;
+  createdAt: string;
+}
+
 export interface AgentContext {
   projectName: string;
   repoFullName: string;
   branch: string;
   graph: ProjectGraph;
-  library: Array<{ id: string; name: string; versionTag: string | null }>;
+  /**
+   * The modules this project may place, with their ports.
+   *
+   * The ports are here for validation and for `describe_module`, not for the
+   * prompt: the prompt gets one line per module from
+   * {@link summariseLibraryModule}. Handing the model every port of every module
+   * would spend most of a turn's context on modules it never touches.
+   */
+  library: AgentLibraryModule[];
   history: Array<{ role: string; content: string }>;
   /** Identifies the Copilot session; the turn runs as this user. */
   userId: string;
@@ -78,6 +115,20 @@ export interface AgentContext {
    * registered, and the prompt says the agent has to ask instead.
    */
   appRepo?: { fullName: string; branch: string } | null;
+  /**
+   * The resource types a set of library modules creates, looked up on demand.
+   *
+   * A callback rather than data, for the same reason the app repository is a
+   * pointer: a module is tens of resource rows, and the library is hundreds of
+   * modules. `describe_module` asks about the two or three a turn cares about.
+   * Absent means the cost section of an answer is simply left out — this module has
+   * no database access of its own and must keep working without one.
+   */
+  moduleResources?: (
+    moduleIds: string[],
+  ) => Promise<Record<string, Array<{ kind: string; resourceType: string }>>>;
+  /** How the last pipeline run on this branch ended, when it can be read. */
+  lastCheck?: AgentPipelineCheck | null;
   /** What this user told the agent about how they work. */
   instructions?: string;
   /**
@@ -183,6 +234,37 @@ const MAX_STEPS = AGENT_MAX_STEPS;
  */
 const DESTRUCTIVE_TOOLS = ["remove_module", "remove_local"] as const;
 const MAX_THOUGHT_LENGTH = 600;
+
+/**
+ * How many modules a plan may add before the user is asked first.
+ *
+ * "Build me an infrastructure" is a request whose answer is a dozen commits in
+ * somebody's repository, and the agent's reading of it is worth checking while it
+ * is still a sentence. Below the threshold the plan is recorded and built in the
+ * same turn, because stopping to confirm two modules is friction rather than
+ * safety.
+ *
+ * Four rather than one: a working stack is rarely fewer — a network, a database, a
+ * service, a load balancer — and a threshold that fires on every real request
+ * trains the user to wave it through, which is worse than not having it.
+ */
+const PLAN_CONFIRM_THRESHOLD = 4;
+
+/**
+ * How many placed modules get their ports written out in the prompt.
+ *
+ * The ports are the point of the section — without them the agent cannot see that
+ * an optional input exists, so it can never set one. But a project with forty
+ * modules would spend the whole prompt on them, so past this many the list falls
+ * back to names and the agent is told to use `describe_module`.
+ */
+const PROMPT_PORT_MODULES = 12;
+
+/** How many of one module's ports the prompt lists before pointing elsewhere. */
+const PROMPT_PORTS_PER_MODULE = 14;
+
+/** How many library modules the prompt lists in full before truncating. */
+const PROMPT_LIBRARY_LIMIT = 120;
 
 export async function runProjectAgent(
   message: string,
@@ -332,20 +414,22 @@ function buildTools(
     disabled.add("read_app_file");
   }
 
-  // Kind-aware since locals joined the graph: a module and a local may share a
-  // name, and "is there a node called vpc" stopped being the right question.
-  // Both checks include already-queued mutations, so a second `add_local` in
-  // the same turn sees the first rather than queuing a duplicate that fails on
-  // commit.
-  const hasNode = (name: string) =>
-    context.graph.nodes.some(
-      (node) => node.id === name && node.kind === "module",
-    ) || sink.some((m) => m.action === "add-module" && m.name === name);
+  if (!knowledgeEnabled(context.disabledKnowledge, KNOWLEDGE_MODULE_LIBRARY)) {
+    disabled.add("describe_module");
+  }
 
-  const hasLocal = (name: string) =>
-    context.graph.nodes.some(
-      (node) => node.id === name && node.kind === "local",
-    ) || sink.some((m) => m.action === "add-local" && m.name === name);
+  /**
+   * The project as this turn's queued edits will leave it.
+   *
+   * Every check below reads from here rather than from `context.graph`, which is
+   * the repository as the turn *started*. That difference is the whole reason this
+   * exists: a module added four calls ago is not in the graph, and until now the
+   * agent could neither wire it correctly nor be told when it wired it wrongly.
+   */
+  const projection = new GraphProjection(context.graph, context.library);
+
+  const hasNode = (name: string) => projection.module(name) !== undefined;
+  const hasLocal = (name: string) => projection.local(name) !== undefined;
 
   /** Bound to this turn's curated descriptions; the schema stays from code. */
   const spec = (name: (typeof PROJECT_AGENT_TOOLS)[number]["name"]) =>
@@ -390,6 +474,10 @@ function buildTools(
     }
 
     sink.push(mutation);
+    // Applied to the projection in the same breath, so the next call validates
+    // against a project that includes this one. Without this, `connect` after
+    // `add_module` could only be checked against a canvas the module is not on.
+    projection.apply(mutation);
     record({
       kind: "tool",
       tool,
@@ -399,25 +487,191 @@ function buildTools(
     return { queued: true, pending: sink.length };
   };
 
+  /**
+   * Whether a module really has the input a call names.
+   *
+   * `null` when there is nothing to object to — including when the module's ports
+   * are unknown, which happens for a `module` block written by hand against a
+   * source we never imported. Validation stands down there rather than refusing
+   * every edit to a block it cannot describe.
+   */
+  const checkInput = (target: string, input: string): string | null => {
+    const module = projection.module(target);
+    if (!module || !module.portsKnown) return null;
+    if (module.inputs.some((port) => port.name === input)) return null;
+
+    const suggestion = closestName(
+      input,
+      module.inputs.map((port) => port.name),
+    );
+    const required = module.inputs
+      .filter((port) => port.required)
+      .map((port) => port.name);
+
+    return `${target} declares no input called "${input}".${
+      suggestion ? ` Did you mean "${suggestion}"?` : ""
+    } Its required inputs are ${required.join(", ") || "none"}; call describe_module for the full list. Terraform rejects an argument a module does not declare, so this cannot be committed as written.`;
+  };
+
+  /** The same question for an output, which is what a wrong `connect` gets wrong. */
+  const checkOutput = (source: string, output: string): string | null => {
+    const module = projection.module(source);
+    if (!module || !module.portsKnown) return null;
+    if (module.outputs.some((port) => port.name === output)) return null;
+
+    const suggestion = closestName(
+      output,
+      module.outputs.map((port) => port.name),
+    );
+
+    return `${source} has no output called "${output}".${
+      suggestion ? ` Did you mean "${suggestion}"?` : ""
+    } It exposes ${module.outputs.map((port) => port.name).join(", ") || "no outputs"}.`;
+  };
+
+  /**
+   * One module in full, resolved from whatever the model called it.
+   *
+   * Three ways of naming the same thing arrive here, because all three are natural
+   * to write and refusing two of them would cost a turn a call each time: the
+   * library id `add_module` takes, the block label everything else takes, and the
+   * module's own name, which is what a human would say.
+   */
+  const describeModule = async (wanted: string) => {
+    const needle = wanted.trim();
+    if (!needle) {
+      return refuse("describe_module", "Pass the module to describe.");
+    }
+
+    const fromLibrary =
+      context.library.find((module) => module.id === needle) ??
+      context.library.find(
+        (module) => module.name.toLowerCase() === needle.toLowerCase(),
+      );
+
+    const placed = projection.module(needle);
+
+    if (!fromLibrary && !placed) {
+      const suggestion = closestName(needle, [
+        ...context.library.map((module) => module.name),
+        ...projection.moduleNames(),
+      ]);
+      return refuse(
+        "describe_module",
+        `Nothing called "${needle}" in the library or on the canvas.${
+          suggestion ? ` Did you mean "${suggestion}"?` : ""
+        }`,
+      );
+    }
+
+    // The library copy carries declared types, defaults and inferred output
+    // types; a placed block whose module we never imported carries only names.
+    // Prefer the richer one, and fall back rather than refusing.
+    const source = fromLibrary ?? {
+      id: placed?.moduleId ?? needle,
+      name: placed?.moduleName ?? needle,
+      versionTag: placed?.version ?? null,
+      description: null,
+      tags: [] as string[],
+      inputs: placed?.inputs ?? [],
+      outputs: placed?.outputs ?? [],
+    };
+
+    const inputs = source.inputs.slice(0, DESCRIBE_PORT_LIMIT);
+    const outputs = source.outputs.slice(0, DESCRIBE_PORT_LIMIT);
+
+    record({
+      kind: "tool",
+      tool: "describe_module",
+      summary: `Looked up ${source.name}`,
+      ok: true,
+    });
+
+    return {
+      moduleId: source.id,
+      name: source.name,
+      ...(source.versionTag ? { version: source.versionTag } : {}),
+      ...(source.description ? { description: source.description } : {}),
+      ...(source.tags.length ? { tags: source.tags } : {}),
+      ...(placed
+        ? {
+            onCanvasAs: placed.name,
+            argumentsSet: Object.entries(placed.values).map(
+              ([input, value]) => `${input} = ${value}`,
+            ),
+          }
+        : { onCanvas: false }),
+      inputs: inputs.map(renderPort),
+      ...(source.inputs.length > inputs.length
+        ? {
+            inputsTruncated: `${source.inputs.length - inputs.length} optional input(s) not shown; required inputs are always listed first.`,
+          }
+        : {}),
+      outputs: outputs.map(renderPort),
+      ...(source.outputs.length > outputs.length
+        ? {
+            outputsTruncated: `${source.outputs.length - outputs.length} output(s) not shown.`,
+          }
+        : {}),
+      ...(await describeCost(source.id, context)),
+    };
+  };
+
   return [
     defineTool<{ moduleId: string; name?: string }>("add_module", {
       ...spec("add_module"),
       handler: async ({ moduleId, name }) => {
         if (!context.library.some((mod) => mod.id === moduleId)) {
-          return refuse(
-            "add_module",
-            `No module "${moduleId}" in the library. Available: ${context.library.map((mod) => mod.id).join(", ") || "none"}.`,
-          );
+          return refuse("add_module", unknownLibraryModule(moduleId, context));
         }
-        return queue("add_module", { action: "add-module", moduleId, name });
+
+        // Resolved here and passed on rather than left to the commit: a collision
+        // renames the block, and an agent that wires to the name it asked for
+        // would wire to nothing. `uniqueBlockLabel` leaves an already-free name
+        // alone, so the commit lands on this exact label.
+        const label = projection.labelFor(moduleId, name);
+
+        const result = queue("add_module", {
+          action: "add-module",
+          moduleId,
+          name: label,
+        });
+        if ("error" in result) return result;
+
+        const module = projection.module(label);
+        const wired = Object.entries(module?.values ?? {});
+
+        return {
+          ...result,
+          name: label,
+          ...(label !== name?.trim() && name?.trim()
+            ? { renamedFrom: name.trim() }
+            : {}),
+          // Stated because it is invisible otherwise: adding a module wires its
+          // unambiguous required inputs, and an agent that did not know would
+          // spend operations connecting what is already connected.
+          ...(wired.length
+            ? {
+                autoWired: wired.map(([input, value]) => `${input} = ${value}`),
+              }
+            : {}),
+          stillUnset: projection
+            .gaps()
+            .filter((gap) => gap.node === label)
+            .map((gap) => gap.input),
+        };
       },
+    }),
+    defineTool<{ module: string }>("describe_module", {
+      ...spec("describe_module"),
+      handler: async ({ module }) => describeModule(module),
     }),
     defineTool<{ name: string }>("remove_module", {
       ...spec("remove_module"),
       handler: async ({ name }) =>
         hasNode(name)
           ? queue("remove_module", { action: "remove-module", name })
-          : refuse("remove_module", unknownModule(name, context)),
+          : refuse("remove_module", unknownModule(name, projection)),
     }),
     defineTool<{
       source: string;
@@ -429,9 +683,19 @@ function buildTools(
       handler: async (args) => {
         for (const side of [args.source, args.target]) {
           if (!hasNode(side)) {
-            return refuse("connect", unknownModule(side, context));
+            return refuse("connect", unknownModule(side, projection));
           }
         }
+        // The ports, not just the blocks. This is the call the agent most often
+        // gets subtly wrong — the two module names are in the prompt, the output
+        // name is not — and a wrong port name is written as given, plans, and
+        // fails only when somebody runs Terraform.
+        const badOutput = checkOutput(args.source, args.sourceOutput);
+        if (badOutput) return refuse("connect", badOutput);
+
+        const badInput = checkInput(args.target, args.targetInput);
+        if (badInput) return refuse("connect", badInput);
+
         return queue("connect", { action: "connect", ...args });
       },
     }),
@@ -439,12 +703,22 @@ function buildTools(
       ...spec("disconnect"),
       handler: async ({ target, targetInput }) => {
         if (!hasNode(target)) {
-          return refuse("disconnect", unknownModule(target, context));
+          return refuse("disconnect", unknownModule(target, projection));
+        }
+        if (!projection.isSet(target, targetInput)) {
+          return refuse(
+            "disconnect",
+            `${target}.${targetInput} has no value to clear.${
+              checkInput(target, targetInput)
+                ? " It is not an input of that module either."
+                : ""
+            }`,
+          );
         }
         // Sent to the variable tool rather than done here, so that switching one
         // of the two off is a real restriction. Both end in the same mutation, so
         // without this check the module tool would quietly cover both.
-        if (readsLocal(context, target, targetInput)) {
+        if (projection.readsLocal(target, targetInput)) {
           return refuse(
             "disconnect",
             `${target}.${targetInput} is fed by a variable, not by a module. Use disconnect_local.`,
@@ -465,7 +739,7 @@ function buildTools(
       ...spec("edit_module"),
       handler: async ({ name, newName, arguments: args }) => {
         if (!hasNode(name)) {
-          return refuse("edit_module", unknownModule(name, context));
+          return refuse("edit_module", unknownModule(name, projection));
         }
 
         const settings = (args ?? []).filter(
@@ -477,6 +751,28 @@ function buildTools(
             "edit_module",
             "Nothing to change. Pass `newName`, `arguments`, or both.",
           );
+        }
+
+        // Checked before anything is queued, so a call that sets three arguments
+        // and misspells the third does not half-apply. `set-argument` writes
+        // whatever it is given: an undeclared argument is a configuration
+        // Terraform rejects outright, and a list input given a bare string is one
+        // it rejects on type — neither is visible until somebody runs a plan.
+        const module = projection.module(name);
+        for (const entry of settings) {
+          const badInput = checkInput(name, entry.input);
+          if (badInput) return refuse("edit_module", badInput);
+
+          const declared = module?.inputs.find(
+            (port) => port.name === entry.input,
+          );
+          const mismatch = checkValueAgainstType(
+            declared?.type,
+            coerceHclValue(entry.value),
+          );
+          if (mismatch) {
+            return refuse("edit_module", `${name}.${entry.input} ${mismatch}`);
+          }
         }
 
         // Arguments first: after a rename they would have to name the module by
@@ -521,8 +817,15 @@ function buildTools(
             `A value called "${name}" already exists.`,
           );
         }
-        if (connectTo && !hasNode(connectTo.target)) {
-          return refuse("add_local", unknownModule(connectTo.target, context));
+        if (connectTo) {
+          if (!hasNode(connectTo.target)) {
+            return refuse(
+              "add_local",
+              unknownModule(connectTo.target, projection),
+            );
+          }
+          const badInput = checkInput(connectTo.target, connectTo.targetInput);
+          if (badInput) return refuse("add_local", badInput);
         }
 
         return queue("add_local", {
@@ -539,7 +842,7 @@ function buildTools(
         ...spec("edit_local"),
         handler: async ({ name, newName, value }) => {
           if (!hasLocal(name)) {
-            return refuse("edit_local", unknownLocal(name, context));
+            return refuse("edit_local", unknownLocal(name, projection));
           }
           if (newName !== undefined && !isValidLocalName(newName)) {
             return refuse(
@@ -577,7 +880,7 @@ function buildTools(
       handler: async ({ name }) =>
         hasLocal(name)
           ? queue("remove_local", { action: "remove-local", name })
-          : refuse("remove_local", unknownLocal(name, context)),
+          : refuse("remove_local", unknownLocal(name, projection)),
     }),
     defineTool<{ local: string; target: string; targetInput: string }>(
       "connect_local",
@@ -585,11 +888,14 @@ function buildTools(
         ...spec("connect_local"),
         handler: async ({ local, target, targetInput }) => {
           if (!hasLocal(local)) {
-            return refuse("connect_local", unknownLocal(local, context));
+            return refuse("connect_local", unknownLocal(local, projection));
           }
           if (!hasNode(target)) {
-            return refuse("connect_local", unknownModule(target, context));
+            return refuse("connect_local", unknownModule(target, projection));
           }
+          const badInput = checkInput(target, targetInput);
+          if (badInput) return refuse("connect_local", badInput);
+
           return queue("connect_local", {
             action: "connect-local",
             local,
@@ -603,9 +909,9 @@ function buildTools(
       ...spec("disconnect_local"),
       handler: async ({ target, targetInput }) => {
         if (!hasNode(target)) {
-          return refuse("disconnect_local", unknownModule(target, context));
+          return refuse("disconnect_local", unknownModule(target, projection));
         }
-        if (!readsLocal(context, target, targetInput)) {
+        if (!projection.readsLocal(target, targetInput)) {
           return refuse(
             "disconnect_local",
             `${target}.${targetInput} does not read a variable. Use disconnect to clear an input fed by another module.`,
@@ -722,6 +1028,100 @@ function buildTools(
         }
       },
     }),
+    defineTool<{
+      summary: string;
+      modules?: Array<{ moduleId: string; name?: string; purpose?: string }>;
+      wiring?: Array<{
+        target: string;
+        targetInput: string;
+        source?: string;
+        sourceOutput?: string;
+      }>;
+    }>("propose_plan", {
+      ...spec("propose_plan"),
+      handler: async ({ summary, modules, wiring }) => {
+        const text = summary?.trim();
+        if (!text) {
+          return refuse("propose_plan", "Say what the plan is.");
+        }
+
+        const planned = modules ?? [];
+        // Named against the library while it is still only a plan. "I will add the
+        // ECS module" is worth correcting before three other modules are wired to
+        // a block that was never going to exist.
+        const unknown = planned
+          .map((entry) => entry.moduleId)
+          .filter((id) => !context.library.some((mod) => mod.id === id));
+
+        record({
+          kind: "tool",
+          tool: "propose_plan",
+          summary: [
+            text,
+            ...planned.map(
+              (entry) =>
+                `+ ${entry.name ?? entry.moduleId}${entry.purpose ? ` — ${entry.purpose}` : ""}`,
+            ),
+            ...(wiring ?? []).map(
+              (wire) =>
+                `→ ${wire.target}.${wire.targetInput} = ${
+                  wire.source
+                    ? `${wire.source}.${wire.sourceOutput ?? "?"}`
+                    : "(to decide)"
+                }`,
+            ),
+          ].join("\n"),
+          ok: true,
+        });
+
+        return {
+          recorded: true,
+          ...(unknown.length
+            ? {
+                problem: `Not in the library: ${unknown.join(", ")}. Pick real ids before building — check the library list in your instructions.`,
+              }
+            : {}),
+          // The turn is headless: nobody can answer a question in the middle of
+          // it. So a plan the user should weigh in on has to end the turn, and
+          // the confirmation arrives as their next message.
+          guidance:
+            planned.length > PLAN_CONFIRM_THRESHOLD
+              ? `This plan adds ${planned.length} modules. Unless the user has already told you to go ahead, answer with the plan now and ask them to confirm — do not queue the edits in this turn.`
+              : "Now build it, then call review_project before you answer.",
+        };
+      },
+    }),
+    defineTool<Record<string, never>>("review_project", {
+      ...spec("review_project"),
+      handler: async () => {
+        const problems = projection.problems();
+        const blocking = problems.filter((problem) => problem.blocking);
+
+        record({
+          kind: "tool",
+          tool: "review_project",
+          summary: blocking.length
+            ? `${blocking.length} problem(s) left in the projected configuration`
+            : "Projected configuration is complete",
+          ok: blocking.length === 0,
+        });
+
+        return {
+          queuedOperations: sink.length,
+          modules: projection.allModules().map((module) => module.name),
+          variables: projection.allLocals().map((local) => local.name),
+          // Split so the model can tell "this will not plan" from "this looks
+          // untidy", and spend its remaining budget on the first kind.
+          blocking: blocking.map((problem) => problem.message),
+          advisory: problems
+            .filter((problem) => !problem.blocking)
+            .map((problem) => problem.message),
+          verdict: blocking.length
+            ? "Fix these before answering. Every one of them stops `terraform plan`."
+            : "Nothing left unfilled. Say what you changed.",
+        };
+      },
+    }),
     // Withheld rather than refused at call time: a tool the model cannot see is
     // one it will not promise the user and then fail to deliver.
   ].filter((tool) => !disabled.has(tool.name));
@@ -823,31 +1223,77 @@ function describeMutation(mutation: ProjectGraphMutation): string {
 }
 
 /**
- * Whether a module input is currently fed by a variable.
+ * What a set of resources does to the bill, for a `describe_module` answer.
  *
- * Read from the graph the turn started with, which is also what the model was
- * shown, so a refusal it gets back matches what it was told.
+ * Structural, never an amount — the numbers that decide a bill are inputs supplied
+ * at deploy time, so the same module is twenty euros a month or twenty thousand.
+ * What is answerable from source is which resources bill for existing, and that is
+ * the fact worth having *before* placing three of them.
+ *
+ * Returns nothing at all when the lookup is unavailable or the module has no
+ * resources recorded. A section that says "unknown" would read as "free".
  */
-function readsLocal(
+async function describeCost(
+  moduleId: string,
   context: AgentContext,
-  target: string,
-  targetInput: string,
-): boolean {
-  return context.graph.edges.some(
-    (edge) =>
-      edge.target === target &&
-      edge.sourceKind === "local" &&
-      edge.links.some((link) => link.targetInput === targetInput),
-  );
+): Promise<Record<string, unknown>> {
+  if (!context.moduleResources) return {};
+
+  const resources = await context
+    .moduleResources([moduleId])
+    .then((byModule) => byModule[moduleId] ?? [])
+    .catch(() => []);
+
+  if (resources.length === 0) return {};
+
+  const cost = summariseCost(resources);
+
+  return {
+    cost: {
+      ...(cost.recurring.length
+        ? {
+            billsWhileItExists: cost.recurring.map((entry) =>
+              entry.driver
+                ? `${entry.resourceType}: ${entry.driver}`
+                : entry.resourceType,
+            ),
+          }
+        : {}),
+      ...(cost.usage.length
+        ? {
+            billsByUsage: cost.usage.map((entry) => entry.resourceType),
+          }
+        : {}),
+      freeResources: cost.freeCount,
+      ...(cost.unclassified.length
+        ? { notClassified: cost.unclassified.slice(0, 10) }
+        : {}),
+      note: cost.recurring.length
+        ? "The resources above accrue from the moment they are created. Say so when you place this, and mention which input controls how many there are."
+        : "Nothing here bills merely for existing.",
+    },
+  };
 }
 
-function unknownLocal(name: string, context: AgentContext): string {
-  const known = context.graph.nodes
-    .filter((node) => node.kind === "local")
-    .map((node) => node.id)
-    .join(", ");
+/** Said the same way wherever a library id turns out not to name a module. */
+function unknownLibraryModule(moduleId: string, context: AgentContext): string {
+  const suggestion = closestName(moduleId, [
+    ...context.library.map((module) => module.id),
+    ...context.library.map((module) => module.name),
+  ]);
 
-  return `No value "${name}" in this project. Available: ${known || "none"}.`;
+  return `No module "${moduleId}" in the library.${
+    suggestion ? ` Did you mean "${suggestion}"?` : ""
+  } The library section of your instructions lists every id; add_module takes the id, not the name.`;
+}
+
+function unknownLocal(name: string, projection: GraphProjection): string {
+  const known = projection.localNames();
+  const suggestion = closestName(name, known);
+
+  return `No value "${name}" in this project.${
+    suggestion ? ` Did you mean "${suggestion}"?` : ""
+  } Available: ${known.join(", ") || "none"}.`;
 }
 
 /**
@@ -873,12 +1319,17 @@ function toolSpec(
   };
 }
 
-function unknownModule(name: string, context: AgentContext): string {
-  const known = context.graph.nodes
-    .filter((node) => node.kind === "module")
-    .map((node) => node.id)
-    .join(", ");
-  return `There is no module block called "${name}". On the canvas: ${known || "nothing yet"}.`;
+/**
+ * Read from the projection rather than the graph, so a block this turn added
+ * counts as present and a block it removed does not.
+ */
+function unknownModule(name: string, projection: GraphProjection): string {
+  const known = projection.moduleNames();
+  const suggestion = closestName(name, known);
+
+  return `There is no module block called "${name}".${
+    suggestion ? ` Did you mean "${suggestion}"?` : ""
+  } On the canvas: ${known.join(", ") || "nothing yet"}.`;
 }
 
 /**
@@ -908,11 +1359,17 @@ function systemPrompt(context: AgentContext): string {
   const moduleNodes = graph.nodes.filter((node) => node.kind === "module");
   const localNodes = graph.nodes.filter((node) => node.kind === "local");
 
+  // With the ports, which is the difference between a list of boxes and a
+  // configuration. Without them the agent could only ever set the inputs that
+  // happened to appear as gaps — every optional input was invisible, so
+  // `enable_nat_gateway` or `instance_type` could not be set even when the user
+  // asked for it by name.
   const modules = moduleNodes.length
     ? moduleNodes
-        .map(
-          (node) =>
-            `- ${node.id}${node.moduleName ? ` (module ${node.moduleName}${node.version ? `@${node.version}` : ""})` : ""}`,
+        .map((node) =>
+          moduleNodes.length > PROMPT_PORT_MODULES
+            ? describeModuleHeading(node)
+            : [describeModuleHeading(node), ...describePorts(node)].join("\n"),
         )
         .join("\n")
     : "(none)";
@@ -935,26 +1392,37 @@ function systemPrompt(context: AgentContext): string {
         .join("\n")
     : "(nothing wired up)";
 
+  // Both halves of a gap, not just the first. `candidates` — library modules that
+  // would produce the missing value once added — was already computed for the
+  // canvas and dropped before the prompt, which is exactly the path from "vpc_id
+  // is missing" to "add the VPC module and wire it".
   const gaps = graph.gaps.length
     ? graph.gaps
-        .map(
-          (gap) =>
-            `- ${gap.node}.${gap.input} is unset${
-              gap.wirable.length
-                ? `; could come from ${gap.wirable.map((w) => `${w.node}.${w.output}`).join(" or ")}`
-                : ""
-            }`,
-        )
+        .map((gap) => {
+          const sources = [
+            ...gap.wirable.map((w) => `${w.node}.${w.output}`),
+            ...gap.candidates.map(
+              (c) => `${c.name}.${c.output} (add_module ${c.moduleId})`,
+            ),
+          ];
+
+          return `- ${gap.node}.${gap.input}${gap.type ? ` (${gap.type})` : ""} is unset${
+            sources.length ? `; could come from ${sources.join(" or ")}` : ""
+          }`;
+        })
         .join("\n")
     : "(none)";
 
+  const shownLibrary = context.library.slice(0, PROMPT_LIBRARY_LIMIT);
   const library = context.library.length
-    ? context.library
-        .map(
-          (mod) =>
-            `- ${mod.id}: ${mod.name}${mod.versionTag ? ` @${mod.versionTag}` : ""}`,
-        )
-        .join("\n")
+    ? [
+        ...shownLibrary.map(summariseLibraryModule),
+        ...(context.library.length > shownLibrary.length
+          ? [
+              `(${context.library.length - shownLibrary.length} more not listed. Ask for one by name with describe_module.)`,
+            ]
+          : []),
+      ].join("\n")
     : "(empty)";
 
   // Last few turns only. The graph above already reflects everything earlier
@@ -980,6 +1448,13 @@ function systemPrompt(context: AgentContext): string {
       ? [
           `## Modules on the canvas (${moduleNodes.length})`,
           modules,
+          ...(moduleNodes.length > PROMPT_PORT_MODULES
+            ? [
+                "",
+                "Too many modules to list their inputs and outputs here. Use `describe_module`",
+                "on the ones you need to change or wire.",
+              ]
+            : []),
           "",
           `## Variables, i.e. \`locals\` (${localNodes.length})`,
           locals,
@@ -996,9 +1471,35 @@ function systemPrompt(context: AgentContext): string {
           gaps,
           "",
           `Root-level resource/data blocks: ${graph.resourceCount}. Files: ${graph.files.join(", ") || "none"}.`,
+          "",
+          // The rule the canvas wires by, stated rather than left to be inferred
+          // from examples. The agent was previously shown the *results* of this
+          // scoring for required inputs and never the principle, so it had no way
+          // to apply it to an optional input or to a module it had just added.
+          "## How values fit together",
+          "Terraform types every id as a string, so the only reliable signal is the naming",
+          "convention modules follow: an output called `vpc_id` belongs in an input called",
+          "`vpc_id`, and a module named `vpc` with an output `id` fits an input `vpc_id`.",
+          "Anything weaker than that is a guess — and a wrong wire is silent, because it",
+          "plans, applies, and builds the wrong thing. When two modules could both supply a",
+          "value, ask which one rather than picking.",
         ]
       : []),
-    ...(hasLibrary ? ["", "## Module library available to add", library] : []),
+    ...(hasLibrary
+      ? [
+          "",
+          `## Module library available to add (${context.library.length})`,
+          "One line each: id, name, what it is, and how many ports it has. `add_module` takes",
+          "the id. Before wiring a module you have not used in this conversation, call",
+          "`describe_module` — it returns every input with its type and default, every output,",
+          "and which of its resources bill by the hour. Guessing an output name writes a",
+          "reference that only fails when somebody runs Terraform.",
+          library,
+        ]
+      : []),
+    // Placed after the project because it is a statement about the project, and
+    // before the application because it may be the reason this turn exists.
+    ...pipelineNotice(context.lastCheck),
     // Placed after the project and the library, because it is the only section
     // that asks the model to go and do something before answering rather than
     // telling it something. It reads as an instruction, and an instruction wants
@@ -1057,6 +1558,121 @@ function systemPrompt(context: AgentContext): string {
         ]
       : []),
   ].join("\n");
+}
+
+/** `- vpc (module terraform-aws-vpc@5.1.0)`, or just the label when unresolved. */
+function describeModuleHeading(node: {
+  id: string;
+  moduleName: string | null;
+  version: string | null;
+  exactVersion: boolean;
+}): string {
+  if (!node.moduleName) {
+    // Worth saying rather than leaving blank: a block the library cannot resolve
+    // has no ports here, so the agent must not read the absence as "no inputs".
+    return `- ${node.id} (source not in your library — its inputs and outputs are unknown to you)`;
+  }
+
+  return `- ${node.id} (module ${node.moduleName}${node.version ? `@${node.version}` : ""}${
+    node.exactVersion ? "" : ", pinned ref not imported"
+  })`;
+}
+
+/**
+ * A placed module's ports, with the set ones showing what they hold.
+ *
+ * Set arguments carry their expression because that is what makes the difference
+ * between "this input has a value" and "this input has the *right* value" — and
+ * changing one is an edit the agent could not previously see the need for.
+ */
+function describePorts(node: {
+  inputs: Array<{ name: string; required?: boolean; type?: string | null }>;
+  outputs: Array<{ name: string }>;
+  values: Record<string, string>;
+}): string[] {
+  if (node.inputs.length === 0 && node.outputs.length === 0) return [];
+
+  const inputs = [...node.inputs]
+    // Required first, then the ones already carrying a value: those are the two
+    // kinds worth reading when the list has to be cut short.
+    .sort(
+      (a, b) =>
+        Number(b.required ?? false) - Number(a.required ?? false) ||
+        Number(node.values[b.name] !== undefined) -
+          Number(node.values[a.name] !== undefined) ||
+        a.name.localeCompare(b.name),
+    )
+    .slice(0, PROMPT_PORTS_PER_MODULE)
+    .map((input) => {
+      const value = node.values[input.name];
+      return `${input.name}${input.type ? `:${input.type}` : ""}${
+        input.required ? "*" : ""
+      }${value !== undefined ? ` = ${truncate(value, 60)}` : ""}`;
+    });
+
+  const hiddenInputs = node.inputs.length - inputs.length;
+
+  const lines = [
+    `  inputs (\`*\` required): ${inputs.join(", ") || "none"}${
+      hiddenInputs > 0 ? `, +${hiddenInputs} more (describe_module)` : ""
+    }`,
+  ];
+
+  const outputs = node.outputs
+    .slice(0, PROMPT_PORTS_PER_MODULE)
+    .map((output) => output.name);
+  const hiddenOutputs = node.outputs.length - outputs.length;
+
+  lines.push(
+    `  outputs: ${outputs.join(", ") || "none"}${
+      hiddenOutputs > 0 ? `, +${hiddenOutputs} more (describe_module)` : ""
+    }`,
+  );
+
+  return lines;
+}
+
+function truncate(value: string, max: number): string {
+  const flat = value.trim().replace(/\s+/g, " ");
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
+/**
+ * What the pipeline made of the last commit.
+ *
+ * The only verdict on this configuration from a real Terraform: the project's own
+ * workflow runs `fmt -check`, `init` and `validate`, minutes after a commit and
+ * outside any turn. It cannot be waited for, so it arrives as a fact about the
+ * previous turn — which is precisely when it is worth acting on, because the code
+ * that failed is still the code in front of the agent.
+ */
+function pipelineNotice(
+  check: AgentPipelineCheck | null | undefined,
+): string[] {
+  if (!check) return [];
+
+  const lines = ["", "## Last pipeline run on this branch"];
+
+  if (check.status !== "completed") {
+    lines.push(
+      `\`${check.name}\` is still running (${check.status}). Its verdict on the previous commit is not in yet, so do not treat the configuration as validated.`,
+    );
+    return lines;
+  }
+
+  if (check.conclusion === "success") {
+    lines.push(
+      `\`${check.name}\` passed, so the configuration on this branch formats, initialises and validates. Keep it that way.`,
+    );
+    return lines;
+  }
+
+  lines.push(
+    `\`${check.name}\` ended as \`${check.conclusion ?? "unknown"}\`. Terraform is not happy with what is on this branch: ${check.htmlUrl}.`,
+    "If the user is asking about something else, mention it once and carry on. If they are asking you to fix it, work out which module or value is wrong from the graph above — you cannot read the run's log — and say what you think it is before changing anything.",
+  );
+
+  return lines;
 }
 
 /**
