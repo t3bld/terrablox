@@ -76,6 +76,33 @@ export { PROJECT_AGENT_TOOLS } from "./tool-catalogue";
  * worth carrying into this one. A model told its last commit failed validation
  * fixes it; a model told nothing builds on top of it.
  */
+/**
+ * The linked application repository, ready to read.
+ *
+ * The credential travels with the repository rather than being taken from
+ * `githubToken`, and that is the point. Two different tokens are in play during a
+ * turn and they are not interchangeable: `githubToken` is the *user's* own, because
+ * the Copilot session runs on their seat and is billed to them, while repositories
+ * are read with the provider token — which is a GitHub App installation token
+ * wherever an App is configured.
+ *
+ * Reading the application with the user's token was wrong in exactly the case the
+ * App exists for. The picker lists what the *installation* can see, so a user could
+ * choose a repository their own account cannot read, and every read then failed
+ * with a 404 that the error text blamed on their account losing access — access it
+ * never had. Carrying the credential beside the name makes the two impossible to
+ * confuse, and makes it impossible to have one without the other.
+ *
+ * `branch` is already resolved: the caller turns "no pinned ref" into the
+ * repository's current default before the turn starts.
+ */
+export interface AgentAppRepo {
+  fullName: string;
+  branch: string;
+  /** The provider credential the repository was chosen with. */
+  token: string;
+}
+
 export interface AgentPipelineCheck {
   name: string;
   /** `queued`, `in_progress`, `completed`. */
@@ -114,7 +141,18 @@ export interface AgentContext {
    * work from. Null — or a project with no link — means those tools are never
    * registered, and the prompt says the agent has to ask instead.
    */
-  appRepo?: { fullName: string; branch: string } | null;
+  appRepo?: AgentAppRepo | null;
+  /**
+   * That a link exists, whether or not it can be used this turn.
+   *
+   * Separate from `appRepo` because "linked" and "readable" are different facts
+   * and lead to different sentences. Withheld by the user, unreachable on GitHub,
+   * and never linked at all are three situations a person fixes on three
+   * different screens, so the prompt has to be able to tell them apart.
+   */
+  appRepoLink?: { fullName: string } | null;
+  /** Why the link above could not be used, when that is the reason it is absent. */
+  appRepoProblem?: string | null;
   /**
    * The resource types a set of library modules creates, looked up on demand.
    *
@@ -459,6 +497,28 @@ function buildTools(
     }
     reads += 1;
     return null;
+  };
+
+  /**
+   * The application's file tree, fetched at most once per turn.
+   *
+   * `listRepoTree` is two requests and returns the *whole* repository recursively,
+   * and `list_app_files` filters that list by prefix. So listing the root, then
+   * `services/api`, then `services/web` used to fetch the same tree three times —
+   * six requests on the user's rate limit for one commit's worth of paths that
+   * cannot change mid-turn.
+   *
+   * The promise is cached rather than its result, so two calls in flight together
+   * share one request. A rejection is cached too, on purpose: the second attempt
+   * would fail the same way, and spending a request to prove it helps nobody.
+   */
+  let appTree: Promise<Awaited<ReturnType<typeof listRepoTree>>> | null = null;
+  const loadAppTree = (repo: AgentAppRepo) => {
+    appTree ??= listRepoTree(repo.token, {
+      repoFullName: repo.fullName,
+      ref: repo.branch,
+    });
+    return appTree;
   };
 
   const queue = (tool: string, mutation: ProjectGraphMutation) => {
@@ -932,14 +992,16 @@ function buildTools(
       handler: async ({ path }) => {
         if (!appRepo) return refuse("list_app_files", NO_APP_REPO);
 
-        const spend = spendRead("list_app_files");
-        if (spend) return spend;
+        // Charged only when a request is actually made. The budget exists to cap
+        // GitHub traffic, so listing a second subtree of a tree already in hand
+        // must not cost the turn one of its forty reads.
+        if (!appTree) {
+          const spend = spendRead("list_app_files");
+          if (spend) return spend;
+        }
 
         try {
-          const tree = await listRepoTree(context.githubToken, {
-            repoFullName: appRepo.fullName,
-            ref: appRepo.branch,
-          });
+          const tree = await loadAppTree(appRepo);
 
           const prefix = normaliseAppPath(path);
           const files = tree.entries
@@ -969,6 +1031,17 @@ function buildTools(
                   truncated: `${omitted} more file(s) not shown. Pass \`path\` to list one directory at a time.`,
                 }
               : {}),
+            // A different kind of incompleteness, and the dangerous one: the cap
+            // above is ours and `path` gets past it, while this one is GitHub's
+            // and nothing gets past it. Said plainly because the wrong conclusion
+            // — "this repository has no Dockerfile" — is one the agent would
+            // otherwise draw with confidence and build on.
+            ...(tree.truncated
+              ? {
+                  incomplete:
+                    "GitHub could not list this repository in full, so paths may be missing entirely. Do not conclude a file is absent because it is not here; ask the user instead.",
+                }
+              : {}),
           };
         } catch (error) {
           return refuse("list_app_files", describeAppRepoError(error, appRepo));
@@ -989,7 +1062,7 @@ function buildTools(
         if (spend) return spend;
 
         try {
-          const file = await readRepoFile(context.githubToken, {
+          const file = await readRepoFile(appRepo.token, {
             repoFullName: appRepo.fullName,
             path: wanted,
             ref: appRepo.branch,
@@ -1127,6 +1200,45 @@ function buildTools(
   ].filter((tool) => !disabled.has(tool.name));
 }
 
+/**
+ * Why there is no application to read, in the terms of whoever has to fix it.
+ *
+ * Reached only when `appRepo` is absent, and its job is to say *which* absence
+ * this is. All three used to collapse into two sentences, and the missing one was
+ * the worst of them: a link whose repository has been renamed or whose access
+ * lapsed reads, from inside the prompt, exactly like a link that works — so the
+ * agent would report that the application says nothing about its own runtime.
+ */
+function unreadableAppRepoNotice(
+  context: AgentContext,
+  withheld: boolean,
+): string[] {
+  const link = context.appRepoLink ?? context.appRepo;
+
+  if (!link) {
+    return [
+      "No application repository is linked to this project, so you cannot see the application's code. Ask the user what runs on this infrastructure — runtime, ports, data stores, how it is deployed — rather than assuming, and mention that linking a repository in the agent settings would let you read it yourself.",
+    ];
+  }
+
+  // Checked before the broken-link case even though both may be true at once. A
+  // user who switched this off has to switch it back on before anything else
+  // matters, and sending them to re-pick a repository would be advice about a
+  // problem they cannot see the effect of.
+  if (withheld) {
+    return [
+      `This project is linked to ${link.fullName}, but the user has withheld it from you: you cannot read the application's code in this turn. Say that application repository access is switched off in the agent settings, and ask them about the application instead of assuming.`,
+    ];
+  }
+
+  return [
+    `This project is linked to ${link.fullName}, but it cannot be read: ${
+      context.appRepoProblem ?? "GitHub did not return it."
+    }`,
+    "Trying again will not help. Tell the user the link is broken and needs re-picking in the agent settings, then ask them about the application directly.",
+  ];
+}
+
 /** Said the same way wherever a read tool runs without a repository behind it. */
 const NO_APP_REPO =
   "No application repository is linked to this project. Ask the user to link one in the agent settings, or ask them about the application directly.";
@@ -1163,16 +1275,16 @@ function isIgnoredAppPath(path: string): boolean {
  * either repeat at the user or read as its own mistake and retry. The two cases
  * worth distinguishing are both about access rather than about the call.
  */
-function describeAppRepoError(
-  error: unknown,
-  appRepo: { fullName: string; branch: string },
-): string {
+function describeAppRepoError(error: unknown, appRepo: AgentAppRepo): string {
   if (error instanceof GithubRequestError) {
     if (error.status === 404) {
-      return `Cannot reach ${appRepo.fullName} at ${appRepo.branch}. Either the branch does not exist or the linked account can no longer see the repository. Tell the user; do not retry.`;
+      // No longer guesses at whose access lapsed. The link was verified against
+      // this very credential when it was set and again at the start of this turn,
+      // so a 404 here means something changed since — or the path is simply wrong.
+      return `Cannot reach ${appRepo.fullName} at ${appRepo.branch}, although the link was readable when this turn began. Tell the user the application repository has become unreachable; do not retry.`;
     }
     if (error.status === 401 || error.status === 403) {
-      return `Not allowed to read ${appRepo.fullName}. Tell the user their GitHub access to the linked application repository needs checking; do not retry.`;
+      return `Not allowed to read ${appRepo.fullName}. Tell the user the GitHub access this installation was granted needs checking; do not retry.`;
     }
   }
 
@@ -1525,13 +1637,15 @@ function systemPrompt(context: AgentContext): string {
       : [
           "",
           "## The application this infrastructure is for",
-          // The two reasons for having no application read differently to a user:
-          // one is a project that was never linked, the other is a deliberate
-          // restriction. Saying "not linked" to someone who switched it off
-          // themselves sends them to the wrong screen.
-          context.appRepo
-            ? `This project is linked to ${context.appRepo.fullName}, but the user has withheld it from you: you cannot read the application's code in this turn. Say that application repository access is switched off in the agent settings, and ask them about the application instead of assuming.`
-            : "No application repository is linked to this project, so you cannot see the application's code. Ask the user what runs on this infrastructure — runtime, ports, data stores, how it is deployed — rather than assuming, and mention that linking a repository in the agent settings would let you read it yourself.",
+          // Three reasons for having no application to read, and a person fixes
+          // each of them somewhere else: the agent settings, GitHub, or the link
+          // itself. Saying "not linked" to someone who switched it off themselves
+          // sends them to the wrong screen, and saying it to someone whose
+          // repository was renamed sends them to a screen that looks correct.
+          ...unreadableAppRepoNotice(
+            context,
+            !knowledgeEnabled(context.disabledKnowledge, KNOWLEDGE_APP_REPO),
+          ),
         ]),
     // The user's own instructions come last, after the facts, so
     // they read as standing preferences rather than as part of the graph.

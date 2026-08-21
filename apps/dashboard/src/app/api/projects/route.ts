@@ -18,6 +18,7 @@ import {
   AppRepoInputError,
   appRepoColumns,
   parseAppRepoInput,
+  verifyAppRepoAccess,
 } from "@/lib/projects/app-repo";
 import { toProjectDto } from "@/lib/projects/serialize";
 import { normalizeFolder } from "@/lib/projects/service";
@@ -133,11 +134,12 @@ export async function POST(req: Request) {
     );
   }
 
-  // Parsed before the repository is created: a rejected link would otherwise
-  // leave a repository on GitHub for a project that was never stored.
+  // Parsed *and verified* before the repository is created: a rejected link would
+  // otherwise leave a repository on GitHub for a project that was never stored.
   let appRepo: ReturnType<typeof parseAppRepoInput>;
   try {
     appRepo = parseAppRepoInput(body.appRepo);
+    if (appRepo) appRepo = await verifyAppRepoAccess(token, appRepo);
   } catch (e) {
     return NextResponse.json(
       {

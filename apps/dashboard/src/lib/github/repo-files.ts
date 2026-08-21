@@ -307,10 +307,25 @@ export interface RepoTreeEntry {
   type: "tree" | "blob";
 }
 
+export interface RepoTree {
+  sha: string;
+  entries: RepoTreeEntry[];
+  /**
+   * GitHub gave up before listing the whole repository.
+   *
+   * A recursive tree request is capped — roughly 100 000 entries or 7 MB — and
+   * past that the API returns `truncated: true` with a *partial* list and a 200.
+   * Reporting it is not a nicety: a caller that filters this list and finds
+   * nothing cannot otherwise tell "there is no Dockerfile" from "the answer did
+   * not fit", and those two conclusions lead somewhere very different.
+   */
+  truncated: boolean;
+}
+
 export async function listRepoTree(
   token: string,
   params: { repoFullName: string; ref: string },
-): Promise<{ sha: string; entries: RepoTreeEntry[] }> {
+): Promise<RepoTree> {
   const commitRes = await githubFetch(
     token,
     `/repos/${params.repoFullName}/commits/${encodeURIComponent(params.ref)}`,
@@ -326,13 +341,14 @@ export async function listRepoTree(
   );
   const tree = (await treeRes.json()) as {
     tree?: Array<{ path: string; type: string }>;
+    truncated?: boolean;
   };
 
   const entries = (tree.tree ?? [])
     .filter((e) => e.type === "tree" || e.type === "blob")
     .map((e) => ({ path: e.path, type: e.type as "tree" | "blob" }));
 
-  return { sha: commit.sha, entries };
+  return { sha: commit.sha, entries, truncated: tree.truncated === true };
 }
 
 export interface WorkflowRun {

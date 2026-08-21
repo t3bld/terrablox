@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
 
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import {
+  getCurrentUserId,
+  getProviderTokenForRequest,
+} from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import {
   AppRepoInputError,
   appRepoColumns,
   parseAppRepoInput,
+  verifyAppRepoAccess,
 } from "@/lib/projects/app-repo";
 import { toProjectDto } from "@/lib/projects/serialize";
 
@@ -36,6 +40,20 @@ export async function PUT(
     // `undefined` would mean "leave it alone", which is not something this
     // endpoint can be asked for: it exists only to set the value.
     link = parseAppRepoInput(body?.appRepo ?? null);
+
+    // Checked against the credential that will do the reading, so a link that
+    // cannot work is refused here rather than discovered by the agent mid-turn.
+    // Unlinking needs no check: there is nothing to reach.
+    if (link) {
+      const token = await getProviderTokenForRequest(req, "github");
+      if (!token) {
+        return NextResponse.json(
+          { error: "GitHub is not connected" },
+          { status: 401 },
+        );
+      }
+      link = await verifyAppRepoAccess(token, link);
+    }
   } catch (e) {
     return NextResponse.json(
       {

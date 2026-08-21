@@ -11,6 +11,8 @@
  * agree on what a valid link is.
  */
 
+import { GithubRequestError, getRepository } from "@/lib/github/repo-files";
+
 export interface AppRepoLink {
   appRepoFullName: string;
   appRepoBranch: string | null;
@@ -84,5 +86,59 @@ export function appRepoColumns(link: AppRepoLink | null): {
   return {
     appRepoFullName: link?.appRepoFullName ?? null,
     appRepoBranch: link?.appRepoBranch ?? null,
+  };
+}
+
+/**
+ * Confirms the credential that will read this repository can actually reach it.
+ *
+ * The shape check above says the value is addressable, not that it exists. Both
+ * write paths accept an arbitrary `owner/name`, and the picker is the only reason
+ * a stored link is usually real — so a link set through the API, a repository
+ * renamed afterwards, or an App installation that no longer covers it all became
+ * a link that looked fine on the settings screen and failed in the middle of a
+ * turn, several minutes and one confusing message later.
+ *
+ * Probed with the *provider* token, which is the credential the agent reads with.
+ * Verifying with a different identity than the one that will do the reading would
+ * be theatre.
+ */
+export async function verifyAppRepoAccess(
+  token: string,
+  link: AppRepoLink,
+): Promise<AppRepoLink> {
+  let repository: Awaited<ReturnType<typeof getRepository>>;
+
+  try {
+    repository = await getRepository(token, link.appRepoFullName);
+  } catch (error) {
+    if (error instanceof GithubRequestError && error.status === 404) {
+      throw new AppRepoInputError(
+        `${link.appRepoFullName} cannot be read with this installation's GitHub access. Check the name, or that the repository is one this account can see.`,
+      );
+    }
+    if (
+      error instanceof GithubRequestError &&
+      (error.status === 401 || error.status === 403)
+    ) {
+      throw new AppRepoInputError(
+        `Not permitted to read ${link.appRepoFullName}. Check the GitHub access this installation was granted.`,
+      );
+    }
+
+    throw new AppRepoInputError(
+      `Could not reach ${link.appRepoFullName} on GitHub. Try again in a moment.`,
+    );
+  }
+
+  // A branch is stored only when it was deliberately chosen. Left absent, reads
+  // resolve the repository's default at the time they happen — which is what
+  // keeps a link working after somebody renames `master` to `main`.
+  return {
+    appRepoFullName: repository.fullName,
+    appRepoBranch:
+      link.appRepoBranch && link.appRepoBranch !== repository.defaultBranch
+        ? link.appRepoBranch
+        : null,
   };
 }

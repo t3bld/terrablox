@@ -18,6 +18,7 @@ import {
 } from "@/lib/agent/knowledge";
 import { toAgentLibrary } from "@/lib/agent/library-view";
 import {
+  type AgentAppRepo,
   type AgentPipelineCheck,
   runProjectAgent,
 } from "@/lib/agent/project-agent";
@@ -33,7 +34,11 @@ import {
   getUserGithubToken,
 } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { GithubRequestError, listWorkflowRuns } from "@/lib/github/repo-files";
+import {
+  GithubRequestError,
+  getRepository,
+  listWorkflowRuns,
+} from "@/lib/github/repo-files";
 import { toChatMessageDto } from "@/lib/projects/serialize";
 import {
   applyProjectMutation,
@@ -115,6 +120,54 @@ function blindGraph(sha: string): ProjectGraph {
  * installation may not have been granted, and a turn must not fail because a
  * status could not be read.
  */
+/**
+ * The linked application repository, resolved and confirmed for this turn.
+ *
+ * Two jobs in one request, because they are the same request. A link stores a ref
+ * only when one was deliberately pinned, so the usual case needs the repository's
+ * *current* default branch — and asking for it is also how we find out the link
+ * still works. Doing it here rather than inside the first tool call means a broken
+ * link becomes a sentence in the prompt instead of a failure three minutes into a
+ * turn.
+ *
+ * Read with the provider token, which is the App installation token wherever an
+ * App is configured. That is the credential the picker listed repositories with, so
+ * it is the one that can read what the user chose. The user's own token pays for
+ * the Copilot session and has no business here.
+ */
+async function resolveAppRepo(
+  token: string,
+  project: { appRepoFullName: string | null; appRepoBranch: string | null },
+): Promise<{ appRepo: AgentAppRepo | null; problem: string | null }> {
+  if (!project.appRepoFullName) return { appRepo: null, problem: null };
+
+  try {
+    const repository = await getRepository(token, project.appRepoFullName);
+
+    return {
+      appRepo: {
+        fullName: repository.fullName,
+        branch: project.appRepoBranch ?? repository.defaultBranch,
+        token,
+      },
+      problem: null,
+    };
+  } catch (error) {
+    const problem =
+      error instanceof GithubRequestError && error.status === 404
+        ? "GitHub reports it does not exist, which usually means it was renamed or the access this installation was granted no longer covers it."
+        : error instanceof GithubRequestError &&
+            (error.status === 401 || error.status === 403)
+          ? "GitHub refused the request, so the access this installation was granted needs checking."
+          : "GitHub could not be reached for it.";
+
+    // Not fatal. A project's own work does not depend on the application being
+    // readable, and a turn that refused to run would be a worse answer than one
+    // that says the link is broken.
+    return { appRepo: null, problem };
+  }
+}
+
 async function readLastCheck(
   token: string,
   repoFullName: string,
@@ -255,18 +308,27 @@ export async function POST(
   };
 
   try {
-    const [graph, library, history, settings, mcpServers, curation, lastCheck] =
-      await Promise.all([
-        loadProjectGraph(token, project),
-        readModuleLibrary(userId),
-        database.projectChatMessage
-          .findMany({ where: { projectId: project.id }, ...HISTORY_QUERY })
-          .then((rows) => rows.reverse()),
-        getEffectiveAgentSettings(userId, project.id),
-        mcpServersForSession(userId),
-        getHarnessCuration(),
-        readLastCheck(token, project.repoFullName, project.repoBranch),
-      ]);
+    const [
+      graph,
+      library,
+      history,
+      settings,
+      mcpServers,
+      curation,
+      lastCheck,
+      application,
+    ] = await Promise.all([
+      loadProjectGraph(token, project),
+      readModuleLibrary(userId),
+      database.projectChatMessage
+        .findMany({ where: { projectId: project.id }, ...HISTORY_QUERY })
+        .then((rows) => rows.reverse()),
+      getEffectiveAgentSettings(userId, project.id),
+      mcpServersForSession(userId),
+      getHarnessCuration(),
+      readLastCheck(token, project.repoFullName, project.repoBranch),
+      resolveAppRepo(token, project),
+    ]);
 
     // Knowledge is withheld by not assembling it, not by asking the model to
     // ignore it. `graph` below is still the real one — it goes back to the
@@ -285,17 +347,14 @@ export async function POST(
       projectName: project.name,
       repoFullName: project.repoFullName,
       branch: project.repoBranch,
-      // Read with the user's own token rather than the installation one: the
-      // application repository was picked from what that account can see, and an
-      // App installation is scoped to the repositories it was installed on —
-      // which need not include this one. The branch falls back to `main` only as
-      // a last resort; the picker stores what GitHub reported as default.
-      appRepo: project.appRepoFullName
-        ? {
-            fullName: project.appRepoFullName,
-            branch: project.appRepoBranch ?? "main",
-          }
+      // Resolved and confirmed above, and carrying the provider token it was
+      // verified with. Null when the link is broken — `appRepoProblem` then says
+      // so, which is a different statement from having no link at all.
+      appRepo: application.appRepo,
+      appRepoLink: project.appRepoFullName
+        ? { fullName: project.appRepoFullName }
         : null,
+      appRepoProblem: application.problem,
       graph: seesRepo ? graph : blindGraph(graph.sha),
       userId,
       projectId: project.id,

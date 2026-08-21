@@ -24,14 +24,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
  */
 export interface AppRepoSelection {
   fullName: string;
-  /** Default branch as GitHub reports it, so reads have a ref without a lookup. */
+  /**
+   * A ref to pin reads to, or null for "whatever the default branch is".
+   *
+   * Null is what this picker sends. It used to send the default branch as GitHub
+   * reported it, to save a lookup later — which quietly froze the answer: a
+   * repository whose default is renamed from `master` to `main` then failed every
+   * read, on a link nobody had touched. The lookup is cheap and the truth moves.
+   */
   branch: string | null;
 }
 
 /** Enough of the list to search it; the rest of `GitRepo` is not needed here. */
 interface RepoOption {
   fullName: string;
-  branch: string | null;
   private: boolean;
   description: string | null;
 }
@@ -105,7 +111,6 @@ export function AppRepoPicker({
         setRepos(
           list.map((repo) => ({
             fullName: repo.full_name,
-            branch: repo.default_branch,
             private: repo.private,
             description: repo.description,
           })),
@@ -194,9 +199,11 @@ export function AppRepoPicker({
                       <CommandItem
                         key={repo.fullName}
                         onSelect={() => {
+                          // The default branch is deliberately not passed on —
+                          // see `AppRepoSelection.branch`.
                           onChange({
                             fullName: repo.fullName,
-                            branch: repo.branch,
+                            branch: null,
                           });
                           setOpen(false);
                         }}

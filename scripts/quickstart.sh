@@ -159,8 +159,79 @@ if [ "$(read_env_var "$APP_ENV" DATABASE_URL)" != "$(read_env_var "$DB_ENV" DATA
 	info "the app and the Prisma CLI would talk to different databases"
 fi
 
-if [ -z "$(read_env_var "$APP_ENV" GITHUB_CLIENT_ID)" ]; then
-	muted "GITHUB_CLIENT_ID is empty - GitHub module import stays disabled (optional)"
+# --- 2b. GitHub sign-in -----------------------------------------------------
+
+# Not optional, and this used to say it was. Email and password sign-in was
+# removed, so GitHub OAuth is now the only way in: without these two values the
+# script finishes happily and the login page cannot do anything. Asking here is
+# the difference between a five-minute setup and a puzzle.
+
+# Asks for one env var and writes it, leaving an existing value alone.
+# prompt_env_var FILE KEY LABEL [secret]
+prompt_env_var() {
+	local file="$1" key="$2" label="$3" secret="${4:-}" value=""
+
+	if [ -n "$(read_env_var "$file" "$key")" ]; then
+		muted "$key already set, left unchanged"
+		return 0
+	fi
+
+	if [ ! -t 0 ]; then
+		warn "$key is empty and this is not an interactive terminal"
+		return 1
+	fi
+
+	if [ -n "$secret" ]; then
+		# Not echoed: a client secret pasted into a prompt would otherwise sit in
+		# the terminal scrollback for the rest of the day.
+		printf '    %s%s%s ' "$BOLD" "$label" "$RESET"
+		read -rs value </dev/tty || value=""
+		printf '\n'
+	else
+		printf '    %s%s%s ' "$BOLD" "$label" "$RESET"
+		read -r value </dev/tty || value=""
+	fi
+
+	value="$(printf '%s' "$value" | tr -d '[:space:]')"
+	[ -n "$value" ] || return 1
+
+	write_env_var "$file" "$key" "$value"
+	ok "$key written to $file"
+}
+
+github_ready() {
+	[ -n "$(read_env_var "$APP_ENV" GITHUB_CLIENT_ID)" ] &&
+		[ -n "$(read_env_var "$APP_ENV" GITHUB_CLIENT_SECRET)" ]
+}
+
+if github_ready; then
+	ok "GitHub sign-in is configured"
+else
+	step "Configuring GitHub sign-in (required)"
+	info "GitHub is the only way to sign in, and it also grants the agent the"
+	info "repository access it works through. Two values are needed."
+	printf '\n'
+	info "Register an app, then paste its credentials below:"
+	muted "  GitHub App (recommended for orgs):"
+	muted "    https://github.com/settings/apps/new"
+	muted "  or a classic OAuth App:"
+	muted "    https://github.com/settings/developers"
+	printf '\n'
+	muted "  Callback URL:  ${DASHBOARD_URL}/api/auth/callback/github"
+	muted "  Homepage URL:  ${DASHBOARD_URL}"
+	printf '\n'
+	muted "Press Enter to skip either one and fill it in later."
+	printf '\n'
+
+	prompt_env_var "$APP_ENV" GITHUB_CLIENT_ID "Client ID:      " || true
+	prompt_env_var "$APP_ENV" GITHUB_CLIENT_SECRET "Client secret:  " secret || true
+
+	if github_ready; then
+		ok "GitHub sign-in is configured"
+	else
+		warn "GitHub sign-in is NOT configured - nobody can sign in yet"
+		info "add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to $APP_ENV, then restart the dev server"
+	fi
 fi
 
 # TERRABLOX_AWS_PRINCIPAL_ARN is intentionally not set here: the app discovers
@@ -276,6 +347,44 @@ else
 			;;
 	esac
 fi
+
+# --- 5c. configuration summary ----------------------------------------------
+
+# Every variable the code actually reads, with what its absence costs. Built by
+# grepping for `process.env.` rather than from memory, because a list maintained
+# by hand beside a growing codebase is a list that quietly goes stale — which is
+# exactly how GitHub sign-in came to be documented as optional.
+step "Configuration"
+
+summarise_var() {
+	local key="$1" need="$2" note="$3" value
+	value="$(read_env_var "$APP_ENV" "$key")"
+
+	if [ -n "$value" ]; then
+		ok "$key"
+		return
+	fi
+
+	case "$need" in
+		required) warn "$key — $note" ;;
+		*)        muted "$key — $note (optional)" ;;
+	esac
+}
+
+summarise_var DATABASE_URL required "the app cannot reach Postgres"
+summarise_var BETTER_AUTH_SECRET required "sessions and stored secrets cannot be signed"
+summarise_var GITHUB_CLIENT_ID required "nobody can sign in"
+summarise_var GITHUB_CLIENT_SECRET required "nobody can sign in"
+summarise_var GITHUB_APP_ID optional "GitHub App mode; a classic OAuth app works without it"
+summarise_var GITHUB_APP_PRIVATE_KEY optional "GitHub App mode"
+summarise_var GITHUB_APP_INSTALLATION_ID optional "GitHub App mode"
+summarise_var COPILOT_MODEL optional "defaults to the model in copilot.ts"
+summarise_var COPILOT_REASONING_EFFORT optional "defaults to the effort in copilot.ts"
+summarise_var AWS_REGION optional "deployment defaults to the region of whatever credentials it finds"
+summarise_var TERRABLOX_AWS_PRINCIPAL_ARN optional "discovered from the running credentials"
+
+printf '\n'
+muted "Edit $APP_ENV and restart the dev server to change any of these."
 
 # --- 6. dev server ----------------------------------------------------------
 

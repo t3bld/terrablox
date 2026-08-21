@@ -338,7 +338,7 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     brief:
       "No tool writes to a repository. Reads are limited to one, read-only.",
     description:
-      "No tool writes to any repository. Everything the agent changes in the project goes through the queue below, and the only repository it can read is the application repository a project explicitly links — with two read-only tools, capped per turn, and only while that knowledge source is on. Nothing else on GitHub is reachable.",
+      "No tool writes to any repository. Everything the agent changes in the project goes through the queue below, and the only repository it can read is the application repository a project explicitly links — with two read-only tools, capped per turn, and only while that knowledge source is on. It reads with the same GitHub credential the repository was chosen with, not with your Copilot token, so what it can open is exactly what the picker offered. Nothing else on GitHub is reachable.",
     enforcement: "capability",
     source: "project-agent.ts → buildTools: list_app_files, read_app_file",
   },
