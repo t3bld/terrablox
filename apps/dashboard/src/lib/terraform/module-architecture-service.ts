@@ -21,12 +21,51 @@ import { resolveModuleLinks } from "./module-link";
  */
 export const MAX_ARCHITECTURE_DEPTH = 4;
 
+/**
+ * One `output` block of a module, reduced to what placement needs.
+ *
+ * The expression is the point: `public_subnets = aws_subnet.public[*].id` is the
+ * only thing that ties the name a caller writes to the resource it really names,
+ * and naming conventions are no substitute — `database_subnets` and
+ * `database_subnet_group` differ by one word and mean different objects.
+ */
+export interface ModuleOutputRecord {
+  name: string;
+  valueExpression: string | null;
+}
+
+/** A declared variable, reduced to what guard evaluation needs. */
+export interface ModuleVariableRecord {
+  name: string;
+  /** Absent when the variable has no default; the raw parsed HCL value. */
+  default?: unknown;
+}
+
+/** A `locals` entry, reduced to what guard evaluation needs. */
+export interface ModuleLocalRecord {
+  name: string;
+  expression: string | null;
+}
+
 export interface ModuleArchitectureRecord {
   id: string;
   name: string;
   versionTag: string | null;
   resources: unknown[];
   references: unknown[];
+  /**
+   * Needed one level up rather than here: a caller wiring `subnet_id =
+   * module.vpc.public_subnets[0]` can only be drawn inside the right subnet if
+   * the callee's outputs are on hand to say which subnet that is.
+   */
+  outputs: ModuleOutputRecord[];
+  /**
+   * Defaults and locals, so `count = local.create_public_subnets ? … : 0` can be
+   * settled against the arguments the caller actually passed. Without them every
+   * optional block has to be drawn as though it existed.
+   */
+  variables: ModuleVariableRecord[];
+  locals: ModuleLocalRecord[];
   moduleCalls: {
     name: string;
     source: string | null;
@@ -38,6 +77,80 @@ export interface ModuleArchitectureRecord {
       requestedRef: string | null;
     } | null;
   }[];
+}
+
+/**
+ * Narrows the stored `outputs` JSON to the two fields placement reads.
+ *
+ * Validated rather than cast because the column is JSON: modules imported before
+ * the analyser recorded `valueExpression` have rows without it, and a missing
+ * expression has to mean "cannot be resolved" rather than crash the diagram.
+ */
+function moduleOutputs(value: unknown): ModuleOutputRecord[] {
+  if (!Array.isArray(value)) return [];
+
+  const outputs: ModuleOutputRecord[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as { name?: unknown; valueExpression?: unknown };
+    if (typeof record.name !== "string") continue;
+
+    outputs.push({
+      name: record.name,
+      valueExpression:
+        typeof record.valueExpression === "string"
+          ? record.valueExpression
+          : null,
+    });
+  }
+
+  return outputs;
+}
+
+/**
+ * Narrows the stored `variables` JSON to the name and default.
+ *
+ * `default` is copied only when the key is present: a variable without one is
+ * required, and "no default" has to stay distinguishable from "defaults to null"
+ * or the evaluator would resolve guards it has no business resolving.
+ */
+function moduleVariables(value: unknown): ModuleVariableRecord[] {
+  if (!Array.isArray(value)) return [];
+
+  const variables: ModuleVariableRecord[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as { name?: unknown; default?: unknown };
+    if (typeof record.name !== "string") continue;
+
+    variables.push(
+      Object.hasOwn(record, "default")
+        ? { name: record.name, default: record.default }
+        : { name: record.name },
+    );
+  }
+
+  return variables;
+}
+
+/** Narrows the stored `locals` JSON. Empty on modules imported before it existed. */
+function moduleLocals(value: unknown): ModuleLocalRecord[] {
+  if (!Array.isArray(value)) return [];
+
+  const locals: ModuleLocalRecord[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const record = entry as { name?: unknown; expression?: unknown };
+    if (typeof record.name !== "string") continue;
+
+    locals.push({
+      name: record.name,
+      expression:
+        typeof record.expression === "string" ? record.expression : null,
+    });
+  }
+
+  return locals;
 }
 
 export function clampArchitectureDepth(requested: unknown): number {
@@ -88,7 +201,11 @@ export async function loadModuleArchitectures(
       // traversal is still an id the caller must be allowed to read.
       where: { id: { in: frontier }, ...visibleToUser(userId) },
       include: {
-        source: { select: { name: true } },
+        // `url` so a relative `module` source can be resolved against the
+        // repository this module came from.
+        source: { select: { name: true, url: true } },
+        // `outputs`, `variables` and `locals` are JSON columns on the module row,
+        // so they come along with the record rather than as further queries.
         resources: {
           // The extra columns exist so a box inside an expanded module opens
           // the same detail panel as one belonging to the module itself. They
@@ -104,6 +221,9 @@ export async function loadModuleArchitectures(
             // Decides whether a nested subnet is drawn as public or only
             // conditionally public, so it has to travel with the resource.
             conditionalOn: true,
+            // Names each instance of a multi-instance subnet, so two frames read
+            // as two zones rather than as `[0]` and `[1]`.
+            availabilityZone: true,
             resourceUrl: true,
             resourceDescription: true,
           },
@@ -126,6 +246,13 @@ export async function loadModuleArchitectures(
       const links = resolveModuleLinks(
         mod.dependencies,
         linkCandidates.filter((candidate) => candidate.id !== mod.id),
+        // Lets `source = "./modules/cluster"` find the submodule of this very
+        // repository that the import already analysed.
+        {
+          sourceUrl: mod.source?.url ?? mod.url,
+          versionTag: mod.versionTag,
+          terraformRootFolder: mod.terraformRootFolder,
+        },
       );
 
       modules[mod.id] = {
@@ -134,6 +261,9 @@ export async function loadModuleArchitectures(
         versionTag: mod.versionTag,
         resources: mod.resources,
         references: mod.references,
+        outputs: moduleOutputs(mod.outputs),
+        variables: moduleVariables(mod.variables),
+        locals: moduleLocals(mod.locals),
         moduleCalls: mod.dependencies.map((dependency) => ({
           name: dependency.name,
           source: dependency.source,

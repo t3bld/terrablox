@@ -15,6 +15,7 @@ import type {
 } from "@/lib/terraform/architecture-graph";
 import { buildArchitecture } from "@/lib/terraform/architecture-graph";
 import { layoutArchitecture } from "@/lib/terraform/architecture-layout";
+import { createScope } from "@/lib/terraform/evaluate";
 
 /**
  * The project canvas one level up.
@@ -32,6 +33,9 @@ interface NestedModule {
   versionTag: string | null;
   resources: NestedModuleData["resources"];
   references: NestedModuleData["references"];
+  outputs?: NestedModuleData["outputs"];
+  variables?: NestedModuleData["variables"];
+  locals?: NestedModuleData["locals"];
   moduleCalls: {
     name: string;
     source: string | null;
@@ -130,6 +134,13 @@ export function ProjectArchitectureView({
         versionTag: target.versionTag,
         resources: target.resources,
         references: target.references,
+        // Lets the builder read `module.vpc.public_subnets` back to the subnet
+        // it exposes, so a caller wired to it is drawn inside that subnet.
+        outputs: target.outputs,
+        // Defaults and locals, so this module's `count` guards resolve against
+        // the arguments the project passes it.
+        variables: target.variables,
+        locals: target.locals,
         moduleCalls: target.moduleCalls
           .filter((c) => c.source)
           .map((c) => ({
@@ -146,11 +157,36 @@ export function ProjectArchitectureView({
   // imaginary root module — which is exactly what the root Terraform file is.
   const moduleCalls = useMemo<ArchitectureModuleCall[]>(
     () =>
-      (graph?.nodes ?? []).map((node) => ({
-        name: node.id,
-        source: node.source ?? "",
-        moduleId: node.moduleId,
-      })),
+      (graph?.nodes ?? [])
+        .filter((node) => node.kind === "module")
+        .map((node) => ({
+          name: node.id,
+          source: node.source ?? "",
+          moduleId: node.moduleId,
+          // Every argument the block sets, which is what licenses treating an
+          // unset variable as its default. The canvas parsed the whole block, so
+          // this really is the complete list.
+          arguments: node.values,
+        })),
+    [graph],
+  );
+
+  /**
+   * The project file's own scope: its `locals`, and no variables.
+   *
+   * A root module can declare variables, but nothing supplies them here — the
+   * pipeline passes them at apply time — so leaving them out keeps `var.x`
+   * unknown, which is the honest answer. Locals are the ones that matter anyway:
+   * `azs = local.azs` is how a project hands its availability zones to the VPC
+   * module, and without resolving it the subnet counts stay unknown.
+   */
+  const projectScope = useMemo(
+    () =>
+      createScope({
+        locals: (graph?.nodes ?? [])
+          .filter((node) => node.kind === "local")
+          .map((node) => ({ name: node.id, expression: node.expression })),
+      }),
     [graph],
   );
 
@@ -162,17 +198,29 @@ export function ProjectArchitectureView({
         fromAddress: `module.${edge.target}`,
         toAddress: `module.${edge.source}`,
         attributes: edge.links.map((link) => link.targetInput),
+        // Which output each wire reads, and which element of it. Only this level
+        // knows — the canvas parsed the expression — and it is what pins a box to
+        // one subnet in one zone rather than to the VPC at large.
+        outputs: edge.links
+          .filter((link) => link.sourceOutput !== null)
+          .map((link) => ({
+            name: link.sourceOutput as string,
+            ...(link.sourceIndex !== null ? { index: link.sourceIndex } : {}),
+          })),
       })),
     [graph],
   );
 
   const architecture = useMemo(
     () =>
-      buildArchitecture([], references, moduleCalls, {
-        expanded: expanded as Set<string>,
-        moduleFor,
-      }),
-    [references, moduleCalls, expanded, moduleFor],
+      buildArchitecture(
+        [],
+        references,
+        moduleCalls,
+        { expanded: expanded as Set<string>, moduleFor },
+        projectScope,
+      ),
+    [references, moduleCalls, expanded, moduleFor, projectScope],
   );
 
   useEffect(() => {
@@ -227,6 +275,7 @@ export function ProjectArchitectureView({
           sublabel: node.sublabel,
           icon: node.icon,
           count: node.addresses.length,
+          zone: node.zone,
           moduleCall: node.isModuleCall,
           expandPath: node.expandable ? node.path : undefined,
           expandableCount: node.expandableCount,

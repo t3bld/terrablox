@@ -141,6 +141,24 @@ export const PROJECT_AGENT_TOOLS = [
     },
   },
   {
+    name: "auto_connect",
+    group: "modules",
+    label: "Auto-connect Module",
+    summary: "Wire every input of a module that has one obvious source.",
+    description:
+      "Fill a module's unset inputs from the modules already on the canvas, wherever exactly one output fits by name — `vpc_id` from a module exposing `vpc_id`, `cluster_arn` from a `cluster` exposing `arn`. One operation for however many wires it draws, so this is the cheap way to attach a module you have just added. It never guesses: an input two modules could both supply, and an input whose name matches nothing, are left for `connect`. `review_project` lists what it left behind.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: {
+          type: "string",
+          description: "Module block whose inputs should be filled.",
+        },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "connect",
     group: "modules",
     label: "Connect Module",

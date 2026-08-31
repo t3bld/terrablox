@@ -26,7 +26,11 @@ import {
   describeCopilotError,
   discardCopilotClient,
 } from "./copilot";
-import { closestName, GraphProjection } from "./graph-projection";
+import {
+  closestName,
+  GraphProjection,
+  type ProblemSeverity,
+} from "./graph-projection";
 import {
   KNOWLEDGE_APP_REPO,
   KNOWLEDGE_MODULE_LIBRARY,
@@ -48,6 +52,7 @@ import {
   AGENT_MAX_APP_REPO_READS,
   AGENT_MAX_MCP_CALLS,
   AGENT_MAX_STEPS,
+  AGENT_MAX_THOUGHTS,
   AGENT_MAX_TOOL_CALLS,
   DEFAULT_OPERATING_RULES,
   DEFAULT_TURN_TIMEOUT_SECONDS,
@@ -210,8 +215,25 @@ export interface AgentContext {
    * not have rather than a rule it is trusted to follow.
    */
   allowDestructive?: boolean;
-  /** How long this turn may run, in seconds. Null → default (300s). */
+  /** How long this turn may run, in seconds. Null → the default. */
   turnTimeout?: number | null;
+  /**
+   * The per-turn budgets, or null for the defaults.
+   *
+   * Passed in rather than read from the constants for the same reason the
+   * operating rules are: a turn has to be reproducible from its context alone,
+   * and the rules quote the operation budget — a number the prompt states and the
+   * code enforces must come from one place or they will eventually disagree.
+   */
+  maxToolCalls?: number | null;
+  maxMcpCalls?: number | null;
+  /**
+   * Characters of this project's conversation to replay, or null for the default.
+   *
+   * The agent's whole long-term memory, so it is the caller's to decide: the
+   * transcript lives in their database, not here.
+   */
+  historyBudgetChars?: number | null;
   /**
    * Called whenever the trail grows, with the whole trail so far.
    *
@@ -245,11 +267,11 @@ export interface AgentTurn {
  * like "build me a whole infrastructure". Each tool call is a round trip to the
  * runtime, and a complex task easily chains 10–20 of them.
  *
- * 5 minutes is generous but finite: a turn that stalls beyond that is not
- * thinking harder, it has hit an issue the user needs to hear about.
- *
- * Overridable per user / per project via agent settings (`turnTimeout` in
- * seconds, 30–1800).
+ * The default is the ceiling, and the number lives in `runtime-options` so the
+ * settings screen and this cannot disagree. Generous on purpose: a turn killed
+ * while it was still working leaves nothing behind — no commit, no explanation —
+ * which is worse than one that ran long. Lower it per user or per project when a
+ * shorter leash is wanted.
  */
 const DEFAULT_TURN_TIMEOUT_MS = DEFAULT_TURN_TIMEOUT_SECONDS * 1000;
 
@@ -325,6 +347,9 @@ export async function runProjectAgent(
    */
   let mcpCalls = 0;
 
+  /** The budgets in force for this turn: the caller's choice, or the defaults. */
+  const maxMcpCalls = context.maxMcpCalls ?? AGENT_MAX_MCP_CALLS;
+
   try {
     session = await client.createSession({
       // A fresh session per turn. Runtime sessions expire on their own schedule,
@@ -382,8 +407,8 @@ export async function runProjectAgent(
         if (request.kind === "mcp") {
           const tool = `${request.serverName}.${request.toolName}`;
 
-          if (mcpCalls >= AGENT_MAX_MCP_CALLS) {
-            const refusal = `MCP budget spent: a single turn may call your MCP servers at most ${AGENT_MAX_MCP_CALLS} times. Answer with what you have already learned, and say what you were still looking for.`;
+          if (mcpCalls >= maxMcpCalls) {
+            const refusal = `MCP budget spent: a single turn may call your MCP servers at most ${maxMcpCalls} times. Answer with what you have already learned, and say what you were still looking for.`;
 
             record({ kind: "tool", tool, summary: refusal, ok: false });
             return { kind: "reject", feedback: refusal };
@@ -476,6 +501,9 @@ function buildTools(
   record: (step: AgentStep) => void,
 ) {
   const disabled = new Set(context.disabledTools ?? []);
+
+  /** This turn's operation budget: the caller's choice, or the default. */
+  const maxToolCalls = context.maxToolCalls ?? AGENT_MAX_TOOL_CALLS;
 
   // Withheld rather than refused at call time, for the same reason the library
   // withholds `add_module`: the model is told in the prompt which operations are
@@ -582,10 +610,10 @@ function buildTools(
     // every queued operation becomes a commit once the turn ends. Refusing with
     // a reason lets the model wind up and report; dropping the call silently
     // would leave it convinced the edit had been made.
-    if (sink.length >= AGENT_MAX_TOOL_CALLS) {
+    if (sink.length >= maxToolCalls) {
       return refuse(
         tool,
-        `Operation budget spent: a single turn may queue at most ${AGENT_MAX_TOOL_CALLS} changes. Tell the user what you have already queued and ask them to continue in a new message.`,
+        `Operation budget spent: a single turn may queue at most ${maxToolCalls} changes. Tell the user what you have already queued and ask them to continue in a new message.`,
       );
     }
 
@@ -600,7 +628,15 @@ function buildTools(
       summary: describeMutation(mutation),
       ok: true,
     });
-    return { queued: true, pending: sink.length };
+    // `remaining`, not only `pending`. Told how much it has spent and never how
+    // much is left, the model could not ration: it filled a hundred operations
+    // with configuration values and discovered the ceiling at the refusal, by
+    // which point the wiring that made the stack work was still unqueued.
+    return {
+      queued: true,
+      pending: sink.length,
+      remaining: maxToolCalls - sink.length,
+    };
   };
 
   /**
@@ -771,10 +807,13 @@ function buildTools(
                 autoWired: wired.map(([input, value]) => `${input} = ${value}`),
               }
             : {}),
+          // From `unwiredInputs` rather than `gaps`, which on this library is
+          // always empty: nothing declares a required variable, so the module
+          // arrived looking finished and unattached at the same time.
           stillUnset: projection
-            .gaps()
-            .filter((gap) => gap.node === label)
-            .map((gap) => gap.input),
+            .unwiredInputs()
+            .filter((entry) => entry.module === label)
+            .map((entry) => `${entry.input} (${entry.sources.join(" or ")})`),
         };
       },
     }),
@@ -788,6 +827,58 @@ function buildTools(
         hasNode(name)
           ? queue("remove_module", { action: "remove-module", name })
           : refuse("remove_module", unknownModule(name, projection)),
+    }),
+    defineTool<{ name: string }>("auto_connect", {
+      ...spec("auto_connect"),
+      handler: async ({ name }) => {
+        if (!hasNode(name)) {
+          return refuse("auto_connect", unknownModule(name, projection));
+        }
+
+        // Asked of the projection before queueing, because the mutation would
+        // otherwise fail at commit time on a module with nothing to fill — and a
+        // refusal the agent can read is worth more than an error after the turn.
+        const before = projection.module(name)?.values ?? {};
+        const wirable = projection
+          .unwiredInputs()
+          .filter((entry) => entry.module === name && entry.kind === "wirable");
+
+        if (wirable.length === 0) {
+          const open = projection
+            .unwiredInputs()
+            .filter((entry) => entry.module === name);
+
+          return refuse(
+            "auto_connect",
+            `Nothing on the canvas unambiguously fits an input of ${name}.${
+              open.length
+                ? ` Still unset and worth a decision: ${open
+                    .map(
+                      (entry) =>
+                        `${entry.input} (${entry.sources.join(" or ")})`,
+                    )
+                    .join(", ")}. Use connect.`
+                : ""
+            }`,
+          );
+        }
+
+        const result = queue("auto_connect", { action: "auto-connect", name });
+        if ("error" in result) return result;
+
+        const after = projection.module(name)?.values ?? {};
+
+        return {
+          ...result,
+          wired: Object.entries(after)
+            .filter(([input]) => before[input] === undefined)
+            .map(([input, value]) => `${input} = ${value}`),
+          stillUnset: projection
+            .unwiredInputs()
+            .filter((entry) => entry.module === name)
+            .map((entry) => `${entry.input} (${entry.sources.join(" or ")})`),
+        };
+      },
     }),
     defineTool<{
       source: string;
@@ -894,13 +985,21 @@ function buildTools(
         // Arguments first: after a rename they would have to name the module by
         // its new label, and queueing them in this order means the model does not
         // have to reason about that.
-        for (const entry of settings) {
-          queue("edit_module", {
-            action: "set-argument",
+        //
+        // One mutation for all of them, which is one commit and one unit of
+        // budget. As a mutation each, configuring a database spent eleven of the
+        // hundred a turn has — and the turn that built this stack spent eighty of
+        // them on arguments and then had none left to wire anything together.
+        if (settings.length > 0) {
+          const result = queue("edit_module", {
+            action: "set-arguments",
             name,
-            input: entry.input,
-            value: entry.value,
+            values: settings.map((entry) => ({
+              input: entry.input,
+              value: entry.value,
+            })),
           });
+          if ("error" in result || !newName) return result;
         }
 
         if (newName) {
@@ -1224,30 +1323,45 @@ function buildTools(
       ...spec("review_project"),
       handler: async () => {
         const problems = projection.problems();
-        const blocking = problems.filter((problem) => problem.blocking);
+        const of = (severity: ProblemSeverity) =>
+          problems
+            .filter((problem) => problem.severity === severity)
+            .map((problem) => problem.message);
+
+        const blocking = of("blocking");
+        const incomplete = of("incomplete");
 
         record({
           kind: "tool",
           tool: "review_project",
-          summary: blocking.length
-            ? `${blocking.length} problem(s) left in the projected configuration`
-            : "Projected configuration is complete",
-          ok: blocking.length === 0,
+          summary:
+            blocking.length || incomplete.length
+              ? [
+                  blocking.length ? `${blocking.length} blocking` : null,
+                  incomplete.length ? `${incomplete.length} unfinished` : null,
+                ]
+                  .filter(Boolean)
+                  .join(", ")
+              : "Projected configuration is complete",
+          ok: blocking.length === 0 && incomplete.length === 0,
         });
 
         return {
           queuedOperations: sink.length,
+          remaining: maxToolCalls - sink.length,
           modules: projection.allModules().map((module) => module.name),
           variables: projection.allLocals().map((local) => local.name),
-          // Split so the model can tell "this will not plan" from "this looks
-          // untidy", and spend its remaining budget on the first kind.
-          blocking: blocking.map((problem) => problem.message),
-          advisory: problems
-            .filter((problem) => !problem.blocking)
-            .map((problem) => problem.message),
+          // Three lists rather than two, because there are three answers. The
+          // middle one is the one that was missing: a configuration can plan
+          // perfectly and still describe infrastructure that cannot work.
+          blocking,
+          incomplete,
+          advisory: of("advisory"),
           verdict: blocking.length
             ? "Fix these before answering. Every one of them stops `terraform plan`."
-            : "Nothing left unfilled. Say what you changed.",
+            : incomplete.length
+              ? "This plans, but it does not work: the modules listed under `incomplete` are not attached to anything. Wire them, or tell the user which ones you deliberately left open and why."
+              : "Nothing left unfilled. Say what you changed.",
         };
       },
     }),
@@ -1347,9 +1461,35 @@ function describeAppRepoError(error: unknown, appRepo: AgentAppRepo): string {
   return `Could not read ${appRepo.fullName}: ${error instanceof Error ? error.message : "unknown error"}.`;
 }
 
-/** Appends a step, dropping the overflow rather than the earliest context. */
+/**
+ * Appends a step, dropping the overflow rather than the earliest context.
+ *
+ * Two things it will not do silently. Thoughts stop being recorded before the
+ * record is full, so a narrating model cannot crowd out the operations — those are
+ * the audit trail of what reached the repository. And the last slot is spent
+ * saying the trail was cut, because a trail that simply stops looks exactly like a
+ * turn that stopped, which is how eighty committed operations came to be invisible.
+ */
 function pushStep(steps: AgentStep[], step: AgentStep): void {
   if (steps.length >= MAX_STEPS) return;
+
+  if (steps.length === MAX_STEPS - 1) {
+    steps.push({
+      kind: "tool",
+      tool: "trail",
+      summary: `Only the first ${MAX_STEPS - 1} entries of this turn were recorded. The operations after them still ran and still committed.`,
+      ok: true,
+    });
+    return;
+  }
+
+  if (step.kind === "thought") {
+    const thoughts = steps.reduce(
+      (count, entry) => count + (entry.kind === "thought" ? 1 : 0),
+      0,
+    );
+    if (thoughts >= AGENT_MAX_THOUGHTS) return;
+  }
 
   steps.push(
     step.kind === "thought" && step.text.length > MAX_THOUGHT_LENGTH
@@ -1371,6 +1511,10 @@ function describeMutation(mutation: ProjectGraphMutation): string {
       return `Clear ${mutation.target}.${mutation.targetInput}`;
     case "rename-module":
       return `Rename ${mutation.name} to ${mutation.newName}`;
+    case "set-arguments":
+      return mutation.values.length === 1 && mutation.values[0]
+        ? `Set ${mutation.name}.${mutation.values[0].input}`
+        : `Set ${mutation.values.length} arguments on ${mutation.name}`;
     case "set-argument":
       return `Set ${mutation.name}.${mutation.input}`;
     case "add-local":
@@ -1501,6 +1645,53 @@ function unknownModule(name: string, projection: GraphProjection): string {
 }
 
 /**
+ * What is still open on this canvas, before the turn has done anything.
+ *
+ * Replaces a section headed "Unset required inputs" that was fed from
+ * `graph.gaps` and, on any real catalogue, always said `(none)`: gaps are
+ * required inputs, and 324 of the 372 imported modules declare no required
+ * variable — every upstream module defaults them. So the agent was told a stack
+ * with nothing wired together had nothing left to do, and had no reason to
+ * disbelieve it.
+ *
+ * Computed from a projection with nothing queued, which is the same code
+ * `review_project` answers from. The agent should not have to make a tool call to
+ * find out that the project it was handed is unfinished.
+ */
+function openInputs(context: AgentContext): string[] {
+  const projection = new GraphProjection(context.graph, context.library);
+  const gaps = projection.gaps();
+  const unwired = projection.unwiredInputs();
+
+  if (gaps.length === 0 && unwired.length === 0) {
+    return ["(nothing unset that anything here could fill)"];
+  }
+
+  return [
+    // Both halves of a gap, not just the first. `candidates` — library modules
+    // that would produce the missing value once added — is the path from "vpc_id
+    // is missing" to "add the VPC module and wire it".
+    ...gaps.map((gap) => {
+      const sources = [
+        ...gap.wirable.map((w) => `${w.node}.${w.output}`),
+        ...gap.candidates.map(
+          (c) => `${c.name}.${c.output} (add_module ${c.moduleId})`,
+        ),
+      ];
+
+      return `- ${gap.node}.${gap.input}${gap.type ? ` (${gap.type})` : ""} is required and unset${
+        sources.length ? `; could come from ${sources.join(" or ")}` : ""
+      }`;
+    }),
+    ...unwired.map((entry) =>
+      entry.kind === "wirable"
+        ? `- ${entry.module}.${entry.input} is unset; ${entry.sources[0]} fits it by name (auto_connect ${entry.module})`
+        : `- ${entry.module}.${entry.input} is unset, so ${entry.module} is in no network; candidates ${entry.sources.join(" or ")} — pick one or ask`,
+    ),
+  ];
+}
+
+/**
  * The project, written out for the model.
  *
  * The graph is small and already loaded, so handing it over up front is
@@ -1560,27 +1751,6 @@ function systemPrompt(context: AgentContext): string {
         .join("\n")
     : "(nothing wired up)";
 
-  // Both halves of a gap, not just the first. `candidates` — library modules that
-  // would produce the missing value once added — was already computed for the
-  // canvas and dropped before the prompt, which is exactly the path from "vpc_id
-  // is missing" to "add the VPC module and wire it".
-  const gaps = graph.gaps.length
-    ? graph.gaps
-        .map((gap) => {
-          const sources = [
-            ...gap.wirable.map((w) => `${w.node}.${w.output}`),
-            ...gap.candidates.map(
-              (c) => `${c.name}.${c.output} (add_module ${c.moduleId})`,
-            ),
-          ];
-
-          return `- ${gap.node}.${gap.input}${gap.type ? ` (${gap.type})` : ""} is unset${
-            sources.length ? `; could come from ${sources.join(" or ")}` : ""
-          }`;
-        })
-        .join("\n")
-    : "(none)";
-
   const shownLibrary = context.library.slice(0, PROMPT_LIBRARY_LIMIT);
   const library = context.library.length
     ? [
@@ -1595,7 +1765,10 @@ function systemPrompt(context: AgentContext): string {
 
   // Last few turns only. The graph above already reflects everything earlier
   // turns changed, so older messages add tokens without adding facts.
-  const memory = recallConversation(context.history);
+  const memory = recallConversation(
+    context.history,
+    context.historyBudgetChars ?? AGENT_HISTORY_BUDGET_CHARS,
+  );
 
   return [
     `You are the TerraBlox agent for the project "${context.projectName}", backed by ${context.repoFullName} on branch ${context.branch}.`,
@@ -1603,7 +1776,9 @@ function systemPrompt(context: AgentContext): string {
     // Editable in the admin panel, defaults in `harness-curation`. Rendered
     // there, so a rule quoting the operation budget cannot quote a wrong one.
     ...(context.operatingRules ??
-      DEFAULT_OPERATING_RULES.map(renderOperatingRule)),
+      DEFAULT_OPERATING_RULES.map((rule) =>
+        renderOperatingRule(rule, context.maxToolCalls ?? AGENT_MAX_TOOL_CALLS),
+      )),
     // Named explicitly, because otherwise the model reads a missing tool as its
     // own failure and apologises instead of telling the user where the switch is.
     ...disabledToolNotice(context.disabledTools),
@@ -1635,8 +1810,8 @@ function systemPrompt(context: AgentContext): string {
           "## Wiring",
           wiring,
           "",
-          "## Unset required inputs",
-          gaps,
+          "## Inputs still to decide",
+          ...openInputs(context),
           "",
           `Root-level resource/data blocks: ${graph.resourceCount}. Files: ${graph.files.join(", ") || "none"}.`,
           "",
@@ -1706,7 +1881,10 @@ function systemPrompt(context: AgentContext): string {
     // Beside the application repository rather than up with the operations,
     // because it is the same kind of section: somewhere to go and look before
     // answering, not a fact about the project.
-    ...mcpNotice(context.mcpServers),
+    ...mcpNotice(
+      context.mcpServers,
+      context.maxMcpCalls ?? AGENT_MAX_MCP_CALLS,
+    ),
     // The user's own instructions come last, after the facts, so
     // they read as standing preferences rather than as part of the graph.
     ...(context.instructions?.trim()
@@ -1859,6 +2037,7 @@ function pipelineNotice(
  */
 function recallConversation(
   history: Array<{ role: string; content: string }>,
+  budgetChars: number,
 ): {
   text: string;
   truncated: boolean;
@@ -1875,7 +2054,7 @@ function recallConversation(
     const line = `${entry.role}: ${entry.content}`;
     // The newest message is kept whatever its size: dropping the thing that was
     // just said would be worse than a slightly over-budget prompt.
-    if (used + line.length > AGENT_HISTORY_BUDGET_CHARS && taken > 0) break;
+    if (used + line.length > budgetChars && taken > 0) break;
 
     lines.push(line);
     used += line.length + 1;
@@ -1936,6 +2115,7 @@ function withheldKnowledgeNotice(
  */
 function mcpNotice(
   servers: Record<string, MCPServerConfig> | undefined,
+  maxMcpCalls: number,
 ): string[] {
   const names = Object.keys(servers ?? {});
   if (!names.length) return [];
@@ -1946,7 +2126,7 @@ function mcpNotice(
     `The user has connected: ${names.join(", ")}. Their tools are on your tool list beside your own operations, and what each one does is in its own description.`,
     "",
     "They are somebody else's servers, so treat them the way you treat the application",
-    `repository: a place to look something up before answering, not a place to guess at. There is a budget of ${AGENT_MAX_MCP_CALLS} calls for the whole turn, so search deliberately rather than repeatedly. Say which server an answer came from — the user connected it and can judge the source, which they cannot do if you present it as your own knowledge.`,
+    `repository: a place to look something up before answering, not a place to guess at. There is a budget of ${maxMcpCalls} calls for the whole turn, so search deliberately rather than repeatedly. Say which server an answer came from — the user connected it and can judge the source, which they cannot do if you present it as your own knowledge.`,
   ];
 }
 

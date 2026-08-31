@@ -407,6 +407,13 @@ model TerraformModule {
   terraformSubmodulesFolders String[] @default([]) @map("terraform_submodules_folders") @db.Text
   variables                  Json     @default("[]") @db.JsonB
   outputs                    Json     @default("[]") @db.JsonB
+  /// `locals` blocks, merged across files, as `{ name, expression, file }`.
+  ///
+  /// Kept because a module's `count` expressions are written against them:
+  /// `count = local.create_public_subnets ? local.len_public_subnets : 0` cannot
+  /// be resolved from variables alone, and without resolving it the architecture
+  /// diagram has to draw every optional block as if it existed.
+  locals                     Json     @default("[]") @db.JsonB
   isSubmodule                Boolean  @default(false) @map("is_submodule")
   parentModuleId             String?  @map("parent_module_id") @db.Uuid
   createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -543,6 +550,16 @@ model ProviderResource {
   /// the variable someone would have to check.
   conditionalOn       String? @map("conditional_on") @db.Text
 
+  /// The `availability_zone` argument, as written, or NULL when the block has none.
+  ///
+  /// Kept for the same reason as {@link conditionalOn}: it is an expression, not a
+  /// value, and evaluating it is what turns `count = 2` into two named subnets.
+  /// The upstream modules all write it as `element(var.azs, count.index)`, so with
+  /// the caller's zone list and the instance index bound it resolves to
+  /// `eu-central-1a` — which is the label that makes two subnet frames mean
+  /// something rather than being `[0]` and `[1]`.
+  availabilityZone    String? @map("availability_zone") @db.Text
+
   resourceUrl         String? @map("resource_url") @db.Text
   providerUrl         String? @map("provider_url") @db.Text
   resourceDescription String? @map("resource_description") @db.Text
@@ -627,10 +644,33 @@ model AgentSettings {
   /// neither its module library nor the project it is editing.
   disabledKnowledge String[] @default([]) @map("disabled_knowledge")
 
-  /// How long a single turn may run, in seconds. The default (300 = 5 min) is
-  /// generous for most prompts, but complex multi-step tasks (e.g. scaffolding
-  /// a full infrastructure) can need more. Null means use the default.
+  /// How long a single turn may run, in seconds. Null means use the default,
+  /// which is also the ceiling (1800 = 30 min): the limit exists to stop a stuck
+  /// turn, so it is generous by default and only turns down.
   turnTimeout Int? @map("turn_timeout")
+
+  /// How many operations one turn may queue. Null means the default (100).
+  ///
+  /// Every queued operation becomes a commit after the turn, so this is the size
+  /// of the largest change one unreviewed turn can make. Lowering it to 1 makes
+  /// the agent report back after every edit; raising it suits large projects.
+  maxToolCalls Int? @map("max_tool_calls")
+
+  /// How many MCP tool calls one turn may make. Null means the default (100).
+  ///
+  /// Counted apart from `maxToolCalls` because the risks differ: an operation
+  /// changes the user's repository, while an MCP call is a read from somebody
+  /// else's server on whatever credential is stored with it.
+  maxMcpCalls Int? @map("max_mcp_calls")
+
+  /// How much of a project's conversation is replayed into a turn, in characters.
+  /// Null means the default (24000).
+  ///
+  /// The agent's long-term memory, and the only setting for it: the world state is
+  /// re-read from Git every turn, so this covers what was *said* rather than what
+  /// exists. A budget in characters rather than a message count, because eight
+  /// short answers and eight long ones are not the same amount of context.
+  historyBudgetChars Int? @map("history_budget_chars")
 
   /// Whether the agent may call the operations that delete a module or a
   /// variable, along with every reference to them.
@@ -723,6 +763,33 @@ model AgentMcpServer {
 
   /// Off by default, so adding a server is not the same as trusting it.
   enabled Boolean @default(false)
+
+  /// The tools this server said it has, as of `toolsSyncedAt`.
+  ///
+  /// A cache of somebody else's catalogue, not a source of truth: we ask the
+  /// server over MCP when it is added and whenever the user refreshes. Stored so
+  /// the settings screen can offer a switch per tool without making a network
+  /// request to draw a page, and so a server that is temporarily down still shows
+  /// what it had. The session is configured from `name` plus this list minus
+  /// `disabledTools`, so a stale entry can only ever withhold a tool, never invent
+  /// one — the server itself decides what actually exists.
+  ///
+  /// Shape: `[{ name, title, description, readOnly }]`. `readOnly` is the server's
+  /// own annotation, which we pass on as its claim rather than as a fact.
+  tools Json? @db.JsonB
+
+  /// When the list above was last fetched. Null means never, which the UI shows
+  /// as "not checked yet" rather than as a server without tools.
+  toolsSyncedAt DateTime? @map("tools_synced_at") @db.Timestamptz(6)
+
+  /// Tools of this server the agent may not call, by name.
+  ///
+  /// A deny list, like every other tool switch here, and for the same reason: an
+  /// allow list cannot tell "never configured" apart from "deliberately empty", so
+  /// a server added before this column existed would silently offer nothing.
+  /// Enforced by absence — the names left over are sent as the session's allow
+  /// list for this server, so a disabled tool is not registered at all.
+  disabledTools String[] @default([]) @map("disabled_tools")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)

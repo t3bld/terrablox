@@ -86,7 +86,7 @@ export function layoutArchitecture(
       return size;
     }
 
-    // Network frames stack in a row below the services, so a VPC shows its
+    // Network frames stack in rows below the services, so a VPC shows its
     // gateway above its subnets rather than beside them.
     const { flowing, containers } = splitChildren(children);
 
@@ -94,7 +94,11 @@ export function layoutArchitecture(
     if (flowing.length > 0) {
       rows.push(arrange(flowing, edges, measure));
     }
-    if (containers.length > 0) rows.push(rowSize(containers.map(measure)));
+
+    const packed = packSubnetRows(containers, measure);
+    for (const row of packed.rows) {
+      rows.push(rowSize(row, measure, packed.columnWidths));
+    }
 
     const size = {
       width:
@@ -144,10 +148,21 @@ export function layoutArchitecture(
       rowY += block.height + GAP;
     }
 
-    let rowX = FRAME_PADDING;
-    for (const child of containers.sort(publicFirst)) {
-      place(child, rowX, rowY);
-      rowX += measure(child).width + GAP;
+    const packed = packSubnetRows(containers, measure);
+    for (const row of packed.rows) {
+      let rowX = FRAME_PADDING;
+      let height = 0;
+
+      for (const [column, child] of row.entries()) {
+        const size = measure(child);
+        place(child, rowX, rowY);
+        // In grid mode the step is the column's width rather than this frame's,
+        // which is what makes one zone sit above another.
+        rowX += (packed.columnWidths?.[column] ?? size.width) + GAP;
+        height = Math.max(height, size.height);
+      }
+
+      rowY += height + GAP;
     }
   };
 
@@ -407,24 +422,119 @@ function layerByFlow(
   return filled;
 }
 
-function rowSize(sizes: { width: number; height: number }[]) {
+/**
+ * The space one row of frames needs.
+ *
+ * `columnWidths`, when given, replaces each frame's own width with its column's,
+ * so the row occupies the grid rather than only itself. Measuring has to agree
+ * with placing about this or a frame would be sized for one arrangement and
+ * filled with another.
+ */
+function rowSize(
+  row: ArchitectureNode[],
+  measure: Measure,
+  columnWidths?: number[],
+) {
+  const widths = row.map(
+    (node, column) => columnWidths?.[column] ?? measure(node).width,
+  );
+
   return {
     width:
-      sizes.reduce((sum, s) => sum + s.width, 0) +
-      GAP * Math.max(0, sizes.length - 1),
-    height: Math.max(0, ...sizes.map((s) => s.height)),
+      widths.reduce((sum, width) => sum + width, 0) +
+      GAP * Math.max(0, row.length - 1),
+    height: Math.max(0, ...row.map((node) => measure(node).height)),
   };
 }
 
 /**
- * Public subnets come first, as they do in every hand-drawn diagram. Subnets
- * sit side by side in one row, so "first" means leftmost.
+ * Public subnets come first, as they do in every hand-drawn diagram, and each
+ * tier gets its own band of rows — so "first" means the top-left row.
  */
 function publicFirst(a: ArchitectureNode, b: ArchitectureNode): number {
-  const rank = (n: ArchitectureNode) => (n.icon === "subnet-public" ? 0 : 1);
-  const byRank = rank(a) - rank(b);
+  const byRank = tierOf(a) - tierOf(b);
 
   return byRank !== 0
     ? byRank
     : (a.sublabel ?? a.label).localeCompare(b.sublabel ?? b.label);
+}
+
+function tierOf(node: ArchitectureNode): number {
+  return node.icon === "subnet-public" ? 0 : 1;
+}
+
+/**
+ * How a frame's network children are laid out beneath it.
+ *
+ * `columnWidths` is present only in the availability-zone grid, where a column
+ * has to be as wide as the widest frame in it so columns line up between rows.
+ *
+ * Unused today: the zone grid that needed it is gone, because a tier of three
+ * subnets is now one frame rather than three side by side. Kept because `place`
+ * still honours it, so a future arrangement that does want aligned columns has
+ * somewhere to say so without re-threading the geometry.
+ */
+interface ContainerRows {
+  rows: ArchitectureNode[][];
+  columnWidths?: number[];
+}
+
+/**
+ * Arranges a frame's subnets into rows: public band on top, private below.
+ *
+ * One row was fine while a subnet was an empty 200px box, and stopped being
+ * fine as soon as workloads were drawn inside them. A VPC module declares seven
+ * subnets, one of which now holds an EC2 module frame, and side by side they came
+ * to 2164px — a strip the canvas can only fit by zooming until the labels are
+ * gone.
+ *
+ * Two things start a new row: exceeding the width budget, and crossing from the
+ * public tier into the private one. The second is the reason this reads as an
+ * AWS diagram rather than as a wrapped list.
+ *
+ * Both the measuring and the placing pass call this, so a frame can never be
+ * sized from one arrangement and filled with another. It is a pure function of
+ * the children and their sizes, which is what makes that safe.
+ */
+function packSubnetRows(
+  containers: ArchitectureNode[],
+  measure: Measure,
+): ContainerRows {
+  if (containers.length === 0) return { rows: [] };
+
+  const ordered = [...containers].sort(publicFirst);
+  const sizes = ordered.map(measure);
+
+  const area = sizes.reduce((sum, size) => sum + size.width * size.height, 0);
+  // Same reasoning as `wrapTallColumns`, in the other direction: the width a
+  // rectangle of this area would have at the shape a canvas actually is. Never
+  // below the widest child, since a limit it cannot meet would put every subnet
+  // on a row of its own.
+  const limit = Math.max(
+    ...sizes.map((size) => size.width),
+    Math.sqrt(area * AREA_SLACK * TARGET_ASPECT),
+  );
+
+  const rows: ArchitectureNode[][] = [];
+  let current: ArchitectureNode[] = [];
+  let width = 0;
+
+  for (const [index, node] of ordered.entries()) {
+    const size = sizes[index] ?? { width: SERVICE_WIDTH, height: 0 };
+    const previous = current[current.length - 1];
+    const newTier = previous !== undefined && tierOf(previous) !== tierOf(node);
+
+    if (current.length > 0 && (newTier || width + GAP + size.width > limit)) {
+      rows.push(current);
+      current = [];
+      width = 0;
+    }
+
+    current.push(node);
+    width += (width > 0 ? GAP : 0) + size.width;
+  }
+
+  if (current.length > 0) rows.push(current);
+
+  return { rows };
 }

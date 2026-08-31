@@ -50,11 +50,28 @@ export interface ModuleLink {
 const FORWARDER_RE = /^[a-z][a-z0-9+.-]*::/i;
 
 /**
+ * The module a `module` block was found in.
+ *
+ * Needed only to resolve a relative source. `source = "./modules/service"` names
+ * a real module and a determinate one — the same repository at the same
+ * revision, one folder along — but nothing in the source string says which
+ * repository, so the caller has to supply it.
+ */
+export interface CallingModule {
+  /** Clone URL of the repository the caller was imported from. */
+  sourceUrl: string | null;
+  /** The caller's ref. A relative path is always the same revision. */
+  versionTag: string | null;
+  /** Folder the caller was analysed in, which the path is relative to. */
+  terraformRootFolder: string | null;
+}
+
+/**
  * Splits a Terraform module source into the parts that identify a repository.
  *
  * Returns null for sources that cannot name a repository on their own —
  * relative paths, which are resolved against the containing repository rather
- * than fetched.
+ * than fetched. {@link resolveLocalRef} does that resolution, given the caller.
  */
 export function parseModuleSourceRef(
   source: string | null | undefined,
@@ -92,6 +109,58 @@ export function parseModuleSourceRef(
   return { repo, subdir: normaliseSubdir(subdir), ref: readRef(query) };
 }
 
+/**
+ * Resolves a relative source against the module that declares it.
+ *
+ * The upstream repositories are built this way throughout: `terrablox-aws-ecs`
+ * has `module "cluster" { source = "./modules/cluster" }`, and the import already
+ * analysed `modules/cluster` as a submodule of the same repository. Both halves
+ * were in the database and nothing joined them, so those calls were drawn as
+ * opaque grey tiles labelled `cluster` — a box for something we hold the full
+ * contents of.
+ *
+ * The ref is the caller's own. That is not a guess or a fallback: a relative path
+ * is resolved by Terraform inside the already-fetched copy, so it cannot be a
+ * different revision.
+ */
+export function resolveLocalRef(
+  source: string,
+  within: CallingModule,
+): ModuleSourceRef | null {
+  const repo = parseModuleSourceRef(within.sourceUrl)?.repo;
+  if (!repo) return null;
+
+  const subdir = joinSubdir(within.terraformRootFolder, source);
+  if (subdir === null) return null;
+
+  return { repo, subdir, ref: within.versionTag };
+}
+
+/**
+ * Applies a relative path to a folder, the way a file system would.
+ *
+ * Returns null when the path climbs above the repository root, which cannot name
+ * a module in it.
+ */
+function joinSubdir(
+  base: string | null | undefined,
+  relative: string,
+): string | null {
+  const segments = normaliseSubdir(base).split("/").filter(Boolean);
+
+  for (const part of relative.trim().split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (segments.length === 0) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(part);
+  }
+
+  return segments.join("/").toLowerCase();
+}
+
 /** The same identifying parts, derived from an imported module instead. */
 export function candidateRef(candidate: LinkCandidate): ModuleSourceRef | null {
   const parsed = parseModuleSourceRef(candidate.sourceUrl);
@@ -116,8 +185,14 @@ export function resolveModuleLink(
   source: string | null | undefined,
   sourceKind: string | null | undefined,
   candidates: LinkCandidate[],
+  within?: CallingModule,
 ): ModuleLink | null {
-  const wanted = parseModuleSourceRef(source, sourceKind);
+  const trimmed = source?.trim();
+  const wanted =
+    parseModuleSourceRef(source, sourceKind) ??
+    // A relative source names a module inside the caller's own repository, so it
+    // only resolves when the caller is known.
+    (trimmed && within ? resolveLocalRef(trimmed, within) : null);
   if (!wanted) return null;
 
   const matches = candidates.filter((candidate) => {
@@ -146,7 +221,11 @@ export function resolveModuleLink(
 /** Resolves many dependencies at once, keyed by the dependency id. */
 export function resolveModuleLinks<
   T extends { id: string; source: string | null; sourceKind?: string | null },
->(dependencies: T[], candidates: LinkCandidate[]): Map<string, ModuleLink> {
+>(
+  dependencies: T[],
+  candidates: LinkCandidate[],
+  within?: CallingModule,
+): Map<string, ModuleLink> {
   const links = new Map<string, ModuleLink>();
 
   for (const dependency of dependencies) {
@@ -154,6 +233,7 @@ export function resolveModuleLinks<
       dependency.source,
       dependency.sourceKind ?? null,
       candidates,
+      within,
     );
     if (link) links.set(dependency.id, link);
   }

@@ -33,6 +33,8 @@ const ACTION_TOOLS: Record<string, string> = {
   disconnect: "disconnect",
   "rename-module": "edit_module",
   "set-argument": "edit_module",
+  "set-arguments": "edit_module",
+  "auto-connect": "auto_connect",
   "add-local": "add_local",
   "remove-local": "remove_local",
   "connect-local": "connect_local",
@@ -40,10 +42,11 @@ const ACTION_TOOLS: Record<string, string> = {
   "rename-local": "edit_local",
 };
 
-/** Not an operation the agent has: the canvas fills gaps by itself. */
-const CANVAS_ONLY_LABELS: Record<string, string> = {
-  "auto-connect": "Auto-connect",
-};
+/**
+ * Actions with no tool of the same name. Empty now that the agent has
+ * `auto_connect` too — kept because the next canvas-only gesture will want it.
+ */
+const CANVAS_ONLY_LABELS: Record<string, string> = {};
 
 function actionLabel(action: string): string {
   const tool = ACTION_TOOLS[action];

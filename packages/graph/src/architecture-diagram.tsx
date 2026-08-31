@@ -68,6 +68,15 @@ export interface ArchitectureDiagramNode {
   /** Number of underlying resources folded into this node. */
   count?: number;
   /**
+   * The single availability zone this box is pinned to.
+   *
+   * Absent means it covers its whole tier, which is the ordinary case and needs no
+   * marking — the frame around it already says how many subnets that is. Present
+   * is the exception: one NAT gateway in a three-zone tier, and a reader has no
+   * other way to see that the other two zones route through it.
+   */
+  zone?: string;
+  /**
    * Resources that serve this box without being drawn themselves — an IAM role
    * and its policies, a KMS key, a security group. Shown as a badge rather than
    * as boxes, because they are properties of this thing rather than components
@@ -148,6 +157,7 @@ type FlowNode = Node<{
   sublabel?: string;
   icon?: string;
   count: number;
+  zone?: string;
   attachments?: { service: string; icon?: string; count: number }[];
   moduleCall?: boolean;
   href?: string;
@@ -472,6 +482,17 @@ function ServiceTile({ data }: NodeProps<FlowNode>) {
           ×{data.count}
         </span>
       ) : null}
+      {/* Only ever the exception. A box with no zone covers its whole tier, and
+          the frame around it says how many subnets that is — marking every one of
+          them "all zones" would be a label on the normal case. */}
+      {data.zone ? (
+        <span
+          className="shrink-0 rounded bg-muted px-1.5 py-px font-mono text-[10px] text-muted-foreground"
+          title={`Only in ${data.zone}. The tier around it spans more than one availability zone; this box is in that one.`}
+        >
+          {data.zone}
+        </span>
+      ) : null}
       {data.expandPath && data.onToggleExpand ? (
         <button
           className="nodrag pointer-events-auto mt-0.5 flex shrink-0 cursor-pointer items-center gap-0.5 rounded border bg-background px-1.5 py-px font-medium text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -575,6 +596,7 @@ export function ArchitectureDiagram({
           sublabel: node.sublabel,
           icon: node.icon,
           count: node.count ?? 1,
+          zone: node.zone,
           attachments: node.attachments,
           moduleCall: node.moduleCall,
           href: node.href,
@@ -869,6 +891,14 @@ export function ArchitectureDiagram({
  * Overlays stored positions onto the computed layout. Nodes without an entry
  * keep their computed spot, so a layout saved before a module was expanded
  * still places the boxes it knows about.
+ *
+ * A stored position is dropped when it would put a box completely outside the
+ * frame it belongs to. Positions are relative to the parent, so they only mean
+ * anything against a particular frame size — and a frame is measured to fit its
+ * contents, which change. A VPC drawn as one wide row of seven subnets was 1676px
+ * across; the same VPC drawn as wrapped rows is 729px, and every position saved
+ * from the first is off the edge of the second. The result read as a bug in the
+ * diagram: subnets sitting outside their own VPC.
  */
 function applyStoredPositions(
   layouted: FlowNode[],
@@ -876,9 +906,37 @@ function applyStoredPositions(
 ): FlowNode[] {
   if (!stored || Object.keys(stored).length === 0) return layouted;
 
+  const sizeOf = (node: FlowNode) => ({
+    width: Number(node.style?.width) || 0,
+    height: Number(node.style?.height) || 0,
+  });
+
+  const parents = new Map<string, { width: number; height: number }>();
+  for (const node of layouted) parents.set(node.id, sizeOf(node));
+
   return layouted.map((node) => {
     const position = stored[node.id];
-    return position ? { ...node, position } : node;
+    if (!position) return node;
+
+    // A root box may sit anywhere; there is no frame for it to be outside of.
+    const frame = node.parentId ? parents.get(node.parentId) : undefined;
+    if (!frame) return { ...node, position };
+
+    /**
+     * Overlap, not containment. Dragging a box a little past its frame's edge is
+     * allowed by design — see the note on `extent` above — so requiring it to fit
+     * entirely would undo deliberate arrangements. A position left over from a
+     * different frame size does not merely overhang, it misses the frame
+     * altogether, and that is what this rejects.
+     */
+    const size = sizeOf(node);
+    const overlaps =
+      position.x < frame.width &&
+      position.y < frame.height &&
+      position.x + size.width > 0 &&
+      position.y + size.height > 0;
+
+    return overlaps ? { ...node, position } : node;
   });
 }
 

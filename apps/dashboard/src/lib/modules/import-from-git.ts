@@ -773,6 +773,7 @@ export async function importModuleFromGit(
               terraformSubmodulesFolders,
               variables: rootAnalysis.variables as unknown as Prisma.JsonArray,
               outputs: rootAnalysis.outputs as unknown as Prisma.JsonArray,
+              locals: rootAnalysis.locals as unknown as Prisma.JsonArray,
             },
           })
         : await tx.terraformModule.create({
@@ -787,6 +788,7 @@ export async function importModuleFromGit(
               terraformSubmodulesFolders,
               variables: rootAnalysis.variables as unknown as Prisma.JsonArray,
               outputs: rootAnalysis.outputs as unknown as Prisma.JsonArray,
+              locals: rootAnalysis.locals as unknown as Prisma.JsonArray,
               isSubmodule: false,
             },
           });
@@ -815,6 +817,7 @@ export async function importModuleFromGit(
                 parentModuleId: rootModule.id,
                 variables: subAnalysis.variables as unknown as Prisma.JsonArray,
                 outputs: subAnalysis.outputs as unknown as Prisma.JsonArray,
+                locals: subAnalysis.locals as unknown as Prisma.JsonArray,
               },
             })
           : await tx.terraformModule.create({
@@ -829,6 +832,7 @@ export async function importModuleFromGit(
                 terraformSubmodulesFolders: [],
                 variables: subAnalysis.variables as unknown as Prisma.JsonArray,
                 outputs: subAnalysis.outputs as unknown as Prisma.JsonArray,
+                locals: subAnalysis.locals as unknown as Prisma.JsonArray,
                 isSubmodule: true,
                 parentModuleId: rootModule.id,
               },

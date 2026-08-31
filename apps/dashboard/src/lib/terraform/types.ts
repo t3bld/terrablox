@@ -83,6 +83,15 @@ export interface TerraformResource {
    * many, not whether.
    */
   conditionalOn: string | null;
+  /**
+   * The `availability_zone` argument, as written, or null when there is none.
+   *
+   * Almost always `element(var.azs, count.index)` rather than a zone name, which
+   * is why the expression is what gets stored: it only becomes `eu-central-1a`
+   * once a caller's zone list and an instance index are supplied, and those
+   * belong to the project rather than to the module.
+   */
+  availabilityZone: string | null;
 }
 
 export interface TerraformModuleCall {

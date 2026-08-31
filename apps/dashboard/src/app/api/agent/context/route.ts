@@ -7,7 +7,12 @@ import {
   parseOverrides,
 } from "@/lib/agent/effective-settings";
 import { AGENT_KNOWLEDGE, knowledgeEnabled } from "@/lib/agent/knowledge";
-import { DEFAULT_TURN_TIMEOUT_SECONDS } from "@/lib/agent/runtime-options";
+import {
+  AGENT_HISTORY_BUDGET_CHARS,
+  AGENT_MAX_MCP_CALLS,
+  AGENT_MAX_TOOL_CALLS,
+  DEFAULT_TURN_TIMEOUT_SECONDS,
+} from "@/lib/agent/runtime-options";
 import {
   getAgentSettings,
   type McpServerView,
@@ -114,6 +119,9 @@ function view(input: {
     model: string | null;
     reasoningEffort: string | null;
     turnTimeout: number | null;
+    maxToolCalls: number | null;
+    maxMcpCalls: number | null;
+    historyBudgetChars: number | null;
     disabledKnowledge: string[];
     disabledTools: string[];
     mcpServers: McpServerView[];
@@ -143,6 +151,9 @@ function view(input: {
     model: settings.model,
     reasoningEffort: settings.reasoningEffort,
     turnTimeout: settings.turnTimeout,
+    maxToolCalls: settings.maxToolCalls,
+    maxMcpCalls: settings.maxMcpCalls,
+    historyBudgetChars: settings.historyBudgetChars,
     // Not a deny list like the other two permissions, so it is reported as the
     // plain answer it is: may the agent delete here, yes or no.
     allowDestructive: settings.allowDestructive,
@@ -150,6 +161,9 @@ function view(input: {
       model: COPILOT_MODEL,
       reasoningEffort: COPILOT_REASONING_EFFORT,
       turnTimeout: DEFAULT_TURN_TIMEOUT_SECONDS,
+      maxToolCalls: AGENT_MAX_TOOL_CALLS,
+      maxMcpCalls: AGENT_MAX_MCP_CALLS,
+      historyBudgetChars: AGENT_HISTORY_BUDGET_CHARS,
     },
     // The agent runs on the user's own Copilot seat, so no token means no turn.
     githubConnected: input.githubConnected,

@@ -14,8 +14,18 @@ import {
   CONTAINMENT_ATTRIBUTES,
   moduleArchitectureEntry,
   resolveServiceIcon,
+  VPC_SCOPED_ATTRIBUTES,
 } from "./aws-architecture";
 import { iconOfService, serviceOfResource } from "./aws-services";
+import {
+  createScope,
+  type EvaluationScope,
+  type EvaluationVariable,
+  evaluateExpression,
+  resolveInstances,
+  resolveMultiplicity,
+  withIndex,
+} from "./evaluate";
 import { parseModuleSourceRef } from "./module-link";
 import { meaningfulResourceName } from "./resource-label";
 
@@ -37,6 +47,11 @@ export interface ArchitectureResource {
    * were already drawn with.
    */
   conditionalOn?: string | null;
+  /**
+   * The `availability_zone` argument, as written. Names the instances of a
+   * multi-instance container; see {@link ArchitectureNode.availabilityZone}.
+   */
+  availabilityZone?: string | null;
 }
 
 /** How a subnet reaches an internet gateway, and whether that is guaranteed. */
@@ -70,6 +85,23 @@ export interface ArchitectureModuleCall {
    * builder knows which call produced which box.
    */
   requestedRef?: string | null;
+  /**
+   * Every argument this call sets, as written — and *every* one, not a subset.
+   *
+   * Completeness is the whole contract. Knowing the full argument list is what
+   * makes "not set here, so it takes its default" a sound inference, and that
+   * inference is what lets a block be declared absent. A partial list would
+   * quietly erase infrastructure that exists, so a caller that cannot supply all
+   * of them must supply none.
+   */
+  arguments?: Readonly<Record<string, string>>;
+}
+
+/** One `output` block of a called module, as far as placement is concerned. */
+export interface ArchitectureModuleOutput {
+  name: string;
+  /** The expression as written, e.g. `aws_subnet.public[*].id`. */
+  valueExpression: string | null;
 }
 
 /** A called module's own contents, needed to draw it expanded. */
@@ -80,6 +112,20 @@ export interface NestedModuleData {
   resources: ArchitectureResource[];
   references: ArchitectureReference[];
   moduleCalls: ArchitectureModuleCall[];
+  /**
+   * The module's outputs, so a caller wired to one of them can be drawn in the
+   * right place. Optional: without them a caller still lands in the module's
+   * VPC, just not in a particular subnet.
+   */
+  outputs?: ArchitectureModuleOutput[];
+  /**
+   * Declared variables and locals, so this module's `count` guards can be
+   * resolved against the arguments its caller passed. Optional, and absent on
+   * anything imported before they were recorded — in which case every guard
+   * reads as unknown and the module is drawn in full, as it always was.
+   */
+  variables?: EvaluationVariable[];
+  locals?: { name: string; expression: string | null }[];
 }
 
 export interface NestingOptions {
@@ -101,6 +147,20 @@ export interface ArchitectureReference {
   fromAddress: string;
   toAddress: string;
   attributes?: string[];
+  /**
+   * When the target is a module call: the outputs of it this reference reads.
+   *
+   * Only the project level can supply these — it parses the expression itself
+   * and knows that `subnet_id = module.vpc.public_subnets[0]` reads
+   * `public_subnets`, element zero. The stored module references keep the
+   * attribute but not the output, so a nested module call falls back to a coarser
+   * placement.
+   *
+   * The index is what makes per-instance frames worth drawing: without it a box
+   * wired to one of two subnets can only be put in the first by convention, and
+   * with it the placement is read out of the code.
+   */
+  outputs?: Array<{ name: string; index?: number }>;
 }
 
 export type ArchitectureNodeType = "vpc" | "subnet" | "service" | "module";
@@ -150,6 +210,61 @@ export interface ArchitectureNode {
    * check whether their own inputs actually switch that route on.
    */
   publicRouteCondition?: string;
+  /**
+   * Which instance of its Terraform block this frame is, when the block makes
+   * more than one.
+   *
+   * A `count = 2` subnet is two subnets in two availability zones, and they are
+   * two different places: the box wired to `public_subnets[0]` is in the first and
+   * not the second. One frame could not express that, so a resolved multiplicity
+   * becomes one frame per instance and this says which.
+   *
+   * `addresses` deliberately stays the undecorated block address on every
+   * instance. Both frames are that one declaration, the detail panel should say
+   * so, and everything else in the builder keys off addresses and would have had
+   * to learn about indices for no gain.
+   */
+  instanceIndex?: number;
+  /**
+   * How many instances the block makes.
+   *
+   * Set alongside `instanceIndex` on a split frame, and *without* it on a
+   * collapsed one — a single frame standing for all N instances still has to say
+   * that it is N of them.
+   */
+  instanceCount?: number;
+  /** The zone this instance is in, once resolved. What makes two frames legible. */
+  availabilityZone?: string;
+  /**
+   * Every zone a collapsed frame covers, in instance order.
+   *
+   * The instances of one subnet block differ by zone and by nothing else. When no
+   * box is pinned to a particular one, drawing three frames draws a distinction
+   * the code does not make: the reader sees two empty boxes and concludes the
+   * workload runs in one zone, which is the opposite of what a three-zone subnet
+   * means. So they collapse into one frame that names all three.
+   */
+  availabilityZones?: string[];
+  /**
+   * The block's own name, kept so a collapsed frame can be relabelled.
+   *
+   * Carried rather than parsed back out of `sublabel`: the collapse happens in a
+   * later pass with no access to the resource, and recovering a name by splitting
+   * a string we formatted ourselves is the kind of coupling that survives exactly
+   * until somebody changes the separator.
+   */
+  instanceName?: string;
+  /**
+   * The one zone this box is pinned to, when its wiring names a single subnet.
+   *
+   * Absent is the common case and means the box covers its whole tier:
+   * `subnet_ids = module.vpc.private_subnets` puts a service in all three private
+   * subnets, and the frame it sits in already says how many there are. Present is
+   * the exception worth marking — `single_nat_gateway = true` yields one NAT in
+   * the first public subnet, and a reader looking at a three-zone tier has no way
+   * to know that without being told.
+   */
+  zone?: string;
   parentId?: string;
   /** Drawn differently: its detail lives in another repository. */
   isModuleCall?: boolean;
@@ -187,7 +302,13 @@ export interface ArchitectureEdge {
 /** Something left off the diagram, with the reason, so the UI can say which. */
 export interface ArchitectureOmission {
   address: string;
-  reason: "data-source" | "detail" | "unknown-type" | "unknown-module";
+  reason:
+    | "data-source"
+    | "detail"
+    | "unknown-type"
+    | "unknown-module"
+    /** Declared, but its `count`/`for_each` resolves to nothing under these inputs. */
+    | "not-created";
   /**
    * Carried rather than parsed back out of `address`, because the address of a
    * resource inside a nested module has the call path in front of it and the
@@ -221,6 +342,7 @@ export function buildArchitecture(
   references: ArchitectureReference[],
   moduleCalls: ArchitectureModuleCall[] = [],
   nesting?: NestingOptions,
+  scope?: EvaluationScope,
 ): ArchitectureGraph {
   const basePath = nesting?.basePath ?? "";
   const visited = nesting?.visited ?? new Set<string>();
@@ -233,13 +355,50 @@ export function buildArchitecture(
 
   // Data sources describe lookups, not deployed infrastructure. None of them
   // belong on an architecture diagram.
-  const managed = resources.filter((r) => r.kind !== "data");
+  const declared = resources.filter((r) => r.kind !== "data");
+
+  /**
+   * Blocks whose `count` or `for_each` is known to produce nothing.
+   *
+   * Only ever populated when a scope is available, and a scope is only available
+   * when the whole argument list is — see `ArchitectureModuleCall.arguments`. The
+   * evaluator answers "unknown" for anything it cannot settle, and unknown keeps
+   * the block, so the untouched path stays exactly what it was.
+   */
+  const absent = new Set<string>();
+  if (scope) {
+    for (const resource of declared) {
+      if (resolveMultiplicity(resource.conditionalOn, scope) === "absent")
+        absent.add(resourceAddress(resource));
+    }
+  }
+
+  const managed = absent.size
+    ? declared.filter((r) => !absent.has(resourceAddress(r)))
+    : declared;
 
   const byAddress = new Map<string, ArchitectureResource>();
   for (const resource of managed)
     byAddress.set(resourceAddress(resource), resource);
 
-  const publicSubnets = findPublicSubnets(references, byAddress);
+  /**
+   * Only references between blocks that exist.
+   *
+   * This is what makes a resolved guard reclassify a subnet rather than merely
+   * hide a box. The database subnet reads as public because
+   * `aws_route.database_internet_gateway` routes it to the gateway — a route
+   * behind `var.create_database_internet_gateway_route`, which defaults to false.
+   * Drop the route and the chain `subnet -> route table -> route -> gateway`
+   * breaks on its own, without `findPublicSubnets` knowing anything about
+   * evaluation.
+   */
+  const live = absent.size
+    ? references.filter(
+        (ref) => !absent.has(ref.fromAddress) && !absent.has(ref.toAddress),
+      )
+    : references;
+
+  const publicSubnets = findPublicSubnets(live, byAddress);
 
   /**
    * How good a candidate container is, judged by what it *is* rather than by
@@ -281,7 +440,7 @@ export function buildArchitecture(
   const containerOf = new Map<string, string>();
   const containerRank = new Map<string, number>();
 
-  for (const ref of references) {
+  for (const ref of live) {
     if (!containmentRelation(ref)) continue;
     if (!byAddress.has(ref.fromAddress) || !byAddress.has(ref.toAddress))
       continue;
@@ -356,6 +515,21 @@ export function buildArchitecture(
     }
   }
 
+  // Declared but switched off by the inputs in force here. A different reason
+  // from `detail` because it is a different statement: not "this is too small to
+  // draw" but "this configuration does not create it".
+  for (const resource of declared) {
+    const address = resourceAddress(resource);
+    if (!absent.has(address)) continue;
+
+    omissions.push({
+      address,
+      reason: "not-created",
+      resourceType: resource.resourceType,
+      providerName: resource.providerName,
+    });
+  }
+
   for (const resource of managed) {
     const address = resourceAddress(resource);
     const entry = architectureEntry(resource.resourceType);
@@ -420,14 +594,15 @@ export function buildArchitecture(
      */
     const publicRouteCondition = publicRoute?.conditionalOn ?? null;
 
-    const node: ArchitectureNode = {
+    const isContainer = entry.role === "container";
+
+    const template: ArchitectureNode = {
       id: address,
-      type:
-        entry.role === "container"
-          ? resource.resourceType === "aws_vpc"
-            ? "vpc"
-            : "subnet"
-          : "service",
+      type: isContainer
+        ? resource.resourceType === "aws_vpc"
+          ? "vpc"
+          : "subnet"
+        : "service",
       label: isSubnet
         ? isPublic
           ? "Public subnet"
@@ -446,9 +621,50 @@ export function buildArchitecture(
       addresses: [address],
     };
 
-    nodes.push(node);
-    nodeOfAddress.set(address, node.id);
+    /**
+     * One frame per instance, for containers only.
+     *
+     * A container is a *place*, and its multiplicity is therefore structural: two
+     * public subnets are two places, and which of them holds the instance wired
+     * to `public_subnets[0]` is a fact the diagram should be able to state. A
+     * service's multiplicity is a quantity in one place, which needs no second box
+     * to be understood — and giving it one would double every edge it has.
+     */
+    const instances =
+      isContainer && scope ? instanceFrames(resource, scope) : null;
+
+    if (!instances) {
+      nodes.push(template);
+      nodeOfAddress.set(address, template.id);
+      continue;
+    }
+
+    for (const instance of instances) {
+      nodes.push({ ...template, ...instance });
+    }
+
+    /**
+     * The first instance is what an address resolves to.
+     *
+     * Everything else in the builder — containment, edges, attachments — reasons
+     * about declarations rather than instances, and pointing an address at
+     * instance zero keeps all of it working unchanged. The places that do need
+     * instances recover them by grouping nodes on their shared address, which is
+     * the same fact without a second index to keep in step.
+     *
+     * The consequence, stated plainly: a resource placed inside a multi-instance
+     * subnet by a reference within its own module lands in the first zone. Which
+     * zone it is really in is written as `element(aws_subnet.public[*].id,
+     * count.index)`, an expression the analyser does not keep, so the alternative
+     * is not a better zone but no subnet at all.
+     */
+    const first = instances[0];
+    if (first) nodeOfAddress.set(address, first.id);
   }
+
+  // What each expanded module call offers as a place to sit. Filled in as the
+  // calls are expanded below and read afterwards, once every frame exists.
+  const exposed = new Map<string, ExposedFrames>();
 
   // Module calls, one box each. Deliberately not folded by `group` the way
   // resources are: `waf` and `waf_cdn` are two distinct web ACLs guarding
@@ -499,6 +715,7 @@ export function buildArchitecture(
           basePath: path,
           visited: new Set([...visited, contents.id]),
         },
+        calleeScope(scope, call, contents),
       );
 
       node.expandable = inner.nodes.length > 0;
@@ -514,8 +731,29 @@ export function buildArchitecture(
         node.expanded = true;
         node.label = ref?.repo ?? call.name;
 
-        adoptSubgraph(inner, path, node.id, adopted, omissions, inheritedEdges);
+        // Prefixed with this one call, not the whole path; see `adoptSubgraph`.
+        adoptSubgraph(
+          inner,
+          address,
+          node.id,
+          adopted,
+          omissions,
+          inheritedEdges,
+        );
         for (const type of inner.unmappedTypes) unmapped.add(type);
+
+        // Recorded against the call address, which is what the caller's own
+        // references name — the path prefix is an implementation detail of the
+        // adopted ids and nobody outside knows it.
+        exposed.set(
+          address,
+          exposedFrames(
+            inner,
+            contents.outputs ?? [],
+            contents.references,
+            address,
+          ),
+        );
       }
     }
 
@@ -552,7 +790,7 @@ export function buildArchitecture(
     promoteToServiceBoxes("detail", omissions, nodes, nodeOfAddress);
   }
 
-  const drawn = mergeWrapperDuplicates(nodes, nodeOfAddress, references);
+  const drawn = mergeWrapperDuplicates(nodes, nodeOfAddress, live);
   const nodeById = new Map(drawn.map((n) => [n.id, n]));
 
   for (const node of drawn) {
@@ -581,22 +819,152 @@ export function buildArchitecture(
     if (entry?.global) node.parentId = undefined;
   }
 
+  // Anything still homeless whose network lives in a module: the EC2 box wired
+  // to `module.vpc.public_subnets[0]` goes inside that subnet, not beside it.
+  placeAcrossModules(drawn, adopted, live, exposed);
+
   // Only this module's own nodes: an adopted one already had its supporting
   // resources attributed inside the recursive call, against that module's
   // Terraform rather than this one's.
-  attachSupportingResources(drawn, byAddress, nodeOfAddress, references);
+  attachSupportingResources(drawn, byAddress, nodeOfAddress, live);
+
+  /**
+   * Last, and only at the outermost level.
+   *
+   * Last because it re-parents: everything placed in any instance has to have been
+   * placed first. Outermost only because a nested call builds the frames its caller
+   * then pins boxes into — folding them on the way up would take away the very
+   * instances the caller is about to subscript.
+   */
+  const laid =
+    basePath === ""
+      ? collapseZoneInstances([...drawn, ...adopted])
+      : [...drawn, ...adopted];
 
   return {
-    // Frames must precede their contents: React Flow paints in array order.
-    nodes: [...drawn, ...adopted],
-    edges: [
-      ...buildEdges(references, nodeOfAddress, nodeById),
-      ...inheritedEdges,
-    ],
+    nodes: framesBeforeContents(laid),
+    edges: [...buildEdges(live, nodeOfAddress, nodeById), ...inheritedEdges],
     omittedCount: omissions.length,
     omissions,
     unmappedTypes: [...unmapped, ...unrecognisedModules].sort(),
   };
+}
+
+/**
+ * Folds a block's per-zone frames into the one tier they are.
+ *
+ * The instances of a subnet block differ by availability zone and by nothing
+ * else, and a tier is what a reader is looking for: the public subnets, the
+ * private ones, the database ones. Drawing three frames per tier answers a
+ * question nobody asked and loses the one they did.
+ *
+ * The real project this was built against settles it. Four tiers of three zones,
+ * and every box wired to a whole tier — an ALB across `public_subnets`, Fargate
+ * tasks across `private_subnets`, RDS through a subnet group spanning all three,
+ * the same for ElastiCache. Twelve frames, of which exactly one held anything: the
+ * single NAT gateway pinned to the first public subnet. Eleven empty boxes, and
+ * the four facts that matter — which tier each service is in — nowhere to be seen.
+ *
+ * So the tier becomes one frame saying `×3` and naming its zones, everything that
+ * was in any instance is re-parented onto it, and the exception keeps its detail:
+ * a box that named one subnet carries `zone`, which is how the NAT still says it
+ * is only in `eu-central-1a`.
+ */
+function collapseZoneInstances(nodes: ArchitectureNode[]): ArchitectureNode[] {
+  const groups = new Map<string, ArchitectureNode[]>();
+
+  for (const node of nodes) {
+    if (node.instanceIndex === undefined) continue;
+    // Instances of one block share their address; the id carries the index.
+    const key = node.addresses[0] ?? node.id;
+    const group = groups.get(key);
+    if (group) group.push(node);
+    else groups.set(key, [node]);
+  }
+
+  if (groups.size === 0) return nodes;
+
+  /** Dropped frame to the one that absorbed it, for re-parenting. */
+  const absorbed = new Map<string, string>();
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+
+    group.sort((a, b) => (a.instanceIndex ?? 0) - (b.instanceIndex ?? 0));
+
+    const [keep, ...rest] = group;
+    if (!keep) continue;
+
+    const zones = group
+      .map((frame) => frame.availabilityZone)
+      .filter((zone): zone is string => zone !== undefined);
+
+    for (const frame of rest) absorbed.set(frame.id, keep.id);
+
+    // `instanceIndex` goes and `instanceCount` stays: this frame is no longer one
+    // place among several, but it is still three subnets, and the count is the
+    // whole point of the label.
+    keep.instanceIndex = undefined;
+    keep.instanceCount = group.length;
+    keep.availabilityZone = undefined;
+    if (zones.length) keep.availabilityZones = zones;
+
+    const detail = [
+      `×${group.length}`,
+      zones.length ? compressZones(zones) : null,
+    ]
+      .filter((part): part is string => part !== null)
+      .join(" · ");
+
+    keep.sublabel = keep.instanceName
+      ? `${keep.instanceName} · ${detail}`
+      : detail;
+  }
+
+  if (absorbed.size === 0) return nodes;
+
+  for (const node of nodes) {
+    const moved = node.parentId ? absorbed.get(node.parentId) : undefined;
+    if (moved) node.parentId = moved;
+  }
+
+  return nodes.filter((node) => !absorbed.has(node.id));
+}
+
+/**
+ * Zone names as a person would read three of them: `eu-central-1a/b/c`.
+ *
+ * Written out in full they are 42 characters of near-identical text, and the
+ * frame has to be wide enough for its own label — so the honest list would widen
+ * every collapsed subnet past the width of its contents for no information. The
+ * shared prefix is stated once; only the part that differs is repeated.
+ *
+ * Falls back to a plain list when they share nothing, which is what a
+ * multi-region layout would look like and is worth showing as the oddity it is.
+ */
+function compressZones(zones: string[]): string {
+  const unique = [...new Set(zones)];
+  if (unique.length < 2) return unique[0] ?? "";
+
+  const first = unique[0] ?? "";
+  let shared = 0;
+  while (
+    shared < first.length &&
+    unique.every((zone) => zone[shared] === first[shared])
+  ) {
+    shared += 1;
+  }
+
+  // A prefix worth collapsing has to leave something behind on every entry.
+  if (shared === 0 || unique.some((zone) => zone.length <= shared)) {
+    return unique.join(", ");
+  }
+
+  return `${first}${unique
+    .slice(1)
+    .map((zone) => zone.slice(shared))
+    .map((suffix) => `/${suffix}`)
+    .join("")}`;
 }
 
 /**
@@ -878,21 +1246,29 @@ function mergeWrapperDuplicates(
 /**
  * Pulls a called module's finished diagram into the caller's, under a frame.
  *
- * Every id is rewritten with the call path in front of it, because ids are only
- * unique within one module: two repositories both containing `aws_vpc.this` are
- * routine, and without the prefix the second would silently overwrite the
- * first's placement. Addresses are prefixed too, so the omission list can say
- * which module a hidden resource came from.
+ * Every id is rewritten with the call in front of it, because ids are only unique
+ * within one module: two repositories both containing `aws_vpc.this` are routine,
+ * and without the prefix the second would silently overwrite the first's
+ * placement. Addresses are prefixed too, so the omission list can say which
+ * module a hidden resource came from.
+ *
+ * The prefix is one call — `module.service` — and not the path from the root.
+ * That distinction only became visible once relative sources started resolving
+ * and a module could be expanded two levels deep: the callee had already prefixed
+ * its own adopted nodes, so prefixing again with the full path produced
+ * `module.service/module.service/module.container_definition/…`. Composing one
+ * segment per level is what makes the result a path rather than a path with the
+ * middle repeated.
  */
 function adoptSubgraph(
   inner: ArchitectureGraph,
-  path: string,
+  call: string,
   frameId: string,
   nodes: ArchitectureNode[],
   omissions: ArchitectureOmission[],
   inheritedEdges: ArchitectureEdge[],
 ): void {
-  const idOf = (id: string) => `${path}/${id}`;
+  const idOf = (id: string) => `${call}/${id}`;
 
   for (const child of inner.nodes) {
     nodes.push({
@@ -901,13 +1277,13 @@ function adoptSubgraph(
       // Top-level nodes of the callee hang off the frame; deeper ones keep the
       // parent they already had, rewritten to its new id.
       parentId: child.parentId ? idOf(child.parentId) : frameId,
-      addresses: child.addresses.map((address) => `${path}/${address}`),
+      addresses: child.addresses.map(idOf),
       // Prefixed for the same reason as the addresses above: the panel resolves
       // these back to a resource by walking the call path, and an unprefixed
       // `aws_iam_role.this` would be looked up in the wrong repository.
       attachments: child.attachments?.map((attachment) => ({
         ...attachment,
-        addresses: attachment.addresses.map((address) => `${path}/${address}`),
+        addresses: attachment.addresses.map(idOf),
       })),
     });
   }
@@ -922,10 +1298,7 @@ function adoptSubgraph(
   }
 
   for (const omission of inner.omissions) {
-    omissions.push({
-      ...omission,
-      address: `${path}/${omission.address}`,
-    });
+    omissions.push({ ...omission, address: idOf(omission.address) });
   }
 }
 
@@ -940,15 +1313,572 @@ function entryForNode(node: ArchitectureNode) {
   return type ? architectureEntry(type) : null;
 }
 
+/**
+ * Beyond this many instances, one frame per instance stops helping.
+ *
+ * Availability zones come in twos and threes, so four covers every real subnet
+ * layout with a zone to spare. A block with ten instances is a pattern rather
+ * than a set of places, and ten nested frames would cost more room than the
+ * distinction is worth — so it keeps the single frame it has always had.
+ */
+const MAX_INSTANCE_FRAMES = 4;
+
+/**
+ * The frames a container block should be drawn as, or null to leave it alone.
+ *
+ * A single-instance block still comes back as a one-element list, and that is not
+ * a no-op: the frame keeps its plain address as its id, so nothing downstream can
+ * tell the difference, but it picks up its availability zone. One subnet in
+ * `eu-central-1a` is worth saying so even with nothing to tell it apart from.
+ *
+ * Null when the count could not be resolved, or resolved to more instances than
+ * are worth separating. Both leave the frame exactly as it was drawn before.
+ */
+function instanceFrames(
+  resource: ArchitectureResource,
+  scope: EvaluationScope,
+): Array<Partial<ArchitectureNode> & { id: string }> | null {
+  const count = resolveInstances(resource.conditionalOn, scope);
+  if (count === null || count < 1 || count > MAX_INSTANCE_FRAMES) return null;
+
+  const address = resourceAddress(resource);
+  const name = meaningfulResourceName(resource.resourceName);
+  const only = count === 1;
+
+  return Array.from({ length: count }, (_, index) => {
+    const zone = resource.availabilityZone
+      ? evaluateExpression(resource.availabilityZone, withIndex(scope, index))
+      : undefined;
+    const inZone = typeof zone === "string" ? zone : undefined;
+
+    /**
+     * Both the block name and the zone, not just the zone. A VPC with a
+     * `database` and a `private` subnet in the same zone would otherwise show two
+     * identically labelled private frames, and the name is what says which is
+     * which.
+     */
+    const sublabel = inZone
+      ? name
+        ? `${name} · ${inZone}`
+        : inZone
+      : only
+        ? name
+        : `${name ?? address}[${index}]`;
+
+    return {
+      // A lone instance *is* the block. Labelling it `[0]` would invite the
+      // reader to look for a `[1]` that does not exist.
+      id: only ? address : `${address}[${index}]`,
+      ...(only ? {} : { instanceIndex: index, instanceCount: count }),
+      ...(inZone ? { availabilityZone: inZone } : {}),
+      ...(name ? { instanceName: name } : {}),
+      ...(sublabel ? { sublabel } : {}),
+    };
+  });
+}
+
+/**
+ * The frames an expanded module call offers as a home, addressed the way its
+ * caller would name them.
+ *
+ * This is what makes placement work across a module boundary. Within one module
+ * the reference `aws_instance.web -> aws_subnet.public` names the subnet
+ * directly; between modules the same fact is spelt `subnet_id =
+ * module.vpc.public_subnets[0]`, and the subnet only becomes nameable once the
+ * callee's `public_subnets` output is read back to `aws_subnet.public`.
+ */
+interface ExposedFrames {
+  /**
+   * Frames per output name, in instance order — `public_subnets` yields both
+   * public subnets, so `public_subnets[1]` can be placed in the second.
+   */
+  byOutput: Map<string, string[]>;
+  /** The module's VPC, when it declares exactly one — otherwise nothing is certain. */
+  vpc?: string;
+  /**
+   * Subnet frames grouped by the block that declared them. One declaration needs
+   * no output name to be unambiguous, which covers the many single-subnet
+   * wrappers; its instances still need an index to be told apart.
+   */
+  subnets: string[][];
+}
+
+/**
+ * Two-segment dotted prefixes, which is what a Terraform resource address is.
+ *
+ * Deliberately loose: the result is only ever used as a lookup key against the
+ * frames the module actually declares, so a chain that is not an address simply
+ * matches nothing. Indexing terminates the match, so `aws_subnet.public[*].id`
+ * yields `aws_subnet.public`.
+ */
+const ADDRESS_CHAIN = /[A-Za-z_][A-Za-z0-9_-]*\.[A-Za-z_][A-Za-z0-9_-]*/g;
+
+function exposedFrames(
+  inner: ArchitectureGraph,
+  outputs: ArchitectureModuleOutput[],
+  references: ArchitectureReference[],
+  call: string,
+): ExposedFrames {
+  // Ids inside `inner` are rewritten on adoption; see `adoptSubgraph`.
+  const idOf = (id: string) => `${call}/${id}`;
+
+  const frames = inner.nodes.filter(
+    (node) => node.type === "vpc" || node.type === "subnet",
+  );
+
+  /**
+   * Frames per block address, instance order preserved.
+   *
+   * A block drawn as several frames has one entry per instance, all under the
+   * same address — which is exactly what an output like `public_subnets` hands
+   * back, a list.
+   */
+  const framesOfAddress = new Map<string, ArchitectureNode[]>();
+  for (const frame of frames) {
+    for (const address of frame.addresses) {
+      const list = framesOfAddress.get(address);
+      if (list) list.push(frame);
+      else framesOfAddress.set(address, [frame]);
+    }
+  }
+  for (const list of framesOfAddress.values()) {
+    list.sort((a, b) => (a.instanceIndex ?? 0) - (b.instanceIndex ?? 0));
+  }
+
+  /**
+   * Frames reachable one containment hop from a resource that is not drawn.
+   *
+   * The case is `database_subnet_group_name`, which names an
+   * `aws_db_subnet_group` — undrawn by design, because the group is exactly the
+   * "which subnets may this live in" statement the diagram makes by nesting. The
+   * output therefore identifies a subnet without naming one, and stopping at the
+   * group would send every database to the VPC at large instead.
+   */
+  const viaOmitted = new Map<string, ArchitectureNode[]>();
+  for (const ref of references) {
+    if (!containmentRelation(ref)) continue;
+    if (framesOfAddress.has(ref.fromAddress)) continue;
+
+    const found = framesOfAddress.get(ref.toAddress);
+    if (!found) continue;
+
+    // A group listing several subnet blocks has several of these. Most precise
+    // wins, then the lower id, so the answer cannot depend on reference order.
+    const current = viaOmitted.get(ref.fromAddress)?.[0];
+    const frame = found[0];
+    if (
+      current &&
+      frame &&
+      (current.type === frame.type
+        ? current.id <= frame.id
+        : frame.type === "vpc")
+    ) {
+      continue;
+    }
+    viaOmitted.set(ref.fromAddress, found);
+  }
+
+  const byOutput = new Map<string, string[]>();
+  for (const output of outputs) {
+    if (!output.valueExpression) continue;
+
+    for (const [address] of output.valueExpression.matchAll(ADDRESS_CHAIN)) {
+      const found = framesOfAddress.get(address) ?? viaOmitted.get(address);
+      if (!found?.length) continue;
+      byOutput.set(
+        output.name,
+        found.map((frame) => idOf(frame.id)),
+      );
+      break;
+    }
+  }
+
+  const declarations = [...framesOfAddress.values()];
+
+  // One VPC *declaration*, however many instances it has; the first instance is
+  // where anything without a subnet falls back to.
+  const vpcs = declarations.filter((list) => list[0]?.type === "vpc");
+  const only = vpcs.length === 1 ? vpcs[0]?.[0] : undefined;
+
+  const subnets = declarations
+    .filter((list) => list[0]?.type === "subnet")
+    .map((list) => list.map((frame) => idOf(frame.id)));
+
+  return {
+    byOutput,
+    ...(only ? { vpc: idOf(only.id) } : {}),
+    subnets,
+  };
+}
+
+/**
+ * The scope a called module's own `count` guards should be read in.
+ *
+ * Three conditions, and every one of them is a licence to conclude something
+ * rather than a convenience:
+ *
+ *   - the caller has a scope, so its own `local.azs` can be resolved;
+ *   - the call carries its arguments, and carries *all* of them;
+ *   - the callee's variables were supplied, so an unset argument has a default.
+ *
+ * Any of them missing yields no scope, which means every guard reads as unknown
+ * and the module is drawn in full. That is the pre-existing behaviour, and it is
+ * the right default: the cost of drawing a block that will not be created is a
+ * reader wondering about one box, while the cost of hiding one that will be is a
+ * diagram that lies about the deployment.
+ *
+ * Note what is *not* required: locals. A module imported before they were
+ * recorded still qualifies, because a local the evaluator cannot find is unknown
+ * rather than false, and its three-valued logic never turns an unknown operand
+ * into a false result — `var.create && local.missing` is unknown, so the block
+ * stays. Demanding locals would have cost every simple module its resolution to
+ * guard against a case the arithmetic already rules out.
+ */
+function calleeScope(
+  scope: EvaluationScope | undefined,
+  call: ArchitectureModuleCall,
+  contents: NestedModuleData,
+): EvaluationScope | undefined {
+  if (!scope || !call.arguments || !contents.variables) return undefined;
+
+  return createScope({
+    variables: contents.variables,
+    locals: contents.locals,
+    arguments: call.arguments,
+    callerScope: scope,
+  });
+}
+
+/** A home found for a box, and how precise it is: 2 a subnet, 1 a VPC. */
+interface Placement {
+  frameId: string;
+  rank: 1 | 2;
+  /**
+   * Which instance the wire named, when it named one of several.
+   *
+   * Absent means the whole tier, which is the ordinary case. Present is what lets
+   * the box be labelled with its zone once the instances are folded together.
+   */
+  zoneIndex?: number;
+}
+
+/**
+ * How far a VPC may be inherited through security groups.
+ *
+ * Three is the real chain: a database names a security-group module, that module
+ * names the VPC module. One spare hop covers a wrapper in between; past that the
+ * claim has stopped being about this box.
+ */
+const MAX_PLACEMENT_HOPS = 4;
+
+/**
+ * Places boxes inside frames that belong to a *different* module call.
+ *
+ * Without this the project level draws nothing inside anything. Every box comes
+ * from some module, each module's containment was resolved against its own
+ * Terraform, and the reference that ties them together — `subnet_id =
+ * module.vpc.public_subnets[0]` — names a module rather than a subnet, so it was
+ * dropped for having no resource at either end. The result was the complaint
+ * this function answers: an EC2 instance and a database drawn beside the VPC
+ * they are inside, with nothing saying which subnet they sit in.
+ *
+ * Three sources of truth, in descending order of certainty:
+ *
+ *   1. The output the wire reads, resolved to the frame it exposes. Exact.
+ *   2. The module's only subnet, or its only VPC. Unambiguous by arithmetic.
+ *   3. A security group it shares. Security groups cannot span VPCs, so the VPC
+ *      is certain even though the subnet stays unknown — which is the difference
+ *      between a database inside its VPC and one floating next to it.
+ *
+ * Nothing is invented: a box whose wiring says nothing about the network keeps
+ * the placement it had, which is none.
+ */
+function placeAcrossModules(
+  drawn: ArchitectureNode[],
+  adopted: ArchitectureNode[],
+  references: ArchitectureReference[],
+  exposed: Map<string, ExposedFrames>,
+): void {
+  if (exposed.size === 0) return;
+
+  const byId = new Map<string, ArchitectureNode>();
+  for (const node of [...drawn, ...adopted]) byId.set(node.id, node);
+
+  /**
+   * Picks the frame a wire points at, and says whether it named one zone.
+   *
+   * Both answers are the same tier — the instances of one subnet block get folded
+   * back into a single frame downstream — so the frame id is only ever the first
+   * instance. What differs is the claim:
+   *
+   *   `subnet_id  = module.vpc.public_subnets[0]`  one zone, and we know which
+   *   `subnet_ids = module.vpc.private_subnets`    the whole tier, all of them
+   *
+   * Sending the second case up to the VPC was tried and was worse. Every box in a
+   * real project is wired that way — an ALB across the public subnets, Fargate
+   * tasks across the private ones, RDS through a subnet group spanning all three —
+   * so the VPC filled up with services and all four tiers stood empty. That threw
+   * away the most useful fact on the diagram, which tier each service is in, to
+   * avoid overstating a zone nobody had asked about. The tier is the container and
+   * the zone is a detail inside it; `zoneIndex` carries the detail.
+   */
+  const pick = (
+    instances: string[],
+    index: number | undefined,
+  ): { frameId: string; zoneIndex?: number } | undefined => {
+    if (index !== undefined) {
+      const frameId = instances[index];
+      return frameId
+        ? instances.length > 1
+          ? { frameId, zoneIndex: index }
+          : { frameId }
+        : undefined;
+    }
+
+    const frameId = instances[0];
+    return frameId ? { frameId } : undefined;
+  };
+
+  /** The frame a single containment wire points at, if any. */
+  const frameFor = (
+    ref: ArchitectureReference,
+    relation: "vpc" | "subnet",
+  ): Placement | null => {
+    const target = exposed.get(ref.toAddress);
+    if (!target) return null;
+
+    for (const output of ref.outputs ?? []) {
+      const instances = target.byOutput.get(output.name);
+      if (!instances?.length) continue;
+
+      const found = pick(instances, output.index);
+      if (!found) continue;
+
+      const type = byId.get(found.frameId)?.type;
+
+      // The attribute states the relation; the output only says which frame.
+      // A `vpc_id` resolving to a subnet is a mis-declared wire, not a subnet.
+      if (relation === "subnet" && type === "subnet")
+        return { ...found, rank: 2 };
+      if (relation === "vpc" && type === "vpc") return { ...found, rank: 1 };
+    }
+
+    // No output named, so the only unambiguous answer is a module with a single
+    // subnet block. Its index, if the wire carried one, still applies.
+    const only =
+      relation === "subnet" && target.subnets.length === 1
+        ? target.subnets[0]
+        : undefined;
+    if (only?.length) {
+      const found = pick(only, ref.outputs?.[0]?.index);
+      if (found) return { ...found, rank: 2 };
+    }
+
+    // A subnet wire whose subnet cannot be pinned down still tells us the VPC.
+    return target.vpc ? { frameId: target.vpc, rank: 1 } : null;
+  };
+
+  const placement = new Map<string, Placement>();
+
+  /**
+   * Keeps the most precise home, with ties broken by frame id so two equally
+   * good answers cannot make the diagram depend on reference order.
+   */
+  const offer = (address: string, next: Placement) => {
+    const current = placement.get(address);
+    if (
+      current &&
+      (current.rank > next.rank ||
+        (current.rank === next.rank && current.frameId <= next.frameId))
+    ) {
+      // Same frame, and this one names a zone the other did not: keep the home,
+      // take the zone. Two wires into one tier, one of which subscripted it,
+      // should not lose that depending on which arrived first.
+      if (
+        current.frameId === next.frameId &&
+        next.zoneIndex !== undefined &&
+        current.zoneIndex === undefined
+      ) {
+        placement.set(address, { ...current, zoneIndex: next.zoneIndex });
+      }
+      return;
+    }
+    placement.set(address, next);
+  };
+
+  for (const ref of references) {
+    const relation = containmentRelation(ref);
+    if (!relation) continue;
+
+    const found = frameFor(ref, relation);
+    if (found) offer(ref.fromAddress, found);
+  }
+
+  /** The VPC a frame sits in, which for a VPC frame is itself. */
+  const vpcOf = (frameId: string): string | null => {
+    let current = byId.get(frameId);
+    const seen = new Set<string>();
+
+    while (current && !seen.has(current.id)) {
+      if (current.type === "vpc") return current.id;
+      seen.add(current.id);
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+    }
+
+    return null;
+  };
+
+  // Source 3, relaxed to a fixpoint so `db -> db_sg -> vpc` resolves in the
+  // order the references happen to arrive in.
+  for (let hop = 0; hop < MAX_PLACEMENT_HOPS; hop++) {
+    let changed = false;
+
+    for (const ref of references) {
+      if (placement.has(ref.fromAddress)) continue;
+      if (
+        !(ref.attributes ?? []).some((attribute) =>
+          VPC_SCOPED_ATTRIBUTES.has(attribute),
+        )
+      ) {
+        continue;
+      }
+
+      const via = placement.get(ref.toAddress) ?? null;
+      const frameId = via
+        ? vpcOf(via.frameId)
+        : exposed.get(ref.toAddress)?.vpc;
+      if (!frameId) continue;
+
+      placement.set(ref.fromAddress, { frameId, rank: 1 });
+      changed = true;
+    }
+
+    if (!changed) break;
+  }
+
+  for (const node of drawn) {
+    // A box already inside one of this module's own frames is where it belongs;
+    // that placement was read from resources, not inferred.
+    if (node.parentId) continue;
+
+    // Edge and global services stay outside the VPC however they are wired.
+    if (entryForNode(node)?.global) continue;
+
+    let best: Placement | null = null;
+    for (const address of node.addresses) {
+      const found = placement.get(address);
+      if (!found) continue;
+      if (
+        !best ||
+        found.rank > best.rank ||
+        (found.rank === best.rank && found.frameId < best.frameId)
+      ) {
+        best = found;
+      }
+    }
+
+    if (!best || !byId.has(best.frameId)) continue;
+    // A module cannot go inside a frame it contains: the VPC module owns the
+    // subnets, so a wire from it to one of them must not swallow the module.
+    if (encloses(node.id, best.frameId, byId)) continue;
+
+    node.parentId = best.frameId;
+
+    // Read off the frame rather than recomputed: the frame already resolved its
+    // own `availability_zone`, and asking twice is how two answers appear.
+    if (best.zoneIndex !== undefined) {
+      const zone = byId.get(best.frameId)?.availabilityZone;
+      if (zone) node.zone = zone;
+    }
+  }
+}
+
+/** Whether `frameId` sits inside `nodeId`, reading placements as they stand. */
+function encloses(
+  nodeId: string,
+  frameId: string,
+  byId: Map<string, ArchitectureNode>,
+): boolean {
+  let current: ArchitectureNode | undefined = byId.get(frameId);
+  const seen = new Set<string>();
+
+  while (current && !seen.has(current.id)) {
+    if (current.id === nodeId) return true;
+    seen.add(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+
+  return false;
+}
+
+/**
+ * Orders the nodes so every frame precedes what it contains.
+ *
+ * React Flow requires it — a child listed before its parent is dropped with an
+ * error — and it is also what makes frames paint underneath their contents. The
+ * old comment claimed the order came out right on its own, which held only while
+ * containment stayed inside one module: a resource list arrives in whatever
+ * order the database returned it, so `aws_subnet.public` routinely preceded the
+ * `aws_vpc.this` it belongs to.
+ *
+ * Sorting by nesting depth is enough, since a parent is always exactly one level
+ * shallower than its child, and a stable sort keeps the meaningful order within
+ * each level: services before the frames they sit above, module contents in the
+ * order the callee produced them.
+ */
+function framesBeforeContents(nodes: ArchitectureNode[]): ArchitectureNode[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+
+  const depthOf = (node: ArchitectureNode): number => {
+    let current = node;
+    const seen = new Set<string>([node.id]);
+    let depth = 0;
+
+    while (current.parentId) {
+      const parent = byId.get(current.parentId);
+      if (!parent || seen.has(parent.id)) break;
+      seen.add(parent.id);
+      current = parent;
+      depth += 1;
+    }
+
+    return depth;
+  };
+
+  return nodes
+    .map((node, index) => ({ node, index, depth: depthOf(node) }))
+    .sort((a, b) => a.depth - b.depth || a.index - b.index)
+    .map((entry) => entry.node);
+}
+
+/**
+ * The containment a reference expresses, taking the most precise attribute when
+ * it carries several.
+ *
+ * One reference stands for every argument connecting two blocks, and a module
+ * call routinely takes both: `module "app_server"` is given
+ * `subnet_id = module.vpc.public_subnets[0]` *and*
+ * `security_group_vpc_id = module.vpc.vpc_id`. Both are containment, and being in
+ * a subnet is the stronger statement — anything in a subnet is in that subnet's
+ * VPC anyway.
+ *
+ * Returning the first match instead made the answer depend on the order the
+ * arguments happened to arrive in, which put the EC2 instance in the VPC rather
+ * than in its subnet as soon as the security-group argument came first. The same
+ * ranking as `frameRank` uses, for the same reason.
+ */
 function containmentRelation(
   ref: ArchitectureReference,
 ): "vpc" | "subnet" | null {
+  let found: "vpc" | "subnet" | null = null;
+
   for (const attribute of ref.attributes ?? []) {
     const relation = CONTAINMENT_ATTRIBUTES[attribute];
-    if (relation) return relation;
+    if (relation === "subnet") return "subnet";
+    if (relation) found = relation;
   }
 
-  return null;
+  return found;
 }
 
 /**

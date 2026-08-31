@@ -12,6 +12,7 @@ import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { AlertCircle, GitBranch, Plus } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
@@ -20,6 +21,7 @@ import { CreateProjectDialog } from "@/components/projects/create-project-dialog
 import type { ProjectDto } from "@/lib/projects/types";
 
 export default function ProjectsPage() {
+  const router = useRouter();
   const [projects, setProjects] = useState<ProjectDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,9 +52,24 @@ export default function ProjectsPage() {
     };
   }, []);
 
-  const handleCreated = useCallback((project: ProjectDto) => {
-    setProjects((current) => [project, ...current]);
-  }, []);
+  /**
+   * Straight into the new project rather than back to the list.
+   *
+   * Nobody creates a project to look at it in a list: the next thing they want is
+   * the canvas, and finding the row they just made to click it is a step that
+   * exists only because the dialog closed onto the wrong screen.
+   *
+   * Still added to the list first. The push is a client navigation and this page
+   * stays mounted behind it, so a user who comes back — or whose navigation is
+   * slow — sees the project already there instead of a list that has not caught up.
+   */
+  const handleCreated = useCallback(
+    (project: ProjectDto) => {
+      setProjects((current) => [project, ...current]);
+      router.push(`/projects/${project.id}`);
+    },
+    [router],
+  );
 
   return (
     <SidebarProvider>

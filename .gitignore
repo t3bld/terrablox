@@ -9,6 +9,9 @@ coverage
 
 # Next.js
 .next/
+# Any alternative build directory chosen with NEXT_DIST_DIR, which exists so a
+# production build can be checked while `next dev` still owns `.next`.
+.next-*/
 out/
 build
 dist/

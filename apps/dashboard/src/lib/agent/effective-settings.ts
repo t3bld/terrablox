@@ -4,6 +4,13 @@ import { prisma } from "@terrablox/database";
 
 import { isKnownKnowledge } from "./knowledge";
 import {
+  HISTORY_BUDGET_MAX_CHARS,
+  HISTORY_BUDGET_MIN_CHARS,
+  MCP_CALL_BUDGET_MAX,
+  TOOL_CALL_BUDGET_MAX,
+  TOOL_CALL_BUDGET_MIN,
+} from "./runtime-options";
+import {
   type AgentSettingsView,
   getAgentSettings,
   type McpServerView,
@@ -28,6 +35,21 @@ export interface AgentOverrides {
   disabledKnowledge?: string[];
   disabledTools?: string[];
   turnTimeout?: number | null;
+  /**
+   * The per-turn budgets, overridable because blast radius is a property of the
+   * project rather than of the person: a scratch project and one wired to a
+   * production account deserve different answers about how much one unreviewed
+   * turn may change.
+   */
+  maxToolCalls?: number | null;
+  maxMcpCalls?: number | null;
+  /**
+   * How much of this project's conversation is replayed.
+   *
+   * Per project more obviously than any other budget here: it is this project's
+   * own chat, and how much of it is worth carrying is a fact about this project.
+   */
+  historyBudgetChars?: number | null;
   /**
    * Whether the agent may delete in this project.
    *
@@ -55,8 +77,14 @@ export interface EffectiveAgentSettings {
    * through here only so the settings view has one shape in both scopes.
    */
   mcpServers: McpServerView[];
-  /** How long a turn may run, in seconds. Null → default (300s). */
+  /** How long a turn may run, in seconds. Null → the default. */
   turnTimeout: number | null;
+  /** Operations one turn may queue here. Null → default. */
+  maxToolCalls: number | null;
+  /** MCP tool calls one turn may make here. Null → default. */
+  maxMcpCalls: number | null;
+  /** Characters of this project's conversation replayed. Null → default. */
+  historyBudgetChars: number | null;
   /** Whether the agent may delete modules and variables here. */
   allowDestructive: boolean;
   /** Which fields the project decides itself, for the UI to mark as overridden. */
@@ -96,6 +124,10 @@ export function mergeAgentSettings(
     // project reads the same connections its owner enabled.
     mcpServers: global.mcpServers,
     turnTimeout: overrides.turnTimeout ?? global.turnTimeout,
+    maxToolCalls: overrides.maxToolCalls ?? global.maxToolCalls,
+    maxMcpCalls: overrides.maxMcpCalls ?? global.maxMcpCalls,
+    historyBudgetChars:
+      overrides.historyBudgetChars ?? global.historyBudgetChars,
     // `??` is wrong for a boolean override: a project that deliberately set
     // `false` would fall through to a global `true`. Presence is the question.
     allowDestructive:
@@ -150,6 +182,36 @@ export function parseOverrides(value: unknown): AgentOverrides {
     const t = Number(raw.turnTimeout);
     overrides.turnTimeout =
       Number.isFinite(t) && t >= 30 && t <= 1800 ? Math.round(t) : null;
+  }
+
+  // Out of range reads as "inherit" rather than as a number: this column is JSON
+  // that outlives any one version of the bounds, and a stored 500 must not become
+  // a 500-operation turn just because it was written before the ceiling existed.
+  const budget = (value: unknown, max: number) => {
+    const count = Number(value);
+    return Number.isFinite(count) &&
+      count >= TOOL_CALL_BUDGET_MIN &&
+      count <= max
+      ? Math.round(count)
+      : null;
+  };
+
+  if ("maxToolCalls" in raw) {
+    overrides.maxToolCalls = budget(raw.maxToolCalls, TOOL_CALL_BUDGET_MAX);
+  }
+
+  if ("maxMcpCalls" in raw) {
+    overrides.maxMcpCalls = budget(raw.maxMcpCalls, MCP_CALL_BUDGET_MAX);
+  }
+
+  if ("historyBudgetChars" in raw) {
+    const chars = Number(raw.historyBudgetChars);
+    overrides.historyBudgetChars =
+      Number.isFinite(chars) &&
+      chars >= HISTORY_BUDGET_MIN_CHARS &&
+      chars <= HISTORY_BUDGET_MAX_CHARS
+        ? Math.round(chars)
+        : null;
   }
 
   // Only a real boolean counts. Anything else is dropped rather than coerced,

@@ -69,6 +69,8 @@ interface NestedModule {
   versionTag: string | null;
   resources: NestedResource[];
   references: ModuleReferenceDto[];
+  /** Output names and expressions, so a nested call can be placed in a subnet. */
+  outputs?: { name: string; valueExpression: string | null }[];
   moduleCalls: {
     name: string;
     source: string | null;
@@ -239,6 +241,7 @@ export function ArchitectureTab({
         versionTag: target.versionTag,
         resources: target.resources,
         references: target.references,
+        outputs: target.outputs,
         moduleCalls: target.moduleCalls
           .filter((c) => c.source)
           .map((c) => ({
@@ -528,6 +531,7 @@ export function ArchitectureTab({
         sublabel: node.sublabel,
         icon: node.icon,
         count: node.addresses.length,
+        zone: node.zone,
         attachments: node.attachments?.map((attachment) => ({
           service: attachment.service,
           icon: attachment.icon,

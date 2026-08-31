@@ -555,12 +555,68 @@ export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
  * Attributes that mean "lives inside". Terraform expresses containment as an
  * ordinary reference, so the attribute name is the only thing separating
  * "is placed in this subnet" from "happens to mention it".
+ *
+ * Two kinds of name are mixed here deliberately, because the same table is read
+ * against both kinds of reference. Inside a module the attribute is a resource
+ * argument (`aws_instance.subnet_id`); between modules it is the *input* of the
+ * called module (`module "app" { subnet_id = … }`). The upstream module
+ * ecosystem names those inputs after the arguments they end up on, which is what
+ * makes one table enough — but the plural forms the module convention prefers
+ * (`subnets`, `private_subnets`) do have to be listed as well.
+ *
+ * Subnet groups are containment too, and the indirect kind. A database names a
+ * `db_subnet_group_name`, that group names the subnets, and the group itself is
+ * never drawn — so without this the database had no placement at all, which is
+ * exactly what {@link ARCHITECTURE_MAP}'s note on `aws_db_subnet_group`
+ * ("already said by drawing the database inside them") assumed was happening.
  */
 export const CONTAINMENT_ATTRIBUTES: Record<string, "vpc" | "subnet"> = {
+  // ---- The VPC ----------------------------------------------------------
   vpc_id: "vpc",
+  // The EC2 and security-group modules take the VPC under a qualified name
+  // because they also take a subnet, and `vpc_id` alone would be ambiguous.
+  security_group_vpc_id: "vpc",
+
+  // ---- A subnet ---------------------------------------------------------
   subnet_id: "subnet",
   subnet_ids: "subnet",
+  subnets: "subnet",
+  private_subnets: "subnet",
+  public_subnets: "subnet",
+  database_subnets: "subnet",
+  vpc_subnet_ids: "subnet",
+
+  // ---- A subnet, named through the group that lists them -----------------
+  subnet_group_name: "subnet",
+  db_subnet_group_name: "subnet",
+  cache_subnet_group_name: "subnet",
+  elasticache_subnet_group_name: "subnet",
+  cluster_subnet_group_name: "subnet",
+  redshift_subnet_group_name: "subnet",
 };
+
+/**
+ * Attributes that mean "shares a security boundary with", which in AWS means
+ * "is in the same VPC".
+ *
+ * Weaker than containment and used only as a fallback, but it is the difference
+ * between a database drawn inside its VPC and one floating beside it. A module
+ * that only takes `vpc_security_group_ids` — which is every `db_instance` call
+ * that lets the VPC module build its own subnet group — says nothing about
+ * subnets, yet a security group cannot span VPCs, so the VPC is certain.
+ *
+ * Only ever resolved up to the enclosing VPC frame, never to a subnet: security
+ * groups are VPC-scoped, and reading a subnet out of one would be inventing
+ * placement rather than deriving it.
+ */
+export const VPC_SCOPED_ATTRIBUTES = new Set([
+  "security_group_id",
+  "security_group_ids",
+  "security_groups",
+  "vpc_security_group_ids",
+  "source_security_group_id",
+  "ingress_referenced_security_group_id",
+]);
 
 /**
  * Terraform prefixes whose icon cannot be found by name. Nearly all of them are

@@ -9,8 +9,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@terrablox/ui/dialog";
-import { AlertTriangle, Loader2, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { AlertTriangle, Github, Loader2, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 
 interface DeleteProjectDialogProps {
   projectId: string;
@@ -23,11 +23,18 @@ interface DeleteProjectDialogProps {
 }
 
 /**
- * Confirms deleting a project.
+ * Confirms deleting a project, and says exactly where the line falls.
  *
- * No impact request, unlike the module dialog: everything a project cascades
- * into belongs to that project alone (its graph, its chat, its operation log),
- * so there is nothing to go and look up — the list below is the whole of it.
+ * One action, not a choice. Offering "also delete the repository" was tried and
+ * dropped: it needs an OAuth scope that would let TerraBlox delete any repository
+ * the user owns, for something done a handful of times, and the result is
+ * irreversible on a side we do not own. Somebody who wants the repository gone
+ * does it on GitHub, where that confirmation belongs.
+ *
+ * What the dialog owes the reader instead is the boundary, stated rather than
+ * implied: this removes what TerraBlox knows, the code is in Git and stays there.
+ * No impact request either — everything a project cascades into belongs to that
+ * project alone, so the list below is the whole of it.
  */
 export function DeleteProjectDialog({
   projectId,
@@ -39,6 +46,12 @@ export function DeleteProjectDialog({
 }: DeleteProjectDialogProps) {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A failure left on screen would reappear the next time the dialog opens, on
+  // whichever project that happens to be.
+  useEffect(() => {
+    if (open) setError(null);
+  }, [open]);
 
   const handleDelete = () => {
     setDeleting(true);
@@ -76,10 +89,10 @@ export function DeleteProjectDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-destructive text-sm">
           <div className="flex items-center gap-2 font-medium">
-            <AlertTriangle className="h-4 w-4" />
-            This also removes
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            Removed from TerraBlox
           </div>
 
           <ul className="mt-2 space-y-1">
@@ -87,6 +100,7 @@ export function DeleteProjectDialog({
               "the graph: its blocks and the connections between them",
               "the chat history with the project agent",
               "the record of plans, applies and their outcomes",
+              "the agent settings that applied to this project only",
             ].map((item) => (
               <li className="flex items-start gap-2" key={item}>
                 <span
@@ -99,19 +113,31 @@ export function DeleteProjectDialog({
           </ul>
         </div>
 
-        {/* The Terraform itself lives in Git, so deleting here loses no code. */}
-        <p className="text-sm text-muted-foreground">
-          The repository{" "}
-          {repoFullName ? (
-            <code className="font-mono text-xs">{repoFullName}</code>
-          ) : (
-            "it points at"
-          )}{" "}
-          is left untouched, including every commit TerraBlox made to it.
-        </p>
+        {/* The Terraform itself lives in Git, so deleting here loses no code. Said
+            as its own block rather than a footnote: it is the one thing a person is
+            actually worried about when they hover over a red button. */}
+        <div className="rounded-md border p-3 text-sm">
+          <div className="flex items-center gap-2 font-medium">
+            <Github className="h-4 w-4 shrink-0" />
+            Kept on GitHub
+          </div>
+          <p className="mt-2 text-muted-foreground">
+            {repoFullName ? (
+              <>
+                <code className="font-mono text-xs">{repoFullName}</code> is
+                left untouched, with every commit TerraBlox made to it. Your
+                Terraform is not lost, and another project reading this
+                repository keeps working. Delete the repository on GitHub if you
+                want it gone.
+              </>
+            ) : (
+              "The repository this project points at is left untouched, with every commit TerraBlox made to it."
+            )}
+          </p>
+        </div>
 
         {error ? (
-          <p className="text-sm text-destructive" role="alert">
+          <p className="text-destructive text-sm" role="alert">
             {error}
           </p>
         ) : null}
@@ -136,7 +162,7 @@ export function DeleteProjectDialog({
             ) : (
               <Trash2 className="mr-2 h-4 w-4" />
             )}
-            Delete
+            Delete project
           </Button>
         </DialogFooter>
       </DialogContent>

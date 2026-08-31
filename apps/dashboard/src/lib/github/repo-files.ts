@@ -14,11 +14,15 @@ const GITHUB_API = "https://api.github.com";
 const API_VERSION = "2022-11-28";
 
 export class GithubRequestError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
+  readonly status: number;
+
+  // Assigned rather than declared as a constructor parameter property: the seed
+  // scripts load this tree through Node's strip-only TypeScript loader, which
+  // rejects them, and one of them here made the whole agent module unloadable
+  // from a script.
+  constructor(message: string, status: number) {
     super(message);
+    this.status = status;
     this.name = "GithubRequestError";
   }
 }

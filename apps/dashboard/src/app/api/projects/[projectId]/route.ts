@@ -65,7 +65,21 @@ export async function PATCH(
   return NextResponse.json({ project: toProjectDto(updated) });
 }
 
-/** Deletes the project only. The repository it points at is left untouched. */
+/**
+ * Deletes the project. The repository it points at is never touched.
+ *
+ * Deliberately not offered as a choice. Deleting the repository on GitHub was
+ * considered and dropped: it would need the `delete_repo` OAuth scope, which means
+ * TerraBlox permanently holding the power to delete any of a user's repositories
+ * for something they do a handful of times — and the action is irreversible on a
+ * side we do not own. Somebody who wants the repository gone can do it on GitHub,
+ * where the confirmation belongs.
+ *
+ * Nor is there anything else to clean up. Everything keyed to this project goes
+ * with the row, and because the repository survives, TerraBlox's other references
+ * to it stay correct — another project reading it as its application repository
+ * still reads it fine, so clearing that link would break something that works.
+ */
 export async function DELETE(
   _req: Request,
   { params }: { params: { projectId: string } },

@@ -92,6 +92,13 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
     mod.dependencies,
     // A module cannot usefully link to itself.
     linkCandidates.filter((candidate) => candidate.id !== mod.id),
+    // So `source = "./modules/cluster"` links to the submodule of this same
+    // repository rather than to nothing.
+    {
+      sourceUrl: mod.source?.url ?? mod.url,
+      versionTag: mod.versionTag,
+      terraformRootFolder: mod.terraformRootFolder,
+    },
   );
 
   return {

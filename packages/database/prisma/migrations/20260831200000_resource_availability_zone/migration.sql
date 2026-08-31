@@ -1,0 +1,22 @@
+-- Keeps the `availability_zone` argument of a block, as written.
+--
+-- The architecture diagram can now resolve `count`, so it knows a project's VPC
+-- creates two public subnets rather than one. Two frames are only an improvement
+-- if they can be told apart, and the thing that tells them apart is the zone:
+-- `[0]` and `[1]` are Terraform bookkeeping, `eu-central-1a` and `eu-central-1b`
+-- are the fact a reader is looking for.
+--
+-- An expression rather than a value, like `conditional_on` beside it. Every
+-- upstream module writes it the same way:
+--
+--   availability_zone = length(regexall("^[a-z]{2}-", element(var.azs,
+--     count.index))) > 0 ? element(var.azs, count.index) : null
+--
+-- which resolves once the caller's zone list and the instance index are both in
+-- hand. Storing the resolved zone instead would have baked in one caller's
+-- arguments, and the same module row is shared by every project that calls it.
+--
+-- Nullable with no backfill: null means "no zone, or not analysed yet", and both
+-- lead to a frame labelled by index, which is what these modules already had.
+ALTER TABLE "public"."provider_resources"
+  ADD COLUMN "availability_zone" TEXT;

@@ -1,6 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // `next dev` and `next build` both own `.next`, and running them together makes
+  // each rewrite the other's manifests — the build then fails with
+  // "Cannot find module for page" for every route, including ones nobody touched,
+  // which looks like broken code rather than two processes colliding. Setting
+  // NEXT_DIST_DIR gives a build its own directory so it can be checked without
+  // stopping the dev server. Unset, nothing changes.
+  ...(process.env.NEXT_DIST_DIR ? { distDir: process.env.NEXT_DIST_DIR } : {}),
   transpilePackages: [
     "@terrablox/ui",
     "@terrablox/auth",

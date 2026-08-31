@@ -105,27 +105,43 @@ function findReferencedOutput(
   target: ProjectGraphNode,
   attribute: string,
   source: string,
-): string | null {
+): { sourceOutput: string | null; sourceIndex: number | null } {
+  const nothing = { sourceOutput: null, sourceIndex: null };
+
   const content = target.file ? files.get(target.file) : undefined;
-  if (!content) return null;
+  if (!content) return nothing;
 
   const block = findBlock(content, "module", target.id);
-  if (!block) return null;
+  if (!block) return nothing;
 
   const span = listBlockAttributes(content, block).find(
     (candidate) => candidate.name === attribute,
   );
-  if (!span) return null;
+  if (!span) return nothing;
 
+  // The subscript is optional and only a plain integer counts: `[0]` names an
+  // element, `[count.index]` names a different one on every instance.
   const pattern = new RegExp(
-    `module\\.${escapeForRegExp(source)}\\.([A-Za-z_][A-Za-z0-9_-]*)`,
+    `module\\.${escapeForRegExp(source)}\\.([A-Za-z_][A-Za-z0-9_-]*)(?:\\[(\\d+)\\])?`,
     "g",
   );
-  const names = new Set(
-    [...span.value.matchAll(pattern)].map((match) => match[1] as string),
-  );
 
-  return names.size === 1 ? ([...names][0] as string) : null;
+  const names = new Set<string>();
+  const indices = new Set<number>();
+
+  for (const match of span.value.matchAll(pattern)) {
+    names.add(match[1] as string);
+    if (match[2] !== undefined) indices.add(Number(match[2]));
+  }
+
+  if (names.size !== 1) return nothing;
+
+  return {
+    sourceOutput: [...names][0] as string,
+    // Two different elements of the same output is one wire and no single
+    // element, the same way two outputs is no single output.
+    sourceIndex: indices.size === 1 ? ([...indices][0] as number) : null,
+  };
 }
 
 function escapeForRegExp(value: string): string {
@@ -246,12 +262,7 @@ export function buildProjectGraph(input: BuildProjectGraphInput): ProjectGraph {
     for (const attribute of reference.attributes) {
       linkInto(source, "module", target, "module", {
         targetInput: attribute,
-        sourceOutput: findReferencedOutput(
-          files,
-          targetNode,
-          attribute,
-          source,
-        ),
+        ...findReferencedOutput(files, targetNode, attribute, source),
       });
     }
   }
@@ -268,6 +279,7 @@ export function buildProjectGraph(input: BuildProjectGraphInput): ProjectGraph {
           targetInput: argument,
           // A local has no named output — it *is* the value.
           sourceOutput: null,
+          sourceIndex: null,
         });
       }
     }
@@ -283,6 +295,7 @@ export function buildProjectGraph(input: BuildProjectGraphInput): ProjectGraph {
       linkInto(producer.id, "module", local.id, "local", {
         targetInput: local.id,
         sourceOutput: output,
+        sourceIndex: null,
       });
     }
   }

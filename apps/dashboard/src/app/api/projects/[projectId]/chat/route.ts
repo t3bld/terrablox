@@ -22,7 +22,11 @@ import {
   type AgentPipelineCheck,
   runProjectAgent,
 } from "@/lib/agent/project-agent";
-import { AGENT_PROGRESS_INTERVAL_MS } from "@/lib/agent/runtime-options";
+import {
+  AGENT_MAX_TOOL_CALLS,
+  AGENT_PROGRESS_INTERVAL_MS,
+  renderOperatingRule,
+} from "@/lib/agent/runtime-options";
 import {
   mcpServersForSession,
   REASONING_EFFORTS,
@@ -364,11 +368,23 @@ export async function POST(
       reasoningEffort: resolveEffort(body?.reasoningEffort),
       disabledTools: settings.disabledTools,
       turnTimeout: settings.turnTimeout,
+      maxToolCalls: settings.maxToolCalls,
+      maxMcpCalls: settings.maxMcpCalls,
+      historyBudgetChars: settings.historyBudgetChars,
       allowDestructive: settings.allowDestructive,
       // Curated in the admin panel, defaults in code. Read per turn rather than
       // cached, so an edit takes effect on the next message instead of on the
       // next deploy — which is the entire point of making it editable.
-      operatingRules: curation.operatingRules,
+      //
+      // Rendered here rather than in the curation store, because the number a
+      // rule quotes is this user's budget: the store serves the admin screen,
+      // which edits the text for everyone and knows nobody's settings.
+      operatingRules: curation.operatingRulesRaw.map((rule) =>
+        renderOperatingRule(
+          rule,
+          settings.maxToolCalls ?? AGENT_MAX_TOOL_CALLS,
+        ),
+      ),
       toolDescriptions: Object.fromEntries(
         curation.operations.map((operation) => [
           operation.name,

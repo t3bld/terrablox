@@ -45,7 +45,13 @@ import type {
   ProjectGraphMutation,
   ProjectMutationResult,
 } from "./types";
-import { coerceHclValue, unambiguousSource, wiringScore } from "./wiring";
+import {
+  coerceHclValue,
+  isPassThroughOutput,
+  isWirableInput,
+  unambiguousSource,
+  wiringScore,
+} from "./wiring";
 
 /** Root configurations are rarely huge; the cap only bounds a runaway repo. */
 const MAX_ROOT_FILES = 60;
@@ -360,7 +366,10 @@ function autoWire(
   const wires: Wire[] = [];
 
   for (const variable of parseVariables(target.module.variables)) {
-    if (!variable.required) continue;
+    // Not `required`, which turned out to select almost nothing: 324 of 372
+    // imported modules declare no required variable at all, so this loop used to
+    // do nothing on any real catalogue. See `isWirableInput`.
+    if (!isWirableInput(variable)) continue;
 
     const content = files.get(path) ?? "";
     const block = findBlock(content, "module", target.label);
@@ -371,24 +380,31 @@ function autoWire(
     );
     if (alreadySet) continue;
 
-    const candidates = producers.flatMap((placed) =>
-      parseOutputs(placed.module?.outputs).map((output) => ({
-        producer: placed.label,
-        output: output.name,
-        // A block is often named after what it is (`vpc`), but not always
-        // (`this`), so the module's own name is a second chance at the prefix.
-        score: Math.max(
-          wiringScore(variable.name, output.name, placed.label),
-          placed.module
-            ? wiringScore(
-                variable.name,
-                output.name,
-                libraryModuleName(placed.module),
-              )
-            : 0,
-        ),
-      })),
-    );
+    const candidates = producers.flatMap((placed) => {
+      // The producer's own inputs, so an output that merely echoes one of them
+      // is not mistaken for that module producing the value. See
+      // `isPassThroughOutput`.
+      const placedInputs = parseVariables(placed.module?.variables);
+
+      return parseOutputs(placed.module?.outputs)
+        .filter((output) => !isPassThroughOutput(output.name, placedInputs))
+        .map((output) => ({
+          producer: placed.label,
+          output: output.name,
+          // A block is often named after what it is (`vpc`), but not always
+          // (`this`), so the module's own name is a second chance at the prefix.
+          score: Math.max(
+            wiringScore(variable.name, output.name, placed.label),
+            placed.module
+              ? wiringScore(
+                  variable.name,
+                  output.name,
+                  libraryModuleName(placed.module),
+                )
+              : 0,
+          ),
+        }));
+    });
 
     const choice = unambiguousSource(candidates);
     if (!choice) continue;
@@ -556,6 +572,10 @@ async function mutate(
       return { message: renameModule(files, mutation.name, mutation.newName) };
     case "set-argument":
       return { message: setArgument(files, mutation) };
+    case "set-arguments":
+      return {
+        message: setArguments(files, mutation.name, mutation.values),
+      };
     case "auto-connect":
       return autoConnect(files, project, mutation.name);
     case "add-local":
@@ -765,25 +785,52 @@ function setArgument(
   files: Map<string, string>,
   mutation: Extract<ProjectGraphMutation, { action: "set-argument" }>,
 ): string {
-  const path = fileOfModule(files, mutation.name);
+  return setArguments(files, mutation.name, [
+    { input: mutation.input, value: mutation.value },
+  ]);
+}
+
+/**
+ * Writes several arguments of one module, and returns one summary for the lot.
+ *
+ * Each write is applied to the text the previous one produced, because
+ * `setBlockAttribute` works on offsets that the write before it invalidated.
+ */
+function setArguments(
+  files: Map<string, string>,
+  name: string,
+  values: ReadonlyArray<{ input: string; value: string }>,
+): string {
+  const path = fileOfModule(files, name);
   if (!path) {
-    throw new MutationError(`No module "${mutation.name}" in this project`);
+    throw new MutationError(`No module "${name}" in this project`);
+  }
+  if (values.length === 0) {
+    throw new MutationError(`No arguments given for "${name}"`);
   }
 
-  const content = files.get(path) ?? "";
-  const updated = setBlockAttribute(content, {
-    type: "module",
-    label: mutation.name,
-    name: mutation.input,
-    value: coerceHclValue(mutation.value),
-  });
+  let content = files.get(path) ?? "";
 
-  if (updated === null) {
-    throw new MutationError(`No module "${mutation.name}" in this project`);
+  for (const entry of values) {
+    const updated = setBlockAttribute(content, {
+      type: "module",
+      label: name,
+      name: entry.input,
+      value: coerceHclValue(entry.value),
+    });
+
+    if (updated === null) {
+      throw new MutationError(`No module "${name}" in this project`);
+    }
+    content = updated;
   }
-  files.set(path, updated);
 
-  return `Set ${mutation.name}.${mutation.input}`;
+  files.set(path, content);
+
+  const first = values[0];
+  return values.length === 1 && first
+    ? `Set ${name}.${first.input}`
+    : `Set ${values.length} arguments on ${name} (${values.map((entry) => entry.input).join(", ")})`;
 }
 
 async function autoConnect(

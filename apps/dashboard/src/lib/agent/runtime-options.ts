@@ -22,11 +22,16 @@ export type ReasoningEffortValue = (typeof REASONING_EFFORTS)[number];
 /**
  * What a null `turnTimeout` means, in seconds.
  *
- * Five minutes is generous for most prompts. `project-agent.ts` derives its
- * millisecond constant from this so that "no choice" and "five minutes" cannot
- * drift apart.
+ * Thirty minutes, which is also the ceiling: the default is the most generous
+ * setting and the dial only turns down. That is the right way round for a limit
+ * whose job is to stop a *stuck* turn rather than to ration a working one — a turn
+ * killed while it was still making progress produces nothing at all, no commit and
+ * no explanation, which is a worse outcome than one that ran long.
+ *
+ * `project-agent.ts` derives its millisecond constant from this so that "no
+ * choice" and the number cannot drift apart.
  */
-export const DEFAULT_TURN_TIMEOUT_SECONDS = 300;
+export const DEFAULT_TURN_TIMEOUT_SECONDS = 1800;
 
 /**
  * Bounds on a turn timeout.
@@ -90,31 +95,77 @@ export const FALLBACK_MODELS: ReadonlyArray<{
 ];
 
 /**
- * How many entries of a turn we are willing to record and replay.
+ * How many entries of a turn we are willing to record.
  *
- * A cap on the *record*, and nothing more — worth stating plainly, because it used
- * to be presented as a limit on the agent. Overflow drops the step entry; the turn
- * carries on. What stops a turn is {@link AGENT_MAX_TOOL_CALLS}.
+ * A cap on the *record*, and nothing more — worth stating plainly, because it is
+ * routinely read as a limit on the agent. Overflow drops the entry; the turn
+ * carries on. Nothing here bounds the model's loop either: that runs inside the
+ * runtime's `sendAndWait`, and what ends a turn is the operation budget refusing a
+ * call, the turn timeout, or the model deciding it is done.
  *
- * Not a setting: raising it would only let a user make their own transcript
- * unreadable. Exported so the settings screen can state the real number.
+ * Was 40, which was far below what one turn legitimately produces and therefore
+ * lost the very thing the record exists for. A turn that built a ten-module stack
+ * spent its whole hundred-operation budget, and the trail held the first ten
+ * lookups, ten additions and two edits before it stopped — so eighty of the
+ * hundred operations, and with them the reason the turn ran out, appeared nowhere.
+ * Reading it back, the turn looked like it had done a quarter of the work.
+ *
+ * 500 sits above what the real budgets allow: a hundred operations, a hundred MCP
+ * calls and forty repository reads come to 240 entries, and the lookups and
+ * reasoning summaries around them fit in what is left. It is a backstop against a
+ * looping turn writing an unbounded row, not a rationing decision.
+ *
+ * Still not a setting. Every number a user might want to turn down — operations,
+ * MCP calls, replayed history — bounds something that costs them a commit, a
+ * request or a token. This one bounds a JSON column, and a smaller value buys them
+ * nothing but a shorter explanation of what happened.
  */
-export const AGENT_MAX_STEPS = 40;
+export const AGENT_MAX_STEPS = 500;
+
+/**
+ * How many reasoning summaries one turn records, out of {@link AGENT_MAX_STEPS}.
+ *
+ * The trail carries two different things. A tool entry is the audit record of a
+ * change that reached the repository; a thought is the model narrating. Only the
+ * first has to survive, so only the second gets a cap of its own — otherwise a
+ * chatty turn could spend the whole record on commentary and leave the reader
+ * unable to see what was committed.
+ *
+ * Comfortably above a normal turn's narration, so in practice it only bites when a
+ * model has started talking to itself.
+ */
+export const AGENT_MAX_THOUGHTS = 120;
 
 /**
  * How many operations one turn may queue.
  *
- * This is the real budget: the call past the limit is refused, with a reason the
- * model can report, so a turn that has started looping ends by answering rather
- * than by timing out. It sits above any plausible single request — building a
- * small stack from nothing is a handful of modules and their wiring — so hitting
- * it is a signal that something went wrong, not that the user asked for a lot.
+ * The real budget: the call past the limit is refused, with a reason the model can
+ * report, so a turn that has started looping ends by answering rather than by
+ * timing out.
  *
- * Not a setting either, and for a sharper reason than the record cap: every queued
- * operation becomes a commit in the user's repository after the turn. A budget a
- * user could raise is a budget an agent having a bad day can spend.
+ * The default is the ceiling, so this dial only turns down. Deliberate — the
+ * budget exists to convert a loop into a report, not to ration a turn that is
+ * working, and a request like "build me a stack" legitimately spends dozens of
+ * operations. What makes lowering it meaningful is the other end: every queued
+ * operation becomes a commit after the turn, so the number is the size of the
+ * largest change one unreviewed turn can make. Set to 1, the agent stops and
+ * reports after every single edit.
  */
-export const AGENT_MAX_TOOL_CALLS = 25;
+export const AGENT_MAX_TOOL_CALLS = 100;
+
+export const TOOL_CALL_BUDGET_MIN = 1;
+export const TOOL_CALL_BUDGET_MAX = 100;
+
+/**
+ * The budgets offered in the settings dropdowns.
+ *
+ * A picker rather than a number field, matching the turn timeout: every value in
+ * range is accepted by the API, but a list cannot be typed wrong, needs no error
+ * state, and nobody has an opinion about 23 versus 25.
+ */
+export const TOOL_CALL_BUDGET_CHOICES: readonly number[] = [
+  1, 5, 10, 25, 50, 100,
+];
 
 /**
  * How many MCP tool calls one turn may make.
@@ -127,16 +178,20 @@ export const AGENT_MAX_TOOL_CALLS = 25;
  * documentation properly had nothing left to build with — the same mistake the
  * application-repository reads already have their own ceiling to avoid.
  *
- * It still needs a ceiling, and a lower one than a read of our own: the request
- * leaves our network, and a model that has decided to search the same
- * documentation thirty times has stopped making progress. Refusing with a reason
- * lets it report back; without a limit it can only run into the turn timeout,
- * which looks to the user like a hang.
- *
- * Not a setting. The number is generous for any real question, and raising it
- * would only lengthen a loop.
+ * It still needs a ceiling rather than none: the request leaves our network, and
+ * without a limit a model stuck on a search can only run into the turn timeout,
+ * which reaches the user as a hang rather than as an answer. The default is that
+ * ceiling, so the dial turns down for anyone who wants a tighter leash on an
+ * outside server and never up into an unbounded loop.
  */
-export const AGENT_MAX_MCP_CALLS = 20;
+export const AGENT_MAX_MCP_CALLS = 100;
+
+export const MCP_CALL_BUDGET_MIN = 1;
+export const MCP_CALL_BUDGET_MAX = 100;
+
+export const MCP_CALL_BUDGET_CHOICES: readonly number[] = [
+  1, 5, 10, 25, 50, 100,
+];
 
 /**
  * The sentences that tell the agent how to work, before any project detail.
@@ -162,9 +217,20 @@ export const DEFAULT_OPERATING_RULES: readonly string[] = [
   "Keep replies short and concrete. Say what you changed, not how the tools work.",
 ];
 
-/** Substitutes the facts an edited rule must not be able to misstate. */
-export function renderOperatingRule(rule: string): string {
-  return rule.replace("{maxToolCalls}", String(AGENT_MAX_TOOL_CALLS));
+/**
+ * Substitutes the facts an edited rule must not be able to misstate.
+ *
+ * The budget is passed in rather than read from the constant, because it is a
+ * setting now: a rule telling the agent it may queue 25 changes, sent to a user
+ * who lowered the budget to 5, would be the prompt lying about what the code will
+ * allow. Omitted falls back to the default, which is right for the admin preview —
+ * that screen edits the rules for everyone and belongs to no one user.
+ */
+export function renderOperatingRule(
+  rule: string,
+  maxToolCalls: number = AGENT_MAX_TOOL_CALLS,
+): string {
+  return rule.replace("{maxToolCalls}", String(maxToolCalls));
 }
 
 /**
@@ -182,8 +248,45 @@ export function renderOperatingRule(rule: string): string {
  *
  * ~24k characters is roughly six thousand tokens: dozens of turns, and small
  * next to the graph and the module library that travel with it.
+ *
+ * The default rather than a law. How much of its own history a project needs is a
+ * property of the project: a long-running one where decisions were argued out in
+ * chat wants more, a scratch one wants none of it in the way.
  */
 export const AGENT_HISTORY_BUDGET_CHARS = 24_000;
+
+/**
+ * Bounds on the replayed conversation, in characters.
+ *
+ * The floor keeps the newest exchange whole — below a couple of thousand
+ * characters the agent would lose the answer it just gave, which reads as amnesia
+ * rather than as a budget. The ceiling exists because the transcript shares the
+ * model's context window with the graph, the module library and the ports: a
+ * budget large enough to crowd those out would trade the project the agent is
+ * editing for the conversation about it.
+ */
+export const HISTORY_BUDGET_MIN_CHARS = 2_000;
+export const HISTORY_BUDGET_MAX_CHARS = 120_000;
+
+/**
+ * The budgets offered in the dropdown, labelled in the unit people think in.
+ *
+ * Characters rather than messages, for the reason the budget itself is in
+ * characters — eight short answers and eight long ones are not the same amount of
+ * context — but nobody reasons in units of 24000, so the labels say roughly how
+ * much conversation that is.
+ */
+export const HISTORY_BUDGET_CHOICES: ReadonlyArray<{
+  chars: number;
+  label: string;
+}> = [
+  { chars: 4_000, label: "~4k characters — the last few messages" },
+  { chars: 12_000, label: "~12k characters" },
+  { chars: 24_000, label: "~24k characters — dozens of turns" },
+  { chars: 48_000, label: "~48k characters" },
+  { chars: 80_000, label: "~80k characters" },
+  { chars: 120_000, label: "~120k characters — a whole project's chat" },
+];
 
 /**
  * How often the running turn's progress is written to the database, in ms.

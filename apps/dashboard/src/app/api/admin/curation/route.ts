@@ -8,6 +8,7 @@ import { HARNESS_ELEMENTS, HARNESS_PLANES } from "@/lib/agent/harness-model";
 import { AGENT_KNOWLEDGE } from "@/lib/agent/knowledge";
 import {
   AGENT_HISTORY_BUDGET_CHARS,
+  AGENT_MAX_MCP_CALLS,
   AGENT_MAX_STEPS,
   AGENT_MAX_TOOL_CALLS,
   DEFAULT_TURN_TIMEOUT_SECONDS,
@@ -151,7 +152,11 @@ export async function GET() {
       })),
       fallbackModels: FALLBACK_MODELS.map((model) => model.id),
       limits: {
-        maxToolCalls: AGENT_MAX_TOOL_CALLS,
+        // A default rather than a ceiling since the budgets became settings, and
+        // named so: this screen edits the rules for everyone, and `{maxToolCalls}`
+        // in a rule is substituted per user with whatever that person chose.
+        defaultMaxToolCalls: AGENT_MAX_TOOL_CALLS,
+        defaultMaxMcpCalls: AGENT_MAX_MCP_CALLS,
         maxRecordedSteps: AGENT_MAX_STEPS,
         historyBudgetChars: AGENT_HISTORY_BUDGET_CHARS,
         defaultTurnTimeoutSeconds: DEFAULT_TURN_TIMEOUT_SECONDS,

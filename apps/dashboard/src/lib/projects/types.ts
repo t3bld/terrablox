@@ -102,6 +102,16 @@ export interface ProjectGraphLink {
   targetInput: string;
   /** Output it reads, when the expression names one plainly. */
   sourceOutput: string | null;
+  /**
+   * The element it reads, when the output is a list and the expression subscripts
+   * it plainly: `module.vpc.public_subnets[0]` is 0.
+   *
+   * Null for an unsubscripted or computed reference. The canvas ignores it — one
+   * wire is one wire however it is indexed — but the architecture level draws one
+   * frame per availability zone, and this is what says which of them a box is in
+   * rather than leaving it to a convention.
+   */
+  sourceIndex: number | null;
 }
 
 export interface ProjectGraphEdge {
@@ -173,6 +183,20 @@ export type ProjectGraphMutation =
   | { action: "rename-module"; name: string; newName: string }
   /** Sets an argument to a literal or an expression the user typed. */
   | { action: "set-argument"; name: string; input: string; value: string }
+  /**
+   * Several arguments of one module, in one edit.
+   *
+   * The canvas never needs this — its inspector edits one field at a time — but
+   * the agent does. Configuring a database is a dozen values, and as a dozen
+   * mutations that was a dozen commits and a dozen units of a budget whose whole
+   * purpose is to bound how much one unreviewed turn changes. It is one change to
+   * one block, so it counts as one.
+   */
+  | {
+      action: "set-arguments";
+      name: string;
+      values: Array<{ input: string; value: string }>;
+    }
   /** Fills a module's required inputs from unambiguous matches on the canvas. */
   | { action: "auto-connect"; name: string }
   /**

@@ -217,13 +217,18 @@ function collectResourcesOfKind(
     if (!isRecord(byName)) continue;
 
     for (const [name, raw] of Object.entries(byName)) {
+      const body = firstBody(raw);
+
       out.push({
         kind,
         type,
         name,
         provider: providerFromResourceType(type),
         file,
-        conditionalOn: readMultiplicityGuard(firstBody(raw)),
+        conditionalOn: readMultiplicityGuard(body),
+        // Unwrapped so it is an expression rather than `${…}` around one, which
+        // is how the evaluator and the UI both want to see it.
+        availabilityZone: unwrapExpression(body["availability_zone"]),
       });
     }
   }

@@ -41,14 +41,17 @@ export async function POST(request: Request) {
   }
 
   try {
-    const server = await addMcpServer(userId, {
+    const { server, toolsProblem } = await addMcpServer(userId, {
       name: body.name,
       url: body.url,
       transport: typeof body.transport === "string" ? body.transport : "http",
       headers,
     });
 
-    return NextResponse.json(server, { status: 201 });
+    // 201 even when the tool fetch failed: the server *was* added, and the client
+    // has to be able to tell "nothing was stored" from "stored, but its catalogue
+    // could not be read" — the second is fixed with a Refresh, not a re-add.
+    return NextResponse.json({ ...server, toolsProblem }, { status: 201 });
   } catch (error) {
     if (error instanceof AgentSettingsError) {
       return NextResponse.json({ error: error.message }, { status: 400 });

@@ -403,10 +403,15 @@ export function ChatPanel({
 
           {/* Scoped to this project: the same view, but every change here is an
               override on this project rather than an edit to the defaults. The
-              callback is what keeps the composer's picker in step. */}
+              callback is what keeps the composer's picker in step.
+
+              `withHeading={false}` because the dialog above already says "Agent
+              Harness" — with it on, the same two words appeared twice with a card
+              border between them. */}
           <AgentHarness
             onChanged={() => void loadSelection()}
             projectId={projectId}
+            withHeading={false}
           />
         </DialogContent>
       </Dialog>

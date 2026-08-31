@@ -40,8 +40,14 @@ import type {
   ProjectGraphNode,
 } from "@/lib/projects/types";
 import {
+  answersNetworkInput,
   coerceHclValue,
+  isPassThroughOutput,
+  isVpcScopedAttribute,
+  isWirableInput,
   MIN_WIRING_SCORE,
+  networkRelationOf,
+  providesNetworkShape,
   unambiguousSource,
   wiringScore,
 } from "@/lib/projects/wiring";
@@ -79,24 +85,61 @@ export interface ProjectedLocal {
 }
 
 /**
- * Something wrong with the projected configuration.
+ * How badly wrong a problem is, in the terms that decide what to do about it.
  *
- * `blocking` separates "this will not plan" from "this looks unintended". Both
- * are worth reporting; only the first is worth a turn refusing to end.
+ * Three levels rather than a boolean, and the middle one is the reason. It used to
+ * be `blocking: boolean`, so an unwired load balancer had to be filed either as
+ * "this will not plan" — untrue, every input has a default — or as advice, next to
+ * "this local is unused". Filed as advice it was ignored, and the verdict on a
+ * stack with no wiring at all read "Nothing left unfilled".
+ *
+ *   blocking    `terraform plan` fails. A misspelt input, a dangling reference.
+ *   incomplete  it plans, it applies, and it builds something that cannot work:
+ *               a service in no subnet, a database no network can reach.
+ *   advisory    it works and looks unintended.
  */
+export type ProblemSeverity = "blocking" | "incomplete" | "advisory";
+
+/** Something wrong with the projected configuration. */
 export interface ProjectionProblem {
   kind:
     | "missing-input"
+    | "unwired-input"
     | "unknown-argument"
     | "unknown-output"
     | "dangling-module"
     | "dangling-local"
     | "type-mismatch"
     | "unused-local";
-  blocking: boolean;
+  severity: ProblemSeverity;
   /** One sentence, addressed to whoever has to fix it. */
   message: string;
 }
+
+/**
+ * How many candidate sources one unwired input is offered.
+ *
+ * A VPC module exposes seven kinds of subnet, so `subnets` genuinely has seven
+ * answers and the choice between them is the question. Past a handful the list
+ * stops being a choice and starts being the reason nobody reads the review.
+ */
+const MAX_SUGGESTED_SOURCES = 6;
+
+/** An input nothing fills, and what could fill it. */
+export interface UnwiredInput {
+  module: string;
+  /** One input name, or several joined by "or" when any of them would do. */
+  input: string;
+  kind: "wirable" | "network";
+  sources: string[];
+}
+
+/** Worst first, so a caller can read down and stop when it stops mattering. */
+const SEVERITY_ORDER: Record<ProblemSeverity, number> = {
+  blocking: 0,
+  incomplete: 1,
+  advisory: 2,
+};
 
 export class GraphProjection {
   private readonly modules = new Map<string, ProjectedModule>();
@@ -277,6 +320,12 @@ export class GraphProjection {
         this.set(mutation.name, mutation.input, coerceHclValue(mutation.value));
         break;
 
+      case "set-arguments":
+        for (const entry of mutation.values) {
+          this.set(mutation.name, entry.input, coerceHclValue(entry.value));
+        }
+        break;
+
       case "auto-connect":
         this.autoWire(mutation.name);
         break;
@@ -357,45 +406,212 @@ export class GraphProjection {
     }
   }
 
+  /** Every other placed module, i.e. the possible sources for one module's inputs. */
+  private producersFor(name: string): ProjectedModule[] {
+    return [...this.modules.values()].filter((module) => module.name !== name);
+  }
+
   /**
-   * Fills a module's unset required inputs from unambiguous matches.
+   * How well each output of each other module fits one input.
    *
-   * The same rule as the canvas: one clear source or none at all. A wrong wire is
-   * silent — it plans, it applies, and it builds the wrong thing.
+   * Shared by the wiring and the reporting paths so they cannot disagree about
+   * what counts as a match.
    */
-  private autoWire(name: string): void {
-    const target = this.modules.get(name);
-    if (!target) return;
-
-    const producers = [...this.modules.values()].filter(
-      (module) => module.name !== name,
-    );
-    if (producers.length === 0) return;
-
-    for (const input of target.inputs) {
-      if (!input.required) continue;
-      if (target.values[input.name] !== undefined) continue;
-
-      const candidates = producers.flatMap((producer) =>
-        producer.outputs.map((output) => ({
+  private candidatesFor(
+    input: string,
+    producers: ProjectedModule[],
+  ): Array<{ producer: string; output: string; score: number }> {
+    return producers.flatMap((producer) =>
+      producer.outputs
+        // An output that mirrors one of the producer's own inputs is that value
+        // travelling through, not that module producing it.
+        .filter((output) => !isPassThroughOutput(output.name, producer.inputs))
+        .map((output) => ({
           producer: producer.name,
           output: output.name,
           // A block is often named after what it is (`vpc`), but not always
           // (`this`), so the module's own name is a second chance at the prefix.
           score: Math.max(
-            wiringScore(input.name, output.name, producer.name),
+            wiringScore(input, output.name, producer.name),
             producer.moduleName
-              ? wiringScore(input.name, output.name, producer.moduleName)
+              ? wiringScore(input, output.name, producer.moduleName)
               : 0,
           ),
         })),
-      );
+    );
+  }
 
-      const choice = unambiguousSource(candidates);
+  /**
+   * Fills a module's unset inputs from unambiguous matches.
+   *
+   * The same rule as the canvas: one clear source or none at all. A wrong wire is
+   * silent — it plans, it applies, and it builds the wrong thing.
+   *
+   * No longer limited to *required* inputs, because that limit made this dead
+   * code: almost no upstream module declares a required variable, so every wire it
+   * could have drawn was skipped. {@link isWirableInput} is the replacement, and it
+   * keeps the guarantee that mattered — a bare `name` is never filled from
+   * somebody else's `name`.
+   */
+  private autoWire(name: string): void {
+    const target = this.modules.get(name);
+    if (!target) return;
+
+    const producers = this.producersFor(name);
+    if (producers.length === 0) return;
+
+    for (const input of target.inputs) {
+      if (!isWirableInput(input)) continue;
+      if (target.values[input.name] !== undefined) continue;
+
+      const choice = unambiguousSource(
+        this.candidatesFor(input.name, producers),
+      );
       if (!choice) continue;
 
       target.values[input.name] = `module.${choice.producer}.${choice.output}`;
     }
+  }
+
+  /**
+   * Inputs left unset that something on this canvas could fill.
+   *
+   * The finding the agent had no way to make. `computeGaps` reports required
+   * inputs only, and with 324 of 372 library modules declaring none it reports
+   * nothing — so `review_project` said "Nothing left unfilled" about a stack whose
+   * load balancer, ECS service and database were wired to nothing at all, and the
+   * agent had no reason to disbelieve it.
+   *
+   * Two kinds, and the difference is whether the answer is known:
+   *
+   *   `wirable`  exactly one output fits by name, so this is a wire waiting to be
+   *              drawn. `auto_connect` draws precisely these.
+   *   `network`  the module is attached to no VPC or no subnet, the canvas offers
+   *              one, and the names do not match closely enough to choose. Grouped
+   *              per relation rather than per input, because several inputs carry
+   *              the same fact and any one of them settles it.
+   *
+   * Nothing here blocks `terraform plan` — every one of these inputs has a
+   * default. They stop the infrastructure from working, which is a different and
+   * quieter kind of broken.
+   */
+  unwiredInputs(): UnwiredInput[] {
+    const found: UnwiredInput[] = [];
+
+    for (const target of this.modules.values()) {
+      if (!target.portsKnown) continue;
+      const producers = this.producersFor(target.name);
+      if (producers.length === 0) continue;
+
+      const certainSource = (input: string) => {
+        const choice = unambiguousSource(this.candidatesFor(input, producers));
+        return choice ? `${choice.producer}.${choice.output}` : null;
+      };
+
+      /** Unset inputs per network relation, and the relations already satisfied. */
+      const open = new Map<string, string[]>();
+      const attached = new Set<string>();
+
+      for (const input of target.inputs) {
+        // A security group cannot span VPCs, so a module handed one is in that
+        // VPC. The same inference the architecture diagram draws with, and here it
+        // is what stops a module wired through `security_group_ids` from being
+        // told it belongs to no network.
+        if (
+          isVpcScopedAttribute(input.name) &&
+          target.values[input.name] !== undefined
+        ) {
+          attached.add("vpc");
+          continue;
+        }
+
+        const relation = networkRelationOf(input.name);
+        if (!relation) continue;
+
+        // Checked before the self-provider exemption below, or a module attached
+        // through the one input it also exposes would count as attached by
+        // nothing: ElastiCache both takes and returns `subnet_group_name`.
+        if (target.values[input.name] !== undefined) {
+          attached.add(relation);
+          continue;
+        }
+
+        // A module that hands this kind of value out is not asking for one: the
+        // VPC module takes `elasticache_subnet_group_name` to name the group it
+        // creates.
+        if (providesNetworkShape(target.outputs, input.name)) continue;
+
+        open.set(relation, [...(open.get(relation) ?? []), input.name]);
+      }
+
+      // Required inputs outside the network vocabulary: reported only when one
+      // source is certain, since there is nothing else useful to say about them.
+      for (const input of target.inputs) {
+        if (target.values[input.name] !== undefined) continue;
+        if (networkRelationOf(input.name)) continue;
+        if (!isWirableInput(input)) continue;
+
+        const source = certainSource(input.name);
+        if (source) {
+          found.push({
+            module: target.name,
+            input: input.name,
+            kind: "wirable",
+            sources: [source],
+          });
+        }
+      }
+
+      for (const [relation, inputs] of open) {
+        if (attached.has(relation)) continue;
+
+        // One certain source settles the relation outright; that is the `vpc_id`
+        // case, and it is the one `auto_connect` can finish by itself.
+        const certain = inputs
+          .map((input) => ({ input, source: certainSource(input) }))
+          .find((entry) => entry.source !== null);
+
+        if (certain?.source) {
+          found.push({
+            module: target.name,
+            input: certain.input,
+            kind: "wirable",
+            sources: [certain.source],
+          });
+          continue;
+        }
+
+        /**
+         * Pass-throughs are *not* excluded here, unlike in `candidatesFor`.
+         *
+         * The VPC module takes `public_subnets` as a list of CIDR blocks and
+         * returns `public_subnets` as a list of subnet ids — the same name for two
+         * different values — so the asymmetry that identifies an echo elsewhere
+         * would here discard the only real answer. And these are offered for a
+         * decision rather than applied, where dropping a candidate costs more than
+         * listing one too many.
+         */
+        const sources = producers.flatMap((producer) =>
+          producer.outputs
+            .filter((output) =>
+              inputs.some((input) => answersNetworkInput(input, output.name)),
+            )
+            .map((output) => `${producer.name}.${output.name}`),
+        );
+        // Silent when there is no network to attach to: a project without a VPC
+        // module is not a project that forgot to wire one.
+        if (sources.length === 0) continue;
+
+        found.push({
+          module: target.name,
+          input: [...inputs].sort().join(" or "),
+          kind: "network",
+          sources: sources.slice(0, MAX_SUGGESTED_SOURCES),
+        });
+      }
+    }
+
+    return found;
   }
 
   // ---- Checking ----------------------------------------------------------
@@ -447,10 +663,22 @@ export class GraphProjection {
 
       problems.push({
         kind: "missing-input",
-        blocking: true,
+        severity: "blocking",
         message: `${gap.node}.${gap.input}${gap.type ? ` (${gap.type})` : ""} is required and unset${
           from.length ? `; could come from ${from.join(" or ")}` : ""
         }.`,
+      });
+    }
+
+    // The finding `computeGaps` structurally cannot make; see `unwiredInputs`.
+    for (const unwired of this.unwiredInputs()) {
+      problems.push({
+        kind: "unwired-input",
+        severity: "incomplete",
+        message:
+          unwired.kind === "wirable"
+            ? `${unwired.module}.${unwired.input} is unset and ${unwired.sources[0]} fits it by name. Wire it, or say why it should stay empty.`
+            : `${unwired.module}.${unwired.input} is unset, so ${unwired.module} is not attached to any network. Candidates: ${unwired.sources.join(", ")} — the names do not match closely enough to pick one, so choose or ask.`,
       });
     }
 
@@ -465,7 +693,7 @@ export class GraphProjection {
           );
           problems.push({
             kind: "unknown-argument",
-            blocking: true,
+            severity: "blocking",
             message: `${module.name} has no input called "${input}"${
               suggestion ? `; did you mean "${suggestion}"?` : ""
             } Terraform rejects an undeclared argument.`,
@@ -479,7 +707,7 @@ export class GraphProjection {
         if (mismatch) {
           problems.push({
             kind: "type-mismatch",
-            blocking: true,
+            severity: "blocking",
             message: `${module.name}.${input} ${mismatch}`,
           });
         }
@@ -499,12 +727,14 @@ export class GraphProjection {
     for (const name of this.unusedLocals()) {
       problems.push({
         kind: "unused-local",
-        blocking: false,
+        severity: "advisory",
         message: `local.${name} is not read anywhere. Wire it into an input or remove it.`,
       });
     }
 
-    return problems.sort((a, b) => Number(b.blocking) - Number(a.blocking));
+    return problems.sort(
+      (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
+    );
   }
 
   /** References in one expression that point at something that is not there. */
@@ -521,7 +751,7 @@ export class GraphProjection {
         const suggestion = closestName(name, this.moduleNames());
         problems.push({
           kind: "dangling-module",
-          blocking: true,
+          severity: "blocking",
           message: `${where} reads module.${name}, which does not exist${
             suggestion ? `; did you mean "${suggestion}"?` : ""
           }.`,
@@ -538,7 +768,7 @@ export class GraphProjection {
         const suggestion = closestName(output, names);
         problems.push({
           kind: "unknown-output",
-          blocking: true,
+          severity: "blocking",
           // The real names, not only the nearest one. A suggestion is a guess that
           // often misses — `subnet_ids` is nowhere near `private_subnets` — and a
           // message that then says nothing leaves the only fix to another guess.
@@ -554,7 +784,7 @@ export class GraphProjection {
       const suggestion = closestName(name, this.localNames());
       problems.push({
         kind: "dangling-local",
-        blocking: true,
+        severity: "blocking",
         message: `${where} reads local.${name}, which does not exist${
           suggestion ? `; did you mean "${suggestion}"?` : ""
         }.`,

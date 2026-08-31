@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@terrablox/ui/button";
+import { cn } from "@terrablox/ui/lib/utils";
 import { ExternalLink, X } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -17,12 +18,27 @@ export function GraphDetailPanel({
   subtitle,
   badges,
   onClose,
+  className,
+  mono = true,
   children,
 }: {
   title: string;
   subtitle?: ReactNode;
   badges?: ReactNode;
   onClose: () => void;
+  /**
+   * Overrides the height and width, for a canvas that is not the module page's.
+   *
+   * The defaults are measured against that page's chrome, so a panel beside a
+   * fixed-height diagram elsewhere would either tower over it or be cut off.
+   */
+  className?: string;
+  /**
+   * Whether the title is an address. True here because most callers show one —
+   * `aws_s3_bucket.this` is read character by character. A panel titled with
+   * prose passes false.
+   */
+  mono?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -31,20 +47,32 @@ export function GraphDetailPanel({
     // controls above and hide a third of the canvas.
     <aside
       aria-label={`Details for ${title}`}
-      className="flex h-[calc(100vh-28rem)] min-h-[26rem] w-full shrink-0 flex-col overflow-hidden rounded-lg border bg-card lg:w-80 xl:w-96"
+      className={cn(
+        "flex h-[calc(100vh-28rem)] min-h-[26rem] w-full shrink-0 flex-col overflow-hidden rounded-lg border bg-card lg:w-80 xl:w-96",
+        className,
+      )}
     >
       <div className="flex items-start justify-between gap-2 border-b p-4">
         <div className="min-w-0 space-y-2">
-          <h3 className="break-all font-mono font-semibold text-sm">{title}</h3>
-          {badges || subtitle ? (
-            <div className="flex flex-wrap items-center gap-2">
-              {badges}
-              {subtitle ? (
-                <span className="text-muted-foreground text-xs">
-                  {subtitle}
-                </span>
-              ) : null}
-            </div>
+          <h3
+            className={cn(
+              "break-all font-semibold text-sm",
+              mono && "font-mono",
+            )}
+          >
+            {title}
+          </h3>
+
+          {/* Badges beside each other, the subtitle on its own line below them.
+              They used to share one row, which put a sentence next to a row of
+              pills and left it reading as another pill — and a long one wrapped
+              into the badges rather than under them. */}
+          {badges ? (
+            <div className="flex flex-wrap items-center gap-2">{badges}</div>
+          ) : null}
+
+          {subtitle ? (
+            <p className="text-muted-foreground text-xs">{subtitle}</p>
           ) : null}
         </div>
         <Button

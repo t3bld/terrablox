@@ -103,6 +103,9 @@ export async function PATCH(request: Request) {
     model?: unknown;
     reasoningEffort?: unknown;
     turnTimeout?: unknown;
+    maxToolCalls?: unknown;
+    maxMcpCalls?: unknown;
+    historyBudgetChars?: unknown;
     allowDestructive?: unknown;
   };
 
@@ -130,6 +133,18 @@ export async function PATCH(request: Request) {
   if ("turnTimeout" in body) {
     runtime.turnTimeout = body.turnTimeout as number | string | null;
   }
+  if ("maxToolCalls" in body) {
+    runtime.maxToolCalls = body.maxToolCalls as number | string | null;
+  }
+  if ("maxMcpCalls" in body) {
+    runtime.maxMcpCalls = body.maxMcpCalls as number | string | null;
+  }
+  if ("historyBudgetChars" in body) {
+    runtime.historyBudgetChars = body.historyBudgetChars as
+      | number
+      | string
+      | null;
+  }
 
   const hasRuntime = Object.keys(runtime).length > 0;
 
@@ -146,7 +161,7 @@ export async function PATCH(request: Request) {
     return NextResponse.json(
       {
         error:
-          "Send `disabledKnowledge`, `disabledTools`, `allowDestructive`, `model`, `reasoningEffort` or `turnTimeout`.",
+          "Send `disabledKnowledge`, `disabledTools`, `allowDestructive`, `model`, `reasoningEffort`, `turnTimeout`, `maxToolCalls`, `maxMcpCalls` or `historyBudgetChars`.",
       },
       { status: 400 },
     );

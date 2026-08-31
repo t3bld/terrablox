@@ -1,0 +1,22 @@
+-- Keeps a module's `locals` blocks, which the architecture diagram needs in
+-- order to draw what a project deploys rather than what its modules can build.
+--
+-- The analyser has always read locals — reference resolution follows them, which
+-- is how `subnet_id = local.subnet_ids[0]` becomes an edge — but they were used
+-- and discarded. That was fine while nothing had to be *evaluated*.
+--
+-- Every guard in the upstream modules is written against them:
+--
+--   count = local.create_public_subnets ? local.len_public_subnets : 0
+--
+-- and each of those locals is in turn a small expression over the variables
+-- (`local.create_public_subnets = local.create_vpc && local.len_public_subnets >
+-- 0`). Variables alone therefore resolve nothing; with the locals the chain
+-- terminates in values a caller supplied, and a VPC module asked for two public
+-- and two database subnets can be drawn with four subnets instead of fourteen.
+--
+-- Defaulted rather than backfilled: an empty array means "not analysed yet", and
+-- the evaluator treats an unresolvable local as unknown, which is precisely the
+-- behaviour these modules already had. Re-importing a module fills it in.
+ALTER TABLE "public"."terraform_modules"
+  ADD COLUMN "locals" JSONB NOT NULL DEFAULT '[]';
