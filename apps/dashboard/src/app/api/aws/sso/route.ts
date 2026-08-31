@@ -19,12 +19,9 @@ export async function POST(req: Request) {
 
   const input = body as Partial<Record<"startUrl" | "ssoRegion", unknown>>;
 
-  if (
-    typeof input.startUrl !== "string" ||
-    typeof input.ssoRegion !== "string"
-  ) {
+  if (typeof input.startUrl !== "string") {
     return NextResponse.json(
-      { error: "startUrl and ssoRegion are required" },
+      { error: "startUrl is required" },
       { status: 400 },
     );
   }
@@ -34,7 +31,9 @@ export async function POST(req: Request) {
 
     const login = await startSsoLogin(userId, {
       startUrl: input.startUrl,
-      ssoRegion: input.ssoRegion,
+      // Optional: the portal is asked for its region first, and the client only
+      // sends one after that has failed.
+      ssoRegion: typeof input.ssoRegion === "string" ? input.ssoRegion : null,
     });
 
     return NextResponse.json({ login }, { status: 201 });

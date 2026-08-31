@@ -130,10 +130,8 @@ function blindGraph(sha: string): ProjectGraph {
  * link becomes a sentence in the prompt instead of a failure three minutes into a
  * turn.
  *
- * Read with the provider token, which is the App installation token wherever an
- * App is configured. That is the credential the picker listed repositories with, so
- * it is the one that can read what the user chose. The user's own token pays for
- * the Copilot session and has no business here.
+ * Read with the provider token: that is the credential the picker listed
+ * repositories with, so it is the one that can read what the user chose.
  */
 async function resolveAppRepo(
   token: string,
@@ -255,8 +253,8 @@ export async function POST(
     );
   }
 
-  // The agent bills the person, not the app, so it needs a user token even
-  // when repository writes go through a GitHub App installation.
+  // The agent bills the person, not the app, so the Copilot session runs on the
+  // signed-in user's own token.
   const copilotToken = await getUserGithubToken();
   if (!copilotToken) {
     return NextResponse.json(

@@ -14,7 +14,10 @@ import { toView } from "./connection-service";
 import {
   bootstrapRoleArn,
   createBootstrapStack,
+  type DeviceAuthorization,
+  discoverSsoRegion,
   listSsoAccounts,
+  normaliseStartUrl,
   pollDeviceToken,
   type SsoAccount,
   startDeviceAuthorization,
@@ -31,6 +34,14 @@ import {
 /** Login rows are worthless after this; anything older is abandoned. */
 const LOGIN_TTL_MINUTES = 15;
 
+/**
+ * Where Identity Center is assumed to be when the portal would not say.
+ *
+ * A guess beats a required field: most instances are in one region, and being
+ * wrong costs one failed call, after which the UI asks.
+ */
+const FALLBACK_SSO_REGION = "eu-central-1";
+
 export interface SsoLoginStart {
   loginId: string;
   userCode: string;
@@ -39,14 +50,53 @@ export interface SsoLoginStart {
   expiresAt: string;
 }
 
+/**
+ * Starts the device flow without making the user name a region.
+ *
+ * The portal is asked first, then the fallback is tried, and only if both are
+ * refused does the error reach the user — that is the point at which a region
+ * input is worth showing, because by then it is genuinely the open question.
+ */
+async function authorizeWithBestRegion(input: {
+  startUrl: string;
+  ssoRegion?: string | null;
+}): Promise<{ device: DeviceAuthorization; ssoRegion: string }> {
+  const given = input.ssoRegion?.trim();
+
+  const candidates = given
+    ? [given]
+    : [
+        ...new Set(
+          [await discoverSsoRegion(input.startUrl), FALLBACK_SSO_REGION].filter(
+            (region): region is string => Boolean(region),
+          ),
+        ),
+      ];
+
+  let lastError: unknown;
+
+  for (const ssoRegion of candidates) {
+    try {
+      return {
+        device: await startDeviceAuthorization({
+          startUrl: input.startUrl,
+          ssoRegion,
+        }),
+        ssoRegion,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError;
+}
+
 export async function startSsoLogin(
   userId: string,
-  input: { startUrl: string; ssoRegion: string },
+  input: { startUrl: string; ssoRegion?: string | null },
 ): Promise<SsoLoginStart> {
-  const device = await startDeviceAuthorization({
-    startUrl: input.startUrl,
-    ssoRegion: input.ssoRegion,
-  });
+  const { device, ssoRegion } = await authorizeWithBestRegion(input);
 
   // One login at a time per user, so an abandoned attempt cannot be resumed
   // later and cannot be confused with the current one.
@@ -55,8 +105,12 @@ export async function startSsoLogin(
   const record = await database.awsSsoLogin.create({
     data: {
       userId,
-      startUrl: input.startUrl.trim(),
-      ssoRegion: input.ssoRegion.trim(),
+      // Stored in the canonical form, because this row is what later credential
+      // requests are built from — not the string the user happened to paste.
+      startUrl: normaliseStartUrl(input.startUrl),
+      // The region that actually worked, so every later call in this login
+      // (polling, listing accounts, issuing credentials) reuses it.
+      ssoRegion,
       clientId: device.clientId,
       clientSecret: device.clientSecret,
       deviceCode: device.deviceCode,

@@ -8,12 +8,14 @@ import { DependencyGraph } from "@terrablox/graph/dependency-graph";
 import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
+import { Input } from "@terrablox/ui/input";
 import { Label } from "@terrablox/ui/label";
 import { Select } from "@terrablox/ui/select";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { Textarea } from "@terrablox/ui/textarea";
 import { ToggleRow } from "@terrablox/ui/toggle-row";
 import { AlertCircle } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { InfoHint } from "@/components/info-hint";
@@ -27,6 +29,7 @@ import {
   type HarnessPlane,
 } from "@/lib/agent/harness-model";
 import {
+  AGENT_MAX_MCP_CALLS,
   AGENT_MAX_STEPS,
   AGENT_MAX_TOOL_CALLS,
   REASONING_EFFORTS,
@@ -61,6 +64,23 @@ function groupToolsByGroup(tools: ToolView[]): Record<string, ToolView[]> {
   }
   return groups;
 }
+
+/**
+ * One connected MCP server, as the settings service reports it.
+ *
+ * `headerNames` and no header values: they are the credential the requests are
+ * made with, encrypted at rest, and the server never sends them back. The names
+ * are enough to answer the only question the screen has to answer — whether this
+ * connection authenticates itself, and with which header.
+ */
+type McpServerRow = {
+  id: string;
+  name: string;
+  url: string;
+  transport: "http" | "sse";
+  enabled: boolean;
+  headerNames: string[];
+};
 
 interface AgentContextView {
   /** Whose settings these are: everyone's defaults, or one project's. */
@@ -101,6 +121,14 @@ interface AgentContextView {
   moduleCount: number;
   projectCount: number;
   tools: ToolView[];
+  /**
+   * The user's connected MCP servers. Identical in both scopes.
+   *
+   * A server is a URL plus a credential belonging to the person who added it, so
+   * it is not a per-project choice: a project that could switch one on would be
+   * enabling a connection its owner may never have looked at.
+   */
+  mcpServers: McpServerRow[];
 }
 
 interface ModelOption {
@@ -153,6 +181,254 @@ function FixedElements({ elements }: { elements: HarnessElement[] }) {
         </div>
       ))}
     </dl>
+  );
+}
+
+/**
+ * The connected MCP servers, and the form that adds one.
+ *
+ * Its own component because it is the only part of this screen with a form to
+ * hold: everything else on the harness is a toggle or a dropdown whose value
+ * already lives in the loaded context, and keeping four half-typed fields in the
+ * parent would re-render the whole harness on every keystroke.
+ *
+ * Adding and enabling are two steps, matching the API: a stored server is off
+ * until somebody makes the second decision deliberately. So the form's button
+ * says "Add" rather than "Connect", and the switch beside a row is what actually
+ * hands the agent that server's tools.
+ */
+function McpServers({
+  servers,
+  busy,
+  /** True in a project scope, where these belong to the user rather than here. */
+  locked,
+  onToggle,
+  onDelete,
+  onAdd,
+}: {
+  servers: McpServerRow[];
+  busy: string | null;
+  locked: boolean;
+  onToggle: (server: McpServerRow) => void;
+  onDelete: (server: McpServerRow) => void;
+  /** Resolves true when the server was stored, so the form can clear itself. */
+  onAdd: (input: {
+    name: string;
+    url: string;
+    transport: string;
+    headerName: string;
+    headerValue: string;
+  }) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const [transport, setTransport] = useState("http");
+  const [headerName, setHeaderName] = useState("");
+  const [headerValue, setHeaderValue] = useState("");
+
+  const reset = () => {
+    setName("");
+    setUrl("");
+    setTransport("http");
+    setHeaderName("");
+    setHeaderValue("");
+    setOpen(false);
+  };
+
+  async function submit() {
+    const stored = await onAdd({
+      name,
+      url,
+      transport,
+      headerName,
+      headerValue,
+    });
+    if (stored) reset();
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+          MCP servers
+        </h3>
+        <EnforcementBadge kind="capability" />
+        <InfoHint label="MCP servers">
+          Outside tool providers you connect yourself. A server that is off is
+          not on the session at all, so the agent cannot reach it. Switching one
+          on is a decision about the whole server: it grants every tool that
+          server advertises, now and later, and the turn runs unattended so
+          those calls are not confirmed one by one.
+          {locked
+            ? " Servers are the same for every project — add or change them in Agent Settings."
+            : null}
+        </InfoHint>
+      </div>
+
+      {servers.length === 0 ? (
+        <p className="text-muted-foreground text-xs">
+          Nothing connected. The agent works entirely from your project, your
+          module library and your linked application.
+        </p>
+      ) : null}
+
+      {/* A link rather than a sentence. In a project the form is hidden because a
+          server belongs to the person, not the project — but saying so in a
+          tooltip left this section with nothing to click and no way to find the
+          screen that does have the form. */}
+      {locked ? (
+        <p className="text-muted-foreground text-xs">
+          Servers are the same for every project.{" "}
+          <Link className="underline underline-offset-4" href="/agent">
+            Connect one in Agent Settings
+          </Link>
+          .
+        </p>
+      ) : null}
+
+      {servers.length === 0 ? null : (
+        <div className="space-y-2">
+          {servers.map((server) => (
+            <div className="flex items-start gap-2" key={server.id}>
+              {/* The row is the switch, and the delete button sits outside it: a
+                  button inside a button is neither valid nor clickable. */}
+              <ToggleRow
+                className="flex-1"
+                description={
+                  <>
+                    <span className="break-all font-mono">{server.url}</span>
+                    {server.headerNames.length ? (
+                      <span>
+                        {" · sends "}
+                        {server.headerNames.join(", ")}
+                      </span>
+                    ) : (
+                      <span> · no auth header</span>
+                    )}
+                  </>
+                }
+                disabled={busy === server.id || locked}
+                hint={server.transport.toUpperCase()}
+                label={server.name}
+                on={server.enabled}
+                onToggle={() => onToggle(server)}
+              />
+              <Button
+                disabled={busy === server.id || locked}
+                onClick={() => onDelete(server)}
+                size="sm"
+                variant="outline"
+              >
+                Remove
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {locked ? null : open ? (
+        <div className="space-y-3 rounded-md border p-3">
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="mcp-name">Name</Label>
+              <Input
+                id="mcp-name"
+                onChange={(event) => setName(event.target.value)}
+                placeholder="enginsight"
+                value={name}
+              />
+              {/* Said here rather than left to a validation error: the name is
+                  also the namespace its tools appear under, which is why it is
+                  restricted at all. */}
+              <p className="text-muted-foreground text-xs">
+                Letters, numbers, hyphens and underscores. The agent refers to
+                the server by this name.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="mcp-transport">Transport</Label>
+              <Select
+                id="mcp-transport"
+                onChange={(event) => setTransport(event.target.value)}
+                value={transport}
+              >
+                <option value="http">HTTP (streamable)</option>
+                <option value="sse">SSE</option>
+              </Select>
+              <p className="text-muted-foreground text-xs">
+                HTTP unless the server's own documentation says otherwise.
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="mcp-url">URL</Label>
+            <Input
+              id="mcp-url"
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder="https://docs.example.com/~gitbook/mcp"
+              value={url}
+            />
+            <p className="text-muted-foreground text-xs">
+              Must be https on a public address. A server inside this server's
+              own network is refused, because the agent would then be a way to
+              reach things you cannot reach yourself.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="mcp-header-name">Auth header (optional)</Label>
+              <Input
+                id="mcp-header-name"
+                onChange={(event) => setHeaderName(event.target.value)}
+                placeholder="Authorization"
+                value={headerName}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="mcp-header-value">Value</Label>
+              <Input
+                autoComplete="off"
+                id="mcp-header-value"
+                onChange={(event) => setHeaderValue(event.target.value)}
+                placeholder="Bearer …"
+                type="password"
+                value={headerValue}
+              />
+            </div>
+          </div>
+
+          <p className="text-muted-foreground text-xs">
+            The value is encrypted before it is stored and is never sent back to
+            this screen — you will see the header's name here, never what it
+            holds. Leave both empty for a public server.
+          </p>
+
+          <div className="flex items-center gap-2">
+            <Button
+              disabled={busy === "mcp-add" || !name.trim() || !url.trim()}
+              onClick={() => void submit()}
+              size="sm"
+            >
+              {busy === "mcp-add" ? "Adding…" : "Add server"}
+            </Button>
+            <Button onClick={reset} size="sm" variant="ghost">
+              Cancel
+            </Button>
+            <span className="text-muted-foreground text-xs">
+              Added switched off. You enable it above.
+            </span>
+          </div>
+        </div>
+      ) : (
+        <Button onClick={() => setOpen(true)} size="sm" variant="outline">
+          Connect a server
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -361,6 +637,78 @@ export function AgentHarness({
       .map((tool) => tool.name);
 
     return save(name, { disabledTools });
+  }
+
+  /**
+   * Adds an MCP server, off until it is enabled.
+   *
+   * Not routed through `save` for the same reason the repository link is not:
+   * these are rows of their own, not fields on the settings object a PUT
+   * replaces. It reports whether the row was stored so the form knows whether to
+   * clear itself — a rejected URL has to stay on screen to be corrected.
+   */
+  async function addMcpServer(input: {
+    name: string;
+    url: string;
+    transport: string;
+    headerName: string;
+    headerValue: string;
+  }): Promise<boolean> {
+    setBusy("mcp-add");
+    setError(null);
+
+    // One header rather than an editable list: the servers that authenticate at
+    // all almost always want a single bearer token, and the API accepts up to ten
+    // when a second one turns out to be needed.
+    const header = input.headerName.trim();
+    const headers = header ? { [header]: input.headerValue } : {};
+
+    try {
+      const response = await fetch("/api/agent/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: input.name.trim(),
+          url: input.url.trim(),
+          transport: input.transport,
+          headers,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error ?? "The server was not added.");
+      }
+
+      setContext(await load());
+      onChanged?.();
+      return true;
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "The server was not added.",
+      );
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function toggleMcpServer(server: McpServerRow) {
+    return commit(server.id, () =>
+      fetch(`/api/agent/mcp/${encodeURIComponent(server.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !server.enabled }),
+      }),
+    );
+  }
+
+  function deleteMcpServer(server: McpServerRow) {
+    return commit(server.id, () =>
+      fetch(`/api/agent/mcp/${encodeURIComponent(server.id)}`, {
+        method: "DELETE",
+      }),
+    );
   }
 
   /**
@@ -750,6 +1098,19 @@ export function AgentHarness({
               </div>
             ),
           )}
+
+          {/* On this plane rather than a card of its own: an MCP tool and one of
+              our operations reach the model the same way, and the only difference
+              worth showing is who wrote it. Splitting them would suggest the
+              outside ones are governed by something else. */}
+          <McpServers
+            busy={busy}
+            locked={isProject}
+            onAdd={addMcpServer}
+            onDelete={(server) => void deleteMcpServer(server)}
+            onToggle={(server) => void toggleMcpServer(server)}
+            servers={context.mcpServers}
+          />
         </div>,
       )}
 
@@ -847,6 +1208,7 @@ function buildGraph(context: AgentContextView): {
   edges: DependencyGraphEdge[];
 } {
   const enabledTools = context.tools.filter((tool) => tool.enabled);
+  const enabledServers = context.mcpServers.filter((server) => server.enabled);
   const knowledgeOn = (id: string) =>
     context.knowledge.some((source) => source.id === id && source.enabled);
 
@@ -900,7 +1262,16 @@ function buildGraph(context: AgentContextView): {
     destructive: {
       state: context.allowDestructive ? "allowed" : "not allowed",
     },
+    "mcp-servers": {
+      // The enabled count, not the stored one: a server that is off is not on
+      // the session, so counting it here would draw a capability nobody has.
+      enabled: `${enabledServers.length} of ${context.mcpServers.length}`,
+      ...(enabledServers.length
+        ? { servers: enabledServers.map((server) => server.name).join(", ") }
+        : {}),
+    },
     "tool-budget": { limit: `max ${AGENT_MAX_TOOL_CALLS}` },
+    "mcp-budget": { limit: `max ${AGENT_MAX_MCP_CALLS}` },
     timeout: {
       limit: `${context.turnTimeout ?? context.defaults.turnTimeout}s`,
     },
@@ -913,6 +1284,11 @@ function buildGraph(context: AgentContextView): {
     if (element.id === "repo") return !knowledgeOn("project-repo");
     if (element.id === "library") return !knowledgeOn("module-library");
     if (element.id === "instructions") return context.instructionsLength === 0;
+    // With nothing enabled the MCP namespace is not on the session and there is
+    // no budget to spend, so drawing either would overstate what a turn can do.
+    if (element.id === "mcp-servers" || element.id === "mcp-budget") {
+      return enabledServers.length === 0;
+    }
     // Both are drawn as nodes of their own above the planes: the model is the
     // centre, and the identity is the provider box over it.
     return element.id === "model" || element.id === "identity";

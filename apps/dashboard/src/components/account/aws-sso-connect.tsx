@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 
+import { AwsRegionPicker } from "@/components/aws-region-picker";
 import { readJson } from "@/lib/read-json";
 
 /**
@@ -53,8 +54,6 @@ interface LoginStart {
   expiresAt: string;
 }
 
-const DEFAULT_REGION = "eu-central-1";
-
 type Stage =
   | { name: "idle" }
   | { name: "waiting"; login: LoginStart }
@@ -70,9 +69,13 @@ export function AwsSsoConnect({
 }) {
   const [stage, setStage] = useState<Stage>({ name: "idle" });
   const [startUrl, setStartUrl] = useState("");
-  const [ssoRegion, setSsoRegion] = useState(DEFAULT_REGION);
+  /**
+   * Empty means "work it out". The server reads the region off the portal and
+   * falls back to a default, so this is only ever filled in by a user whose
+   * sign-in has already failed once.
+   */
+  const [ssoRegion, setSsoRegion] = useState("");
   const [showSsoRegion, setShowSsoRegion] = useState(false);
-  const [region, setRegion] = useState(DEFAULT_REGION);
   const [selected, setSelected] = useState<string>("");
   // Which permission set to assume. A user often holds several per account and
   // the one they want (usually admin) is rarely the first AWS happens to list.
@@ -139,7 +142,10 @@ export function AwsSsoConnect({
       const res = await fetch("/api/aws/sso", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ startUrl, ssoRegion }),
+        body: JSON.stringify({
+          startUrl,
+          ...(ssoRegion.trim() ? { ssoRegion: ssoRegion.trim() } : {}),
+        }),
       });
       const body = await readJson<{ login?: LoginStart; error?: string }>(res);
 
@@ -182,7 +188,6 @@ export function AwsSsoConnect({
         body: JSON.stringify({
           accountId: account.accountId,
           roleName,
-          region,
           label: account.name,
         }),
       });
@@ -192,7 +197,7 @@ export function AwsSsoConnect({
       }>(res);
 
       if (!res.ok || !body.connection) {
-        setError(body.error ?? "Could not create the role");
+        setError(body.error ?? "Could not connect that account");
         return;
       }
 
@@ -200,7 +205,9 @@ export function AwsSsoConnect({
       setStage({ name: "idle" });
       setStartUrl("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not create the role");
+      setError(
+        e instanceof Error ? e.message : "Could not connect that account",
+      );
     } finally {
       setBusy(false);
     }
@@ -233,16 +240,16 @@ export function AwsSsoConnect({
             {showSsoRegion ? (
               <div className="space-y-2 sm:col-span-2">
                 <Label htmlFor="ssoRegion">Identity Center region</Label>
-                <Input
-                  id="ssoRegion"
+                <AwsRegionPicker
+                  className="w-full sm:max-w-sm"
+                  onChange={setSsoRegion}
+                  triggerId="ssoRegion"
                   value={ssoRegion}
-                  onChange={(e) => setSsoRegion(e.target.value)}
-                  placeholder={DEFAULT_REGION}
                 />
                 <p className="text-muted-foreground text-xs">
-                  The portal URL does not include its AWS region. The default
-                  region failed, so enter the region where IAM Identity Center
-                  is enabled.
+                  The portal did not say which region it is in, and the default
+                  was refused. Enter the region where IAM Identity Center is
+                  enabled.
                 </p>
               </div>
             ) : null}
@@ -403,35 +410,20 @@ export function AwsSsoConnect({
             </p>
           )}
 
-          <div className="space-y-2">
-            <Label htmlFor="ssoTargetRegion">Region to work in</Label>
-            <Input
-              id="ssoTargetRegion"
-              value={region}
-              onChange={(e) => setRegion(e.target.value)}
-              placeholder={DEFAULT_REGION}
-              className="sm:max-w-xs"
-            />
-          </div>
-
-          <p className="text-muted-foreground text-xs">
-            {usesSessionOnly ? (
-              <>
-                TerraBlox keeps this sign-in and uses it to reach the account,
-                creating nothing there. Disconnect the account, or let the
-                session run out, to revoke access.
-              </>
-            ) : (
-              <>
-                TerraBlox creates a CloudFormation stack called{" "}
-                <code className="rounded bg-muted px-1 py-0.5 font-mono">
-                  terrablox-read-access
-                </code>{" "}
-                holding one read-only role, then forgets this sign-in. Delete
-                the stack to revoke access.
-              </>
-            )}
-          </p>
+          {/* No region field: nothing is created here in session mode, and which
+              region a project works in is decided once in its Deploy settings,
+              where the copy can explain that moving it later means moving state.
+              Only the stack mode has a side effect worth spelling out. */}
+          {usesSessionOnly ? null : (
+            <p className="text-muted-foreground text-xs">
+              TerraBlox creates a CloudFormation stack called{" "}
+              <code className="rounded bg-muted px-1 py-0.5 font-mono">
+                terrablox-read-access
+              </code>{" "}
+              holding one read-only role, then forgets this sign-in. Delete the
+              stack to revoke access.
+            </p>
+          )}
 
           <div className="flex gap-2">
             <Button
@@ -443,7 +435,7 @@ export function AwsSsoConnect({
               ) : (
                 <ArrowRight className="mr-2 h-4 w-4" />
               )}
-              Create the role
+              Connect
             </Button>
             <Button variant="ghost" onClick={handleCancel}>
               Cancel

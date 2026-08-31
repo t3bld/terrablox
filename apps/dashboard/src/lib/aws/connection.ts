@@ -24,24 +24,19 @@ import {
  * instance assumes roles as the same principal — so it can never be a
  * per-session value. The app already holds AWS credentials to do the assuming,
  * so it asks AWS who those credentials are instead of making an operator paste
- * in an ARN. The env var stays as an override for the rare case where the
- * trusted principal differs from the caller, e.g. naming the account root.
+ * in an ARN.
  */
-const PRINCIPAL_ARN_OVERRIDE =
-  process.env.TERRABLOX_AWS_PRINCIPAL_ARN?.trim() || null;
 
 let cachedPrincipal: string | null | undefined;
 
 export async function resolveTerraBloxPrincipal(): Promise<string | null> {
-  if (PRINCIPAL_ARN_OVERRIDE) return PRINCIPAL_ARN_OVERRIDE;
   if (cachedPrincipal !== undefined) return cachedPrincipal;
 
   try {
-    // GetCallerIdentity is global, so any region answers; the SDK just needs one.
-    const sts = new STSClient({
-      region:
-        process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "us-east-1",
-    });
+    // GetCallerIdentity is global, so any region answers; the SDK just needs
+    // one, and its own resolution chain (environment, shared config, instance
+    // metadata) is the right place to find it.
+    const sts = new STSClient({});
     const identity = await sts.send(new GetCallerIdentityCommand({}));
     cachedPrincipal = identity.Arn ? toTrustPrincipal(identity.Arn) : null;
   } catch {

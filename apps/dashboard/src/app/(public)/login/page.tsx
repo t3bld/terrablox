@@ -6,13 +6,7 @@ export const dynamic = "force-dynamic";
 
 import { Alert, AlertDescription } from "@terrablox/ui/alert";
 import { Button } from "@terrablox/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@terrablox/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
 import { Github } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -58,11 +52,6 @@ export default function LoginPage() {
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1">
           <CardTitle className="text-2xl">Sign in to TerraBlox</CardTitle>
-          <CardDescription>
-            TerraBlox works on your repositories, so it signs you in with
-            GitHub. The same connection reads your modules and commits your
-            changes.
-          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? (
@@ -80,14 +69,6 @@ export default function LoginPage() {
             <Github className="mr-2 h-4 w-4" />
             {submitting ? "Starting…" : "Continue with GitHub"}
           </Button>
-
-          {/* Says what the permissions are for before they are asked for, since
-              `repo` is a broad scope and an unexplained prompt invites a no. */}
-          <p className="text-center text-xs text-muted-foreground">
-            TerraBlox asks for repository and organisation read access so it can
-            import modules and write the Terraform it generates. First sign-in
-            creates your account.
-          </p>
         </CardContent>
       </Card>
     </div>

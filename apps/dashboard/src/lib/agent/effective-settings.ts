@@ -6,6 +6,7 @@ import { isKnownKnowledge } from "./knowledge";
 import {
   type AgentSettingsView,
   getAgentSettings,
+  type McpServerView,
   REASONING_EFFORTS,
   type ReasoningEffortValue,
 } from "./settings-service";
@@ -45,6 +46,15 @@ export interface EffectiveAgentSettings {
   reasoningEffort: ReasoningEffortValue | null;
   disabledKnowledge: string[];
   disabledTools: string[];
+  /**
+   * The outside tool providers this user connected.
+   *
+   * Not in {@link AgentOverrides} and deliberately not overridable: a server is a
+   * URL plus a credential of the user's, and a project that could enable one
+   * would be enabling a connection its owner might not have looked at. Carried
+   * through here only so the settings view has one shape in both scopes.
+   */
+  mcpServers: McpServerView[];
   /** How long a turn may run, in seconds. Null → default (300s). */
   turnTimeout: number | null;
   /** Whether the agent may delete modules and variables here. */
@@ -82,6 +92,9 @@ export function mergeAgentSettings(
     reasoningEffort: overrides.reasoningEffort ?? global.reasoningEffort,
     disabledKnowledge: overrides.disabledKnowledge ?? global.disabledKnowledge,
     disabledTools: overrides.disabledTools ?? global.disabledTools,
+    // Passed through rather than merged: there is no override to consider, and a
+    // project reads the same connections its owner enabled.
+    mcpServers: global.mcpServers,
     turnTimeout: overrides.turnTimeout ?? global.turnTimeout,
     // `??` is wrong for a boolean override: a project that deliberately set
     // `false` would fall through to a global `true`. Presence is the question.

@@ -117,6 +117,28 @@ export const AGENT_MAX_STEPS = 40;
 export const AGENT_MAX_TOOL_CALLS = 25;
 
 /**
+ * How many MCP tool calls one turn may make.
+ *
+ * Counted apart from {@link AGENT_MAX_TOOL_CALLS} because the two are different
+ * risks. An operation ends up as a commit in the user's repository, so its budget
+ * is about what one unreviewed turn may change. An MCP call changes nothing here:
+ * it is a request to a server the user connected, made on whatever credential they
+ * stored with it. Sharing one budget would mean a turn that read a vendor's
+ * documentation properly had nothing left to build with — the same mistake the
+ * application-repository reads already have their own ceiling to avoid.
+ *
+ * It still needs a ceiling, and a lower one than a read of our own: the request
+ * leaves our network, and a model that has decided to search the same
+ * documentation thirty times has stopped making progress. Refusing with a reason
+ * lets it report back; without a limit it can only run into the turn timeout,
+ * which looks to the user like a hang.
+ *
+ * Not a setting. The number is generous for any real question, and raising it
+ * would only lengthen a loop.
+ */
+export const AGENT_MAX_MCP_CALLS = 20;
+
+/**
  * The sentences that tell the agent how to work, before any project detail.
  *
  * Here rather than in the prompt builder because they are editable in the admin

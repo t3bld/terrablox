@@ -106,8 +106,8 @@ export interface RepoOwner {
  * Organisations the user belongs to are listed even though creating a repository
  * in one may still be refused — GitHub decides that per org, and asking here would
  * cost a request per organisation to learn something the create call reports
- * anyway. An org missing from this list, on the other hand, is usually the App's
- * installation scope rather than a mistake.
+ * anyway. An org missing from this list is usually a `read:org` scope the user
+ * never granted rather than a mistake.
  */
 export async function listRepoOwners(token: string): Promise<RepoOwner[]> {
   const [user, orgs] = await Promise.all([
@@ -133,9 +133,8 @@ export async function listRepoOwners(token: string): Promise<RepoOwner[]> {
 /**
  * Creates a repository, in an organisation when `owner` names one.
  *
- * A GitHub App installation token can only create repositories inside the
- * organisation it is installed in, and only with `Administration: write`. The
- * personal endpoint is therefore attempted only when no owner was given.
+ * The two endpoints are not interchangeable: the personal one always creates
+ * under the token's own account, so it is used only when no owner was given.
  */
 export async function createRepository(
   token: string,

@@ -224,20 +224,26 @@ export function HistoryPanel({ projectId }: { projectId: string }) {
                     )}
                   </span>
 
+                  {/* Two lines, always: what kind of change it was, then what it
+                      changed. Side by side they wrapped at whatever width the
+                      column happened to be, so the same entry read as one line
+                      in one place and two in another. The time joins the label —
+                      it is the same class of fact, and it costs no height there.
+                      The day is in the heading above, so only the time is left. */}
                   <div className="min-w-0 flex-1 space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant="outline">
+                    <div className="flex items-center gap-2">
+                      <Badge className="shrink-0" variant="outline">
                         {actionLabel(operation.action)}
                       </Badge>
-                      <span className="text-sm">{operation.summary}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {new Date(operation.createdAt).toLocaleTimeString(
+                          undefined,
+                          { hour: "2-digit", minute: "2-digit" },
+                        )}
+                      </span>
                     </div>
-                    {/* The day is in the heading above, so the row only needs
-                        the time of day. */}
-                    <p className="text-xs text-muted-foreground">
-                      {new Date(operation.createdAt).toLocaleTimeString(
-                        undefined,
-                        { hour: "2-digit", minute: "2-digit" },
-                      )}
+                    <p className="text-sm [overflow-wrap:anywhere]">
+                      {operation.summary}
                     </p>
                   </div>
 

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-cloudformation": "^3.1108.0",
+    "@aws-sdk/client-iam": "^3.1108.0",
     "@aws-sdk/client-s3": "^3.1108.0",
     "@aws-sdk/client-sso": "^3.1108.0",
     "@aws-sdk/client-sso-oidc": "^3.1108.0",

@@ -8,7 +8,10 @@ import {
 } from "@/lib/agent/effective-settings";
 import { AGENT_KNOWLEDGE, knowledgeEnabled } from "@/lib/agent/knowledge";
 import { DEFAULT_TURN_TIMEOUT_SECONDS } from "@/lib/agent/runtime-options";
-import { getAgentSettings } from "@/lib/agent/settings-service";
+import {
+  getAgentSettings,
+  type McpServerView,
+} from "@/lib/agent/settings-service";
 import { PROJECT_AGENT_TOOLS } from "@/lib/agent/tool-catalogue";
 import {
   getCurrentUserId,
@@ -113,6 +116,7 @@ function view(input: {
     turnTimeout: number | null;
     disabledKnowledge: string[];
     disabledTools: string[];
+    mcpServers: McpServerView[];
     allowDestructive: boolean;
   };
   moduleCount: number;
@@ -163,9 +167,10 @@ function view(input: {
       description,
       enabled: knowledgeEnabled(settings.disabledKnowledge, id),
     })),
-    // No `mcpServers`: outside tool providers are not part of the MVP, so the
-    // settings screen offers no way to add or enable one. The storage and the
-    // session wiring are untouched, so putting the section back is a UI change.
+    // The outside tool providers, in both scopes and identical in both: a server
+    // belongs to the user, not to a project. Only header *names* travel — the
+    // values are secrets the settings service never returns.
+    mcpServers: settings.mcpServers,
     moduleCount: input.moduleCount,
     projectCount: input.projectCount,
     tools: PROJECT_AGENT_TOOLS.map(({ name, group, label, summary }) => ({

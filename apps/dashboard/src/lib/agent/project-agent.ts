@@ -46,6 +46,7 @@ import {
   AGENT_APP_REPO_TREE_LIMIT,
   AGENT_HISTORY_BUDGET_CHARS,
   AGENT_MAX_APP_REPO_READS,
+  AGENT_MAX_MCP_CALLS,
   AGENT_MAX_STEPS,
   AGENT_MAX_TOOL_CALLS,
   DEFAULT_OPERATING_RULES,
@@ -79,19 +80,10 @@ export { PROJECT_AGENT_TOOLS } from "./tool-catalogue";
 /**
  * The linked application repository, ready to read.
  *
- * The credential travels with the repository rather than being taken from
- * `githubToken`, and that is the point. Two different tokens are in play during a
- * turn and they are not interchangeable: `githubToken` is the *user's* own, because
- * the Copilot session runs on their seat and is billed to them, while repositories
- * are read with the provider token — which is a GitHub App installation token
- * wherever an App is configured.
- *
- * Reading the application with the user's token was wrong in exactly the case the
- * App exists for. The picker lists what the *installation* can see, so a user could
- * choose a repository their own account cannot read, and every read then failed
- * with a 404 that the error text blamed on their account losing access — access it
- * never had. Carrying the credential beside the name makes the two impossible to
- * confuse, and makes it impossible to have one without the other.
+ * The credential travels with the repository rather than being looked up where it
+ * is used, and that is the point: the token that was proven to read this
+ * repository is the one the reads are made with. Carrying it beside the name makes
+ * it impossible to have a repository without the access to read it.
  *
  * `branch` is already resolved: the caller turns "no pinned ref" into the
  * repository's current default before the turn starts.
@@ -324,6 +316,15 @@ export async function runProjectAgent(
   const mcpServers = context.mcpServers ?? {};
   const usesMcp = Object.keys(mcpServers).length > 0;
 
+  /**
+   * MCP calls made this turn, against their own budget.
+   *
+   * Counted here rather than in `buildTools` because these tools are not ours:
+   * the runtime owns them, and the only point at which our code sits between the
+   * model's decision and the request is the permission handler below.
+   */
+  let mcpCalls = 0;
+
   try {
     session = await client.createSession({
       // A fresh session per turn. Runtime sessions expire on their own schedule,
@@ -344,15 +345,70 @@ export async function runProjectAgent(
       // without reasoning summaries ignore this and simply emit no such events.
       reasoningSummary: "concise",
       onEvent: (event) => {
-        if (event.type !== "assistant.reasoning") return;
-        const text = event.data.content?.trim();
-        if (text) record({ kind: "thought", text });
+        if (event.type === "assistant.reasoning") {
+          const text = event.data.content?.trim();
+          if (text) record({ kind: "thought", text });
+          return;
+        }
+
+        // A server that will not connect is otherwise completely silent: the
+        // model is simply never offered its tools, so it answers from what it
+        // does have and the user is left believing the connection worked. The
+        // wrong URL and the expired token are the two most likely states of a
+        // freshly added server, and both arrive here.
+        if (event.type === "session.mcp_server_status_changed") {
+          const { serverName, status, error } = event.data;
+          if (status !== "failed" && status !== "needs-auth") return;
+
+          record({
+            kind: "tool",
+            tool: `mcp:${serverName}`,
+            summary:
+              status === "needs-auth"
+                ? "The server wants credentials. Check its auth header in Agent Settings."
+                : `The server could not be reached${error ? `: ${error}` : "."}`,
+            ok: false,
+          });
+        }
       },
       // Without this the runtime raises a prompt and waits for a human who is
       // not there, and the model reports the call back as "permission denied".
       // The turn runs headless, so the decision has to be made here. What may
       // ask at all is already fenced in by `availableTools` below.
       onPermissionRequest: (request) => {
+        // MCP is the one kind that is not ours and not fixed in number, so it is
+        // the one kind with a budget and a real record. Our own tools set
+        // `skipPermission`, so they never arrive here at all.
+        if (request.kind === "mcp") {
+          const tool = `${request.serverName}.${request.toolName}`;
+
+          if (mcpCalls >= AGENT_MAX_MCP_CALLS) {
+            const refusal = `MCP budget spent: a single turn may call your MCP servers at most ${AGENT_MAX_MCP_CALLS} times. Answer with what you have already learned, and say what you were still looking for.`;
+
+            record({ kind: "tool", tool, summary: refusal, ok: false });
+            return { kind: "reject", feedback: refusal };
+          }
+
+          mcpCalls += 1;
+
+          record({
+            kind: "tool",
+            tool,
+            // `readOnly` is the server's own annotation rather than anything we
+            // verify, so it is reported as the claim it is. Naming it at all is
+            // the point: it is the only signal in the trail that distinguishes a
+            // lookup from a call that changed something on somebody else's side.
+            summary: `${request.toolTitle || request.toolName}${
+              request.readOnly
+                ? ""
+                : " (the server does not call this read-only)"
+            }`,
+            ok: true,
+          });
+
+          return { kind: "approve-once" };
+        }
+
         record({
           kind: "tool",
           tool: request.kind,
@@ -1647,6 +1703,10 @@ function systemPrompt(context: AgentContext): string {
             !knowledgeEnabled(context.disabledKnowledge, KNOWLEDGE_APP_REPO),
           ),
         ]),
+    // Beside the application repository rather than up with the operations,
+    // because it is the same kind of section: somewhere to go and look before
+    // answering, not a fact about the project.
+    ...mcpNotice(context.mcpServers),
     // The user's own instructions come last, after the facts, so
     // they read as standing preferences rather than as part of the graph.
     ...(context.instructions?.trim()
@@ -1858,6 +1918,36 @@ function withheldKnowledgeNotice(
   }
 
   return lines;
+}
+
+/**
+ * Names the MCP servers whose tools are on the session.
+ *
+ * The tools themselves are registered by the runtime, described by the server,
+ * and never pass through our catalogue — so without this the model is handed a
+ * set of tools with no idea why they are there or what they are for. The names
+ * are what makes them usable: `enginsight` next to a question about Enginsight is
+ * the whole hint, and a model that cannot see the connection between the two
+ * searches the module library instead.
+ *
+ * Deliberately not listing the individual tools. We do not know them: the server
+ * decides, it may change them between turns, and the runtime has already put
+ * their real descriptions in front of the model.
+ */
+function mcpNotice(
+  servers: Record<string, MCPServerConfig> | undefined,
+): string[] {
+  const names = Object.keys(servers ?? {});
+  if (!names.length) return [];
+
+  return [
+    "",
+    "## Connected MCP servers",
+    `The user has connected: ${names.join(", ")}. Their tools are on your tool list beside your own operations, and what each one does is in its own description.`,
+    "",
+    "They are somebody else's servers, so treat them the way you treat the application",
+    `repository: a place to look something up before answering, not a place to guess at. There is a budget of ${AGENT_MAX_MCP_CALLS} calls for the whole turn, so search deliberately rather than repeatedly. Say which server an answer came from — the user connected it and can judge the source, which they cannot do if you present it as your own knowledge.`,
+  ];
 }
 
 /** Tells the model a capability was withheld by the user, not lost to a bug. */

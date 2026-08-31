@@ -208,19 +208,7 @@ if github_ready; then
 	ok "GitHub sign-in is configured"
 else
 	step "Configuring GitHub sign-in (required)"
-	info "GitHub is the only way to sign in, and it also grants the agent the"
-	info "repository access it works through. Two values are needed."
-	printf '\n'
-	info "Register an app, then paste its credentials below:"
-	muted "  GitHub App (recommended for orgs):"
-	muted "    https://github.com/settings/apps/new"
-	muted "  or a classic OAuth App:"
-	muted "    https://github.com/settings/developers"
-	printf '\n'
-	muted "  Callback URL:  ${DASHBOARD_URL}/api/auth/callback/github"
-	muted "  Homepage URL:  ${DASHBOARD_URL}"
-	printf '\n'
-	muted "Press Enter to skip either one and fill it in later."
+	info "Client ID and client secret of a GitHub OAuth app are needed."
 	printf '\n'
 
 	prompt_env_var "$APP_ENV" GITHUB_CLIENT_ID "Client ID:      " || true
@@ -233,10 +221,6 @@ else
 		info "add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to $APP_ENV, then restart the dev server"
 	fi
 fi
-
-# TERRABLOX_AWS_PRINCIPAL_ARN is intentionally not set here: the app discovers
-# its own principal from whatever AWS credentials it runs with, so hardcoding a
-# dev-machine identity would only mislead a later deployment.
 
 # --- 3. dependencies --------------------------------------------------------
 
@@ -318,11 +302,7 @@ elif [ ! -t 0 ]; then
 else
 	# Interactive terminal: ask the user.
 	printf '\n'
-	info "TerraBlox can import ~50 standard AWS Terraform modules (VPC, EKS, RDS, …)"
-	info "so every user has them without importing anything."
-	info "Requires: gh CLI logged in (the token needs no scopes for public repos)."
-	printf '\n'
-	printf '    %sImport the built-in module catalogue now? [Y/n]%s ' "$BOLD" "$RESET"
+	printf '    %sImport TerraBlox best practice terraform modules catalogue? [Y/n]%s ' "$BOLD" "$RESET"
 	read -r answer </dev/tty || answer=""
 	case "$answer" in
 		[nN]|[nN][oO])
@@ -375,13 +355,6 @@ summarise_var DATABASE_URL required "the app cannot reach Postgres"
 summarise_var BETTER_AUTH_SECRET required "sessions and stored secrets cannot be signed"
 summarise_var GITHUB_CLIENT_ID required "nobody can sign in"
 summarise_var GITHUB_CLIENT_SECRET required "nobody can sign in"
-summarise_var GITHUB_APP_ID optional "GitHub App mode; a classic OAuth app works without it"
-summarise_var GITHUB_APP_PRIVATE_KEY optional "GitHub App mode"
-summarise_var GITHUB_APP_INSTALLATION_ID optional "GitHub App mode"
-summarise_var COPILOT_MODEL optional "defaults to the model in copilot.ts"
-summarise_var COPILOT_REASONING_EFFORT optional "defaults to the effort in copilot.ts"
-summarise_var AWS_REGION optional "deployment defaults to the region of whatever credentials it finds"
-summarise_var TERRABLOX_AWS_PRINCIPAL_ARN optional "discovered from the running credentials"
 
 printf '\n'
 muted "Edit $APP_ENV and restart the dev server to change any of these."

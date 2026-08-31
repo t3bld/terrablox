@@ -30,21 +30,101 @@ import { AwsConnectionError, isValidRegion } from "./connection";
  * exchanges it for role credentials per request instead.
  */
 
-/** Portal URLs are user input that we turn into an endpoint, so pin the shape. */
-const START_URL_PATTERN =
-  /^https:\/\/[a-z0-9-]+\.awsapps\.com\/start\/?$|^https:\/\/[a-z0-9-]+\.awsapps\.com\/start#\/?$/;
+/** Portal URLs are user input that we turn into an endpoint, so pin the host. */
+const PORTAL_HOST_PATTERN = /^[a-z0-9-]+\.awsapps\.com$/;
 
 /** The role the bootstrap stack creates, and the stack that owns it. */
 export const BOOTSTRAP_ROLE_NAME = "terrablox-read";
 export const BOOTSTRAP_STACK_NAME = "terrablox-read-access";
 
-export function isValidStartUrl(value: string): boolean {
-  return START_URL_PATTERN.test(value.trim());
+/**
+ * The portal URL reduced to what AWS's OIDC endpoints accept: `https://`, the
+ * portal host, and `/start`.
+ *
+ * People paste what their browser shows them, and the portal is a single-page
+ * app: the address bar says `…/start/#/`, and `…/start/#/?tab=accounts` after a
+ * click. Both name the same portal, so a pattern that only allowed the bare
+ * `/start` rejected URLs that were correct. Everything from the `#` onwards is
+ * routing inside that page and is dropped rather than validated.
+ *
+ * Returns null when the value is not an Identity Center portal at all. The host
+ * stays pinned to `*.awsapps.com` because this value is later fetched
+ * server-side, and an arbitrary URL there would be a request the user gets to
+ * choose the target of.
+ */
+export function parseStartUrl(value: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return null;
+  }
+
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || !PORTAL_HOST_PATTERN.test(host)) {
+    return null;
+  }
+
+  // `/start`, `/start/` and the directory the app routes under are one portal.
+  if (url.pathname.replace(/\/+$/, "").toLowerCase() !== "/start") {
+    return null;
+  }
+
+  return `https://${host}/start`;
 }
 
-/** Identity Center exposes its own console URL too; accept it and normalise. */
+export function isValidStartUrl(value: string): boolean {
+  return parseStartUrl(value) !== null;
+}
+
 export function normaliseStartUrl(value: string): string {
-  return value.trim().replace(/#?\/?$/, "");
+  return parseStartUrl(value) ?? value.trim();
+}
+
+/**
+ * The portal names its own region in its response headers.
+ *
+ * A `Link: <https://portal.sso.eu-central-1.amazonaws.com/>; rel=preconnect` and
+ * a CSP `report-uri https://log.sso-portal.eu-central-1.amazonaws.com/log` are
+ * both there on the first unauthenticated request, which is what makes this
+ * worth doing: the alternative is asking every user for a region they have to go
+ * and look up, to answer a question the portal already answers.
+ */
+const PORTAL_REGION_PATTERN =
+  /\bsso(?:-portal)?\.([a-z]{2}(?:-[a-z]+)+-\d)\.amazonaws\.com/;
+
+/**
+ * Works out which region an Identity Center instance is in from its portal URL.
+ *
+ * Best-effort by design: null means "ask", not "broken". Nothing is sent to AWS
+ * beyond a plain GET of a URL the user just typed, and the response is read for
+ * a region and nothing else.
+ */
+export async function discoverSsoRegion(
+  startUrl: string,
+): Promise<string | null> {
+  if (!isValidStartUrl(startUrl)) return null;
+
+  try {
+    const response = await fetch(normaliseStartUrl(startUrl), {
+      // The redirect to /start/ already carries the headers, and not following
+      // it keeps this to one request that downloads no page.
+      redirect: "manual",
+      cache: "no-store",
+      signal: AbortSignal.timeout(5_000),
+    });
+
+    const headers = `${response.headers.get("link") ?? ""} ${
+      response.headers.get("content-security-policy") ?? ""
+    }`;
+
+    const region = PORTAL_REGION_PATTERN.exec(headers)?.[1];
+    return region && isValidRegion(region) ? region : null;
+  } catch {
+    // A portal that cannot be reached is not a region problem; let the sign-in
+    // attempt produce the error the user can act on.
+    return null;
+  }
 }
 
 export interface DeviceAuthorization {

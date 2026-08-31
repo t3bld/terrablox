@@ -44,13 +44,6 @@ export interface GitTreeEntry {
 
 export interface IGitProvider {
   getRepos(token: string): Promise<GitRepo[]>;
-  /**
-   * Lists the repositories a GitHub App installation may access.
-   *
-   * Installation tokens are not tied to a user, so `/user/repos` returns
-   * nothing for them; the installation has its own repository selection.
-   */
-  getInstallationRepos(token: string): Promise<GitRepo[]>;
   getBranches(token: string, repoFullName: string): Promise<GitBranch[]>;
   getReleases(token: string, repoFullName: string): Promise<GitRelease[]>;
   /**

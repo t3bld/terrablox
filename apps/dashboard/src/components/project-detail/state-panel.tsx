@@ -121,7 +121,11 @@ export function StatePanel({ projectId }: StatePanelProps) {
   const managedCount = resources.filter((resource) => resource.managed).length;
 
   return (
-    <div className="mx-auto max-w-5xl space-y-4 p-6">
+    // Read at a comfortable measure once there is a state to read, but the empty
+    // box is not something to read — it is a sign that this tab is waiting for
+    // the Deploy tab, and a narrow column of nothing in the middle of a wide
+    // screen looks like a section that failed to load.
+    <div className={`space-y-4 p-6 ${snapshot ? "mx-auto max-w-5xl" : ""}`}>
       {error ? (
         <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -135,20 +139,16 @@ export function StatePanel({ projectId }: StatePanelProps) {
         </p>
       ) : null}
 
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-start gap-3">
-            <div className="min-w-0 flex-1">
-              <CardTitle className="text-base">
-                {snapshot
-                  ? `${managedCount} resource${managedCount === 1 ? "" : "s"} deployed`
-                  : state?.configured
-                    ? "Nothing deployed yet"
-                    : "No state backend yet"}
-              </CardTitle>
-              <CardDescription>
-                {snapshot ? (
-                  <>
+      {snapshot ? (
+        <>
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <CardTitle className="text-base">
+                    {`${managedCount} resource${managedCount === 1 ? "" : "s"} deployed`}
+                  </CardTitle>
+                  <CardDescription>
                     Read from the Terraform state in{" "}
                     <code className="rounded bg-muted px-1">
                       {state?.bucket}
@@ -158,61 +158,68 @@ export function StatePanel({ projectId }: StatePanelProps) {
                       ? ` with Terraform ${snapshot.terraformVersion}`
                       : null}
                     .
-                  </>
-                ) : (
-                  "This reads the encrypted state bucket directly, so it is current as of now rather than as of the last workflow run."
-                )}
-              </CardDescription>
-            </div>
+                  </CardDescription>
+                </div>
 
-            <Button
-              disabled={refreshing || !state?.configured}
-              onClick={() => void refresh()}
-              size="sm"
-              variant="outline"
-            >
-              <RefreshCw
-                className={`mr-2 h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
-              />
-              Re-read
-            </Button>
-          </div>
-        </CardHeader>
+                <Button
+                  disabled={refreshing}
+                  onClick={() => void refresh()}
+                  size="sm"
+                  variant="outline"
+                >
+                  <RefreshCw
+                    className={`mr-2 h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
+                  />
+                  Re-read
+                </Button>
+              </div>
+            </CardHeader>
 
-        {snapshot ? (
-          <CardContent className="space-y-3">
-            {kinds.length > 0 ? (
-              <ul className="flex flex-wrap gap-2">
-                {kinds.map((kind) => (
-                  <li
-                    key={kind.kind}
-                    className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
-                  >
-                    <ServiceIcon icon={kind.icon} className="h-4 w-4" />
-                    <span className="font-medium">{kind.kind}</span>
-                    <span className="text-muted-foreground">{kind.count}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
+            <CardContent className="space-y-3">
+              {kinds.length > 0 ? (
+                <ul className="flex flex-wrap gap-2">
+                  {kinds.map((kind) => (
+                    <li
+                      key={kind.kind}
+                      className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs"
+                    >
+                      <ServiceIcon icon={kind.icon} className="h-4 w-4" />
+                      <span className="font-medium">{kind.kind}</span>
+                      <span className="text-muted-foreground">
+                        {kind.count}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
 
-            {/* Only identifiers ever leave the server, which is worth saying
-                here rather than only in the code that enforces it. */}
-            <p className="text-muted-foreground text-xs">
-              Terraform state can contain generated passwords. TerraBlox reads
-              only resource identifiers and non-sensitive outputs from it —
-              attribute values are never sent to the browser.
+              {/* Only identifiers ever leave the server, which is worth saying
+                  here rather than only in the code that enforces it. */}
+              <p className="text-muted-foreground text-xs">
+                Terraform state can contain generated passwords. TerraBlox reads
+                only resource identifiers and non-sensitive outputs from it —
+                attribute values are never sent to the browser.
+              </p>
+            </CardContent>
+          </Card>
+
+          {state?.problem ? (
+            <p className="flex items-start gap-2 rounded-lg border px-3 py-2 text-sm text-muted-foreground">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              {state.problem}
             </p>
-          </CardContent>
-        ) : null}
-      </Card>
-
-      {state?.problem ? (
-        <p className="flex items-start gap-2 rounded-lg border px-3 py-2 text-sm text-muted-foreground">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          {state.problem}
+          ) : null}
+        </>
+      ) : (
+        /* The same dashed box the module screens use for "there is nothing here
+           yet". A card with a header, a description and a disabled button made
+           an undeployed project look like a section that had failed, and said
+           the same thing three times. `problem` is already one sentence written
+           for the reader, and it names the tab that fixes it. */
+        <p className="w-full rounded-lg border border-dashed px-6 py-12 text-center text-sm text-muted-foreground">
+          {state?.problem ?? "Nothing deployed yet."}
         </p>
-      ) : null}
+      )}
 
       {snapshot && resources.length > 0 ? (
         <>

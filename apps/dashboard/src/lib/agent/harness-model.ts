@@ -30,6 +30,7 @@
 
 import {
   AGENT_HISTORY_BUDGET_CHARS,
+  AGENT_MAX_MCP_CALLS,
   AGENT_MAX_STEPS,
   AGENT_MAX_TOOL_CALLS,
 } from "./runtime-options";
@@ -174,6 +175,7 @@ export type HarnessSetting =
   | "turnTimeout"
   | "disabledKnowledge"
   | "disabledTools"
+  | "mcpServers"
   | "allowDestructive"
   | "instructions";
 
@@ -226,11 +228,11 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     id: "tool-namespaces",
     plane: "config",
     label: "Tool namespaces",
-    brief: "The session sees our tools only, never the runtime's own.",
+    brief: "Our own tools, plus your MCP servers only once you enable one.",
     description:
-      "The session may only see our own tools. Even if the runtime gains new built-ins, they are not offered to this session.",
+      "The session may only see our own tools. Even if the runtime gains new built-ins, they are not offered to this session. The MCP namespace is added to that list only for a turn where you have at least one server enabled, so a user who has connected nothing runs with exactly the surface this session had before the feature existed.",
     enforcement: "provider-config",
-    source: 'project-agent.ts → availableTools: ["custom:*"]',
+    source: 'project-agent.ts → availableTools: ["custom:*", "mcp:*"]',
   },
   {
     id: "no-retrieval",
@@ -322,6 +324,19 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     source: "tool-catalogue.ts, project-agent.ts → buildTools",
   },
   {
+    id: "mcp-servers",
+    plane: "actions",
+    label: "MCP servers",
+    brief:
+      "Outside tool providers you connect. None is enabled until you say so.",
+    description:
+      "Remote MCP servers you connect yourself — a vendor's documentation, an internal catalogue, anything that speaks the protocol — whose tools join the action space alongside our operations. Two decisions, not one: adding a server stores it switched off, and enabling it is a separate click. Enabling is a whole-server decision, so it grants every tool that server advertises, including any it adds later; the turn runs headless, so those calls are approved without anyone being asked. Only https, only public addresses, and any auth headers are encrypted at rest and never sent back to the browser. A server that will not connect is reported in the step trail rather than failing silently.",
+    enforcement: "capability",
+    setting: "mcpServers",
+    source:
+      "settings-service.ts → mcpServersForSession; project-agent.ts → session mcpServers",
+  },
+  {
     id: "sandbox",
     plane: "actions",
     label: "No shell, no filesystem",
@@ -406,6 +421,15 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     description: `At most ${AGENT_MAX_TOOL_CALLS} operations in one turn. The next call is refused with a message saying the budget is spent, so the model reports back instead of looping. Not a setting: raising it only lets one turn make a change nobody reviewed.`,
     enforcement: "control-loop",
     source: "project-agent.ts → queue() checks the budget",
+  },
+  {
+    id: "mcp-budget",
+    plane: "control",
+    label: "MCP call budget",
+    brief: `At most ${AGENT_MAX_MCP_CALLS} MCP calls per turn; the next one is refused.`,
+    description: `At most ${AGENT_MAX_MCP_CALLS} calls to your MCP servers in one turn, counted separately from the operation budget above. Separate because the two are different risks: an operation becomes a commit, while an MCP call is a request to somebody else's server on your credential — reading widely is legitimate, looping is not. The call past the limit is refused with a reason the model can report, so a server that keeps answering "nearly" cannot spend the whole timeout. Every call is written to the step trail with its server and tool name, and whether that server declared the tool read-only.`,
+    enforcement: "control-loop",
+    source: "project-agent.ts → onPermissionRequest, AGENT_MAX_MCP_CALLS",
   },
   {
     id: "timeout",

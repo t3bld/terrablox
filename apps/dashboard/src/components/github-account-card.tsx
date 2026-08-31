@@ -13,17 +13,11 @@ import {
 import { ExternalLink } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-/**
- * Only relevant in "user" mode. GitHub App user tokens do not use scopes at
- * all - they use the fine-grained permissions of the App installation.
- */
+/** What the OAuth grant must cover for module import to work. */
 const REQUIRED_SCOPES = ["repo", "read:org"];
-
-type GitAuthMode = "app" | "user" | "none";
 
 type AuthConfig = {
   githubConfigured: boolean;
-  gitAuthMode: GitAuthMode;
 };
 
 export function GithubAccountCard() {
@@ -40,15 +34,12 @@ export function GithubAccountCard() {
       .then((res) => (res.ok ? res.json() : null))
       .then((body) => {
         if (cancelled) return;
-        setConfig({
-          githubConfigured: !!body?.providers?.github,
-          gitAuthMode: (body?.gitAuthMode as GitAuthMode) ?? "none",
-        });
+        setConfig({ githubConfigured: !!body?.providers?.github });
       })
       .catch(() => {
         // Assume available and let the link attempt surface the real error.
         if (!cancelled) {
-          setConfig({ githubConfigured: true, gitAuthMode: "user" });
+          setConfig({ githubConfigured: true });
         }
       });
 
@@ -65,12 +56,10 @@ export function GithubAccountCard() {
     };
   }, [user]);
 
-  const isAppMode = config?.gitAuthMode === "app";
-
   const missingScopes = useMemo(() => {
-    if (!github.linked || isAppMode) return [];
+    if (!github.linked) return [];
     return REQUIRED_SCOPES.filter((scope) => !github.scopes.includes(scope));
-  }, [github, isAppMode]);
+  }, [github]);
 
   async function handleLink() {
     setError(null);
@@ -78,8 +67,7 @@ export function GithubAccountCard() {
     try {
       await linkOAuth("github", {
         redirectTo: window.location.href,
-        // A GitHub App ignores scopes; sending them would be misleading.
-        scopes: isAppMode ? undefined : REQUIRED_SCOPES,
+        scopes: REQUIRED_SCOPES,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to link account");
@@ -122,9 +110,8 @@ export function GithubAccountCard() {
         </div>
         {!github.linked ? (
           <CardDescription>
-            {isAppMode
-              ? "Link your GitHub identity. Repositories are read through the GitHub App installation, so every member sees the same modules."
-              : "Connect your GitHub account to import private and organization modules."}
+            Connect your GitHub account to import private and organization
+            modules.
           </CardDescription>
         ) : null}
       </CardHeader>
@@ -154,29 +141,20 @@ export function GithubAccountCard() {
 
         {github.linked ? (
           <div className="space-y-1.5">
-            <p className="text-xs font-medium">
-              {isAppMode ? "Access" : "Granted scopes"}
-            </p>
-            {isAppMode ? (
-              <p className="text-xs text-muted-foreground">
-                Granted by the GitHub App installation, not by scopes. Change
-                which repositories it can reach in the installation settings.
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-1">
-                {github.scopes.length > 0 ? (
-                  github.scopes.map((scope) => (
-                    <Badge className="font-mono" key={scope} variant="outline">
-                      {scope}
-                    </Badge>
-                  ))
-                ) : (
-                  <p className="text-xs text-muted-foreground">
-                    GitHub reported none. Re-link to refresh.
-                  </p>
-                )}
-              </div>
-            )}
+            <p className="text-xs font-medium">Granted scopes</p>
+            <div className="flex flex-wrap gap-1">
+              {github.scopes.length > 0 ? (
+                github.scopes.map((scope) => (
+                  <Badge className="font-mono" key={scope} variant="outline">
+                    {scope}
+                  </Badge>
+                ))
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  GitHub reported none. Re-link to refresh.
+                </p>
+              )}
+            </div>
           </div>
         ) : null}
 

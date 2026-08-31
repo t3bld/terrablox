@@ -3,32 +3,13 @@ import "server-only";
 import { headers } from "next/headers";
 
 import { auth, isGithubConfigured } from "@/lib/auth/server";
-import {
-  getInstallationToken,
-  isGithubAppConfigured,
-} from "@/lib/github/app-auth";
-
-export type GitAuthMode = "app" | "user" | "none";
-
-/**
- * Which credential the server uses to read repositories.
- *
- * "app"  - GitHub App installation token: one identity for everyone, so every
- *          user sees the same modules regardless of personal repo access.
- * "user" - the signed-in user's OAuth token (needs the `repo` scope).
- */
-export function getGitAuthMode(): GitAuthMode {
-  if (isGithubAppConfigured) return "app";
-  if (isGithubConfigured) return "user";
-  return "none";
-}
 
 /**
  * Retrieves the Git provider token for the current request (server-side).
  *
- * Prefers the GitHub App installation token. Only when no App is configured
- * does it fall back to the signed-in user's OAuth token, which Better Auth
- * stores on the linked account and refreshes transparently.
+ * GitHub is the only provider, and it is read with the signed-in user's own
+ * OAuth token, so this is {@link getUserGithubToken} behind a signature that
+ * carries the provider — the shape route handlers already speak.
  */
 export async function getProviderTokenForRequest(
   _req: Request,
@@ -38,40 +19,7 @@ export async function getProviderTokenForRequest(
     return null;
   }
 
-  if (isGithubAppConfigured) {
-    // Still require a session so the App token is never reachable by an
-    // unauthenticated caller.
-    const userId = await getCurrentUserId();
-    if (!userId) {
-      return null;
-    }
-
-    try {
-      return await getInstallationToken();
-    } catch (error) {
-      console.error(
-        "[github-app] Could not obtain an installation token:",
-        error,
-      );
-      return null;
-    }
-  }
-
-  if (!isGithubConfigured) {
-    return null;
-  }
-
-  try {
-    const { accessToken } = await auth.api.getAccessToken({
-      body: { providerId: "github" },
-      headers: headers(),
-    });
-
-    return accessToken ?? null;
-  } catch {
-    // Not signed in, or no GitHub account linked to this user.
-    return null;
-  }
+  return getUserGithubToken();
 }
 
 /**
@@ -84,11 +32,9 @@ export async function getCurrentUserId(): Promise<string | null> {
 }
 
 /**
- * The signed-in user's own GitHub token, never the App's.
- *
- * Separate from {@link getProviderTokenForRequest} because that one prefers an
- * installation token, which identifies the app rather than a person and so
- * carries nobody's Copilot subscription.
+ * The signed-in user's GitHub token, which needs the `repo` scope to read
+ * private repositories. Better Auth stores it on the linked account and
+ * refreshes it transparently.
  */
 export async function getUserGithubToken(): Promise<string | null> {
   if (!isGithubConfigured) return null;
@@ -104,6 +50,7 @@ export async function getUserGithubToken(): Promise<string | null> {
 
     return accessToken ?? null;
   } catch {
+    // Not signed in, or no GitHub account linked to this user.
     return null;
   }
 }

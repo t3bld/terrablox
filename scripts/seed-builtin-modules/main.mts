@@ -398,12 +398,12 @@ async function main() {
             ? `, ${result.warnings.length} file(s) unparsed`
             : "";
 
+        // One line per ref, kept to what a watching human can read: which repo,
+        // which ref, how long. The per-phase timings still land in the summary
+        // totals at the end, where they are actually comparable.
         console.log(
           `${position} ${repo.name} @ ${refName}${submodules}${warnings}` +
-            ` — ${seconds(t.totalMs)}` +
-            ` (tree ${seconds(t.treeMs)}, fetch ${seconds(t.fetchMs)},` +
-            ` parse ${seconds(t.parseMs)}, db ${seconds(t.dbMs)};` +
-            ` ${t.fileCount} files in ${t.folderCount} folders)`,
+            ` — ${seconds(t.totalMs)}`,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

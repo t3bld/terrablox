@@ -6,6 +6,12 @@ import {
   DescribeStacksCommand,
   UpdateStackCommand,
 } from "@aws-sdk/client-cloudformation";
+import {
+  IAMClient,
+  ListOpenIDConnectProvidersCommand,
+} from "@aws-sdk/client-iam";
+
+import { GITHUB_OIDC_PROVIDER } from "@/lib/projects/deploy";
 
 import { AwsConnectionError } from "./connection";
 import { type ProjectAwsSession, toClientCredentials } from "./credentials";
@@ -102,6 +108,40 @@ export async function describeBootstrapStack(
       );
     }
     throw new AwsConnectionError(errorMessage(error), "unknown");
+  }
+}
+
+/**
+ * Whether this account already trusts GitHub Actions.
+ *
+ * IAM allows exactly one identity provider per URL, account-wide. The role stack
+ * creates one, so the second project set up in the same account used to fail on
+ * that resource with `AlreadyExists` — and because the create is made with
+ * `OnFailure: DELETE`, CloudFormation then removed the whole stack again. What
+ * the user saw was a button that turned into `DELETE_IN_PROGRESS` and a wizard
+ * that reset itself with nothing to read.
+ *
+ * Asking first turns that into a parameter. Null means "could not tell" — the
+ * session may not list providers — and the caller then tries to create it, which
+ * is the only answer that works on a fresh account.
+ */
+export async function hasGithubOidcProvider(
+  session: ProjectAwsSession,
+): Promise<boolean | null> {
+  // IAM is global; the region only decides which endpoint answers.
+  const iam = new IAMClient({
+    region: session.region,
+    credentials: toClientCredentials(session),
+  });
+
+  try {
+    const result = await iam.send(new ListOpenIDConnectProvidersCommand({}));
+
+    return (result.OpenIDConnectProviderList ?? []).some((provider) =>
+      provider.Arn?.endsWith(`:oidc-provider/${GITHUB_OIDC_PROVIDER}`),
+    );
+  } catch {
+    return null;
   }
 }
 

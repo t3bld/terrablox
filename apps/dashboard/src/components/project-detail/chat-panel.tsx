@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@terrablox/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@terrablox/ui/popover";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import {
   AlertCircle,
@@ -14,6 +15,7 @@ import {
   Brain,
   ChevronDown,
   ChevronRight,
+  Gauge,
   Loader2,
   PanelRightClose,
   Send,
@@ -23,6 +25,11 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AgentHarness } from "@/components/agent/agent-harness";
+import {
+  CopilotPlanSummary,
+  type CopilotStatus,
+} from "@/components/agent/copilot-plan-summary";
+import type { CopilotPlan } from "@/lib/agent/copilot-plan";
 import type {
   AgentStep,
   ProjectChatMessageDto,
@@ -82,15 +89,25 @@ export function ChatPanel({
   /** This project's stored overrides, so a save can resend the ones it is not changing. */
   const overridesRef = useRef<Record<string, unknown>>({});
   /**
-   * Premium requests left, as a percentage.
+   * The Copilot licence this project's turns are spent against.
    *
-   * Next to the composer because that is where the spending happens. Null when
-   * GitHub reports no metered budget — an unlimited plan, or the undocumented
-   * endpoint changing shape — and then nothing is shown rather than a zero.
+   * Next to the composer because that is where the spending happens. The whole
+   * plan rather than one number, so the popover can explain what the number
+   * means instead of leaving a bare percentage to be read as "used".
    */
-  const [creditsLeft, setCreditsLeft] = useState<number | null>(null);
+  const [copilotPlan, setCopilotPlan] = useState<CopilotPlan | null>(null);
   /** The running turn's trail, refreshed by the status poll. */
   const [liveSteps, setLiveSteps] = useState<AgentStep[]>([]);
+
+  /**
+   * Percent of the metered budget still available, or null when there is no
+   * budget to report — an unlimited plan, an unlinked account, or the
+   * undocumented endpoint changing shape. Then nothing is shown, rather than a
+   * zero that would read as "out of requests".
+   */
+  const premium = copilotPlan?.premium;
+  const creditsLeft =
+    premium && !premium.unlimited ? Math.round(premium.percentRemaining) : null;
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
@@ -197,16 +214,9 @@ export function ChatPanel({
 
     fetch("/api/copilot/status")
       .then((res) => (res.ok ? res.json() : null))
-      .then((body) => {
+      .then((body: CopilotStatus | null) => {
         if (cancelled) return;
-        const premium = body?.plan?.premium;
-        setCreditsLeft(
-          premium &&
-            !premium.unlimited &&
-            typeof premium.percentRemaining === "number"
-            ? Math.round(premium.percentRemaining)
-            : null,
-        );
+        setCopilotPlan(body?.plan ?? null);
       })
       .catch(() => undefined);
 
@@ -401,7 +411,11 @@ export function ChatPanel({
         </DialogContent>
       </Dialog>
 
-      <div className="flex-1 space-y-3 overflow-y-auto p-3">
+      {/* `overflow-x-hidden` on purpose: in a 384px column a pasted ARN or a URL
+          used to scroll the whole conversation sideways. Nothing here may widen
+          past the column, so every child below is given something to wrap
+          against rather than a horizontal scrollbar to hide behind. */}
+      <div className="min-w-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden p-3">
         {loading ? (
           <>
             <Skeleton className="h-16 w-full" />
@@ -443,7 +457,7 @@ export function ChatPanel({
             }}
             rows={2}
             placeholder="Describe what to build"
-            className="min-h-10 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-sm leading-5 ring-0 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-0"
+            className="min-h-10 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-sm leading-5 ring-0 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-0"
           />
           <Button
             size="icon"
@@ -471,15 +485,34 @@ export function ChatPanel({
             <Settings2 className="h-4 w-4" />
           </Button>
 
+          {/* "42% left" rather than "42%": the bare number read as the share
+              already spent, which is the opposite of what it says. Clicking it
+              opens the same licence summary the agent settings screen shows,
+              where the count, the reset date and the plan are spelled out. */}
           {creditsLeft !== null ? (
-            <span
-              className={`ml-auto shrink-0 pl-1 text-xs tabular-nums ${
-                creditsLeft <= 10 ? "text-destructive" : "text-muted-foreground"
-              }`}
-              title="Premium requests left on your Copilot plan"
-            >
-              {creditsLeft}%
-            </span>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  className={`ml-auto h-8 shrink-0 px-2 text-xs tabular-nums ${
+                    creditsLeft <= 10
+                      ? "text-destructive hover:text-destructive"
+                      : "text-muted-foreground"
+                  }`}
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Copilot premium requests remaining"
+                >
+                  <Gauge className="mr-1 h-3.5 w-3.5" />
+                  {creditsLeft}% left
+                </Button>
+              </PopoverTrigger>
+
+              <PopoverContent align="end" className="w-80 p-3" side="top">
+                {copilotPlan ? (
+                  <CopilotPlanSummary framed={false} plan={copilotPlan} />
+                ) : null}
+              </PopoverContent>
+            </Popover>
           ) : null}
         </div>
       </div>
@@ -502,12 +535,15 @@ function ChatBubble({ message }: { message: ProjectChatMessageDto }) {
   const steps = readSteps(message.metadata);
 
   return (
-    <div className={`flex gap-2 ${isUser ? "flex-row-reverse" : ""}`}>
+    <div className={`flex min-w-0 gap-2 ${isUser ? "flex-row-reverse" : ""}`}>
       <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-muted">
         {isUser ? <User className="h-3 w-3" /> : <Bot className="h-3 w-3" />}
       </div>
+      {/* `min-w-0` is what makes `max-w-[85%]` mean anything: a flex item
+          defaults to min-width:auto, so one long token in the bubble let this
+          column grow past the cap and take the panel with it. */}
       <div
-        className={`flex max-w-[85%] flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}
+        className={`flex min-w-0 max-w-[85%] flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}
       >
         {/* The user's own text is shown exactly as typed; only the agent writes
             markdown, and rendering a person's asterisks would change what they
@@ -515,7 +551,9 @@ function ChatBubble({ message }: { message: ProjectChatMessageDto }) {
         <div
           className={`min-w-0 rounded-lg px-3 py-2 text-sm ${
             isUser
-              ? "whitespace-pre-wrap bg-primary text-primary-foreground"
+              ? // `anywhere` rather than `break-words`: it also shrinks the
+                // min-content width, which is what a flex parent measures.
+                "whitespace-pre-wrap [overflow-wrap:anywhere] bg-primary text-primary-foreground"
               : "bg-muted"
           }`}
         >
@@ -565,23 +603,31 @@ function ChatBubble({ message }: { message: ProjectChatMessageDto }) {
  * panel so a step does not change appearance the moment the turn ends.
  */
 function StepRow({ step }: { step: AgentStep }) {
+  // Tool summaries carry file paths and resource addresses, which are exactly
+  // the strings that do not break on their own.
+  const textClass = "min-w-0 [overflow-wrap:anywhere]";
+
   if (step.kind === "thought") {
     return (
-      <li className="flex gap-2 text-xs">
+      <li className="flex min-w-0 gap-2 text-xs">
         <Brain className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
-        <span className="text-muted-foreground">{step.text}</span>
+        <span className={`${textClass} text-muted-foreground`}>
+          {step.text}
+        </span>
       </li>
     );
   }
 
   return (
-    <li className="flex gap-2 text-xs">
+    <li className="flex min-w-0 gap-2 text-xs">
       {step.ok ? (
         <Wrench className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
       ) : (
         <AlertCircle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
       )}
-      <span className={step.ok ? "" : "text-destructive"}>{step.summary}</span>
+      <span className={`${textClass} ${step.ok ? "" : "text-destructive"}`}>
+        {step.summary}
+      </span>
     </li>
   );
 }

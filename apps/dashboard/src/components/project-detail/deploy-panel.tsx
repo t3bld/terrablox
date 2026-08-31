@@ -8,18 +8,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
-import { Input } from "@terrablox/ui/input";
-import { Label } from "@terrablox/ui/label";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
-  ChevronDown,
-  ChevronRight,
   Circle,
-  Copy,
-  Download,
   ExternalLink,
   FileCode2,
   Loader2,
@@ -34,35 +28,19 @@ import { useCallback, useEffect, useState } from "react";
 
 import type {
   DeployRunKind,
-  DeployStackDto,
-  ProjectDeploySettings,
   ProjectDeployState,
   ProjectDto,
   WorkflowRunDto,
 } from "@/lib/projects/types";
-import { DeployWizard } from "./deploy-wizard";
+import { DeployWizard, WIZARD_COLUMN } from "./deploy-wizard";
 
 interface DeployPanelProps {
   projectId: string;
   project: ProjectDto | null;
-}
-
-type SettingsForm = {
-  awsAccountId: string;
-  awsRegion: string;
-  awsRoleArn: string;
-  stateBucket: string;
-  stateLockTable: string;
-};
-
-function toForm(settings: ProjectDeploySettings): SettingsForm {
-  return {
-    awsAccountId: settings.awsAccountId ?? "",
-    awsRegion: settings.awsRegion,
-    awsRoleArn: settings.awsRoleArn ?? "",
-    stateBucket: settings.stateBucket ?? "",
-    stateLockTable: settings.stateLockTable ?? "",
-  };
+  /** Passed through to the wizard's first step, which signs in to AWS. */
+  onAttachAws: (accountId: string) => Promise<void>;
+  /** The connected account, or null. Null reopens the wizard at step one. */
+  awsAccountId: string | null;
 }
 
 /**
@@ -78,11 +56,14 @@ function toForm(settings: ProjectDeploySettings): SettingsForm {
  * this panel generates and inspects them rather than hiding them behind a
  * proprietary runner — a project stays deployable without TerraBlox.
  */
-export function DeployPanel({ projectId, project }: DeployPanelProps) {
+export function DeployPanel({
+  projectId,
+  project,
+  onAttachAws,
+  awsAccountId,
+}: DeployPanelProps) {
   const [state, setState] = useState<ProjectDeployState | null>(null);
-  const [form, setForm] = useState<SettingsForm | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState<DeployRunKind | null>(null);
   const [confirmApply, setConfirmApply] = useState(false);
   const [reconfiguring, setReconfiguring] = useState(false);
@@ -99,7 +80,6 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
 
       const deploy = body.deploy as ProjectDeployState;
       setState(deploy);
-      setForm((current) => current ?? toForm(deploy.settings));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load");
     } finally {
@@ -172,37 +152,9 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
     }
   }
 
-  async function saveSettings() {
-    if (!form || saving) return;
-
-    setSaving(true);
-    setError(null);
-    setNotice(null);
-
-    try {
-      const response = await fetch(`/api/projects/${projectId}/deploy`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-
-      const body = await response.json();
-      if (!response.ok) throw new Error(body?.error ?? "Failed to save");
-
-      const deploy = body.deploy as ProjectDeployState;
-      setState(deploy);
-      setForm(toForm(deploy.settings));
-      setNotice("Settings saved.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save");
-    } finally {
-      setSaving(false);
-    }
-  }
-
   if (loading) {
     return (
-      <div className="mx-auto max-w-4xl space-y-4 p-6">
+      <div className={WIZARD_COLUMN}>
         <Skeleton className="h-32 w-full" />
         <Skeleton className="h-64 w-full" />
         <Skeleton className="h-48 w-full" />
@@ -212,10 +164,14 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
 
   const ready = state !== null && state.missing.length === 0;
   const configured = state?.setup.complete ?? false;
-  const showWizard = state !== null && (!configured || reconfiguring);
+  // A disconnected account reopens the wizard whatever the setup says: the role
+  // and the bucket may still exist, but nothing here can be created or re-read
+  // until the project points at an account again.
+  const showWizard =
+    state !== null && (!configured || reconfiguring || awsAccountId === null);
 
   return (
-    <div className="mx-auto max-w-4xl space-y-4 p-6">
+    <div className={WIZARD_COLUMN}>
       {error ? (
         <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -231,7 +187,7 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
 
       {showWizard && state ? (
         <>
-          {configured ? (
+          {configured && awsAccountId ? (
             <Button
               onClick={() => setReconfiguring(false)}
               size="sm"
@@ -243,8 +199,9 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
           ) : null}
 
           <DeployWizard
+            awsAccountId={awsAccountId}
+            onAttach={onAttachAws}
             onChanged={load}
-            project={project}
             projectId={projectId}
             state={state}
           />
@@ -450,178 +407,7 @@ export function DeployPanel({ projectId, project }: DeployPanelProps) {
           </Card>
         </>
       ) : null}
-
-      {/* Kept reachable in both faces: the wizard covers the normal path, and
-          this is what is left for a role somebody else created, or a state
-          bucket that has to be pointed somewhere specific. */}
-      {state && form ? (
-        <Card>
-          <CardContent className="pt-6">
-            <Collapsible label="Edit the settings by hand">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field
-                  id="aws-account"
-                  label="Account ID"
-                  onChange={(value) =>
-                    setForm({ ...form, awsAccountId: value })
-                  }
-                  placeholder="123456789012"
-                  value={form.awsAccountId}
-                />
-                <Field
-                  id="aws-region"
-                  label="Region"
-                  onChange={(value) => setForm({ ...form, awsRegion: value })}
-                  placeholder="eu-central-1"
-                  value={form.awsRegion}
-                />
-              </div>
-              <Field
-                id="aws-role"
-                label="Deployment role ARN"
-                onChange={(value) => setForm({ ...form, awsRoleArn: value })}
-                placeholder="arn:aws:iam::123456789012:role/terrablox-deploy"
-                value={form.awsRoleArn}
-              />
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Field
-                  id="state-bucket"
-                  label="State bucket (S3)"
-                  onChange={(value) => setForm({ ...form, stateBucket: value })}
-                  placeholder="my-terraform-state"
-                  value={form.stateBucket}
-                />
-                <Field
-                  id="state-lock"
-                  label="Lock table (DynamoDB)"
-                  onChange={(value) =>
-                    setForm({ ...form, stateLockTable: value })
-                  }
-                  placeholder="Optional"
-                  value={form.stateLockTable}
-                />
-              </div>
-
-              <StateBackendStatus projectId={projectId} />
-
-              <p className="text-muted-foreground text-xs">
-                Changing a value here does not touch the repository. Re-run the
-                setup afterwards so the workflows and the Actions variables
-                follow.
-              </p>
-
-              <div className="flex items-center gap-2">
-                <Button disabled={saving} onClick={() => void saveSettings()}>
-                  {saving ? "Saving…" : "Save settings"}
-                </Button>
-                <Button
-                  aria-label="Reload"
-                  onClick={() => void load()}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </div>
-
-              <Collapsible label="The CloudFormation stacks, to run yourself">
-                <p className="text-muted-foreground text-sm">
-                  The identical templates the wizard uses. Two stacks, because
-                  the role can be rebuilt at will while deleting the state loses
-                  track of infrastructure that is still running.
-                </p>
-
-                <StackDetails
-                  fileName="terrablox-role.yml"
-                  label="Deployment role"
-                  stack={state.bootstrap}
-                />
-                <StackDetails
-                  fileName="terrablox-state.yml"
-                  label="State backend"
-                  stack={state.state}
-                />
-
-                <Collapsible label="Trust policy only">
-                  <CodeBlock
-                    content={state.trustPolicy}
-                    label="Trust policy"
-                    language="json"
-                  />
-                </Collapsible>
-              </Collapsible>
-
-              <Collapsible label="The files TerraBlox writes">
-                {state.preview.map((file) => (
-                  <Collapsible key={file.path} label={file.path}>
-                    <CodeBlock content={file.content} label={file.path} />
-                  </Collapsible>
-                ))}
-              </Collapsible>
-            </Collapsible>
-          </CardContent>
-        </Card>
-      ) : null}
     </div>
-  );
-}
-
-/**
- * One stack, with the two ways to run it without this app.
- *
- * The template can be null before the wizard has derived the names it needs, in
- * which case there is nothing honest to offer for download yet.
- */
-function StackDetails({
-  fileName,
-  label,
-  stack,
-}: {
-  fileName: string;
-  label: string;
-  stack: DeployStackDto;
-}) {
-  return (
-    <Collapsible label={`${label} — ${stack.stackName}`}>
-      {stack.template ? (
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              onClick={() => downloadFile(fileName, stack.template ?? "")}
-              size="sm"
-              variant="outline"
-            >
-              <Download className="mr-2 h-3.5 w-3.5" />
-              Download template
-            </Button>
-            <a
-              className="inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground"
-              href={stack.consoleUrl}
-              rel="noreferrer"
-              target="_blank"
-            >
-              Or upload it in the CloudFormation console
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          </div>
-          <CodeBlock
-            content={stack.command}
-            label={`${label} command`}
-            language="bash"
-          />
-          <CodeBlock
-            content={stack.template}
-            label={`${label} template`}
-            language="yaml"
-          />
-        </>
-      ) : (
-        <p className="text-muted-foreground text-sm">
-          Available once the setup has derived the bucket name. Run the state
-          step in the wizard.
-        </p>
-      )}
-    </Collapsible>
   );
 }
 
@@ -638,145 +424,6 @@ function ConfigRow({
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="mb-1 break-all font-mono text-xs sm:mb-0">{children}</dd>
     </>
-  );
-}
-
-interface StateBackendDto {
-  bucket: string;
-  key: string;
-  exists: boolean;
-  versioning: boolean;
-  state: { size: number; lastModified: string | null } | null;
-  problem: string | null;
-}
-
-/**
- * What is really in the state bucket, read from S3 rather than inferred.
- *
- * The panel could only ever say what the last pipeline run reported, which is
- * silence until the first one succeeds. Asking the account directly turns "is
- * this configured correctly" into an answer while the field is still on screen.
- */
-function StateBackendStatus({ projectId }: { projectId: string }) {
-  const [status, setStatus] = useState<StateBackendDto | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
-
-  const refresh = useCallback(async () => {
-    try {
-      const response = await fetch(`/api/projects/${projectId}/state-backend`);
-      const body = await response.json();
-      if (!response.ok) throw new Error(body?.error ?? "Failed to read");
-
-      setStatus((body.status as StateBackendDto | null) ?? null);
-      setMessage(body.message ?? null);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to read");
-    }
-  }, [projectId]);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const create = async () => {
-    setCreating(true);
-    setMessage(null);
-
-    try {
-      const response = await fetch(`/api/projects/${projectId}/state-backend`, {
-        method: "POST",
-      });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body?.error ?? "Failed to create");
-      setStatus((body.status as StateBackendDto | null) ?? null);
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Failed to create");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  if (!status) {
-    return message ? (
-      <p className="text-muted-foreground text-xs">{message}</p>
-    ) : null;
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-2 text-xs">
-      {status.exists ? (
-        <>
-          <CheckCircle2 className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-muted-foreground">
-            Bucket reachable
-            {status.versioning ? ", versioned" : ", versioning off"}.
-            {status.state
-              ? ` State written ${new Date(
-                  status.state.lastModified ?? Date.now(),
-                ).toLocaleString()}.`
-              : " No state yet."}
-          </span>
-        </>
-      ) : (
-        <>
-          <AlertCircle className="h-3.5 w-3.5 text-muted-foreground" />
-          <span className="text-muted-foreground">
-            {status.problem ?? "That bucket does not exist yet."}
-          </span>
-          {status.problem ? null : (
-            <Button
-              className="h-6 px-2 text-xs"
-              disabled={creating}
-              onClick={() => void create()}
-              size="sm"
-              variant="outline"
-            >
-              {creating ? "Creating…" : "Create it"}
-            </Button>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-/** The template has to reach the user's own AWS CLI or console, not our server. */
-function downloadFile(name: string, content: string) {
-  const url = URL.createObjectURL(
-    new Blob([content], { type: "text/yaml;charset=utf-8" }),
-  );
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-function Field({
-  id,
-  label,
-  value,
-  placeholder,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  placeholder?: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div className="grid gap-2">
-      <Label htmlFor={id}>{label}</Label>
-      <Input
-        className="font-mono text-sm"
-        id={id}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        value={value}
-      />
-    </div>
   );
 }
 
@@ -811,73 +458,5 @@ function RunRow({ run }: { run: WorkflowRunDto }) {
         <ExternalLink className="h-3.5 w-3.5" />
       </a>
     </li>
-  );
-}
-
-function Collapsible({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="space-y-2">
-      <button
-        aria-expanded={open}
-        className="flex items-center gap-1 text-muted-foreground text-sm hover:text-foreground"
-        onClick={() => setOpen((value) => !value)}
-        type="button"
-      >
-        {open ? (
-          <ChevronDown className="h-4 w-4 shrink-0" />
-        ) : (
-          <ChevronRight className="h-4 w-4 shrink-0" />
-        )}
-        {label}
-      </button>
-      {open ? <div className="space-y-3 pl-5">{children}</div> : null}
-    </div>
-  );
-}
-
-function CodeBlock({
-  content,
-  label,
-  language,
-}: {
-  content: string;
-  label: string;
-  language?: string;
-}) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = async () => {
-    await navigator.clipboard.writeText(content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  };
-
-  return (
-    <div className="relative">
-      <Button
-        aria-label={`Copy ${label}`}
-        className="absolute top-1.5 right-1.5 h-7 w-7"
-        onClick={() => void copy()}
-        size="icon"
-        variant="ghost"
-      >
-        {copied ? (
-          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-        ) : (
-          <Copy className="h-3.5 w-3.5" />
-        )}
-      </Button>
-      <pre className="max-h-80 overflow-auto rounded-md border bg-muted/40 p-3 text-xs">
-        <code data-language={language}>{content}</code>
-      </pre>
-    </div>
   );
 }

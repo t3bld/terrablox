@@ -80,32 +80,6 @@ class GithubProvider implements IGitProvider {
     return allRepos.map(mapRepo);
   }
 
-  public async getInstallationRepos(token: string): Promise<GitRepo[]> {
-    const allRepos: GitRepo[] = [];
-    let page = 1;
-
-    while (page <= MAX_PAGINATION_PAGES) {
-      const url = new URL("https://api.github.com/installation/repositories");
-      url.searchParams.set("per_page", String(REPOS_PER_PAGE));
-      url.searchParams.set("page", String(page));
-
-      const res = await this.githubFetch(token, url.toString());
-
-      const body = (await res.json()) as { repositories?: GitRepo[] };
-      const pageData = body.repositories ?? [];
-      allRepos.push(...pageData);
-
-      if (pageData.length < REPOS_PER_PAGE) {
-        break;
-      }
-      page++;
-    }
-
-    return allRepos
-      .map(mapRepo)
-      .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""));
-  }
-
   public async getBranches(
     token: string,
     repoFullName: string,

@@ -30,6 +30,7 @@ export function AgentMarkdown({ children }: { children: string }) {
         prose-code:rounded prose-code:bg-black/5 prose-code:px-1
         prose-code:py-0.5 prose-code:font-normal prose-code:text-[0.85em]
         prose-code:before:content-none prose-code:after:content-none
+        prose-code:[overflow-wrap:anywhere]
         dark:prose-code:bg-white/10
         prose-pre:my-2 prose-pre:overflow-x-auto prose-pre:border
         prose-pre:bg-black/5 prose-pre:p-3 prose-pre:text-xs

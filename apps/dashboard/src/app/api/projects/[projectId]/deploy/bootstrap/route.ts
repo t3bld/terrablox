@@ -9,6 +9,7 @@ import {
   applyBootstrapStack,
   DEPLOY_ROLE_OUTPUT,
   describeBootstrapStack,
+  hasGithubOidcProvider,
 } from "@/lib/aws/bootstrap";
 import { resolveProjectAwsSession } from "@/lib/aws/credentials";
 import { awsRouteError } from "@/lib/aws/route-error";
@@ -176,6 +177,16 @@ export async function POST(req: Request, { params }: Params) {
 
       const context = pipelineContext(prepared);
 
+      // An account can hold only one identity provider per URL, so whether to
+      // create it is a fact about the account rather than a question for the
+      // user: asked here, the second project in an account succeeds instead of
+      // failing on that one resource and taking its own stack down with it. The
+      // caller can still force reuse; it cannot force a create that IAM refuses.
+      const reuseOidcProvider =
+        stack === "role" &&
+        (body.createOidcProvider === false ||
+          (await hasGithubOidcProvider(resolved.session)) === true);
+
       const result = await applyBootstrapStack(resolved.session, {
         stackName,
         template:
@@ -187,15 +198,13 @@ export async function POST(req: Request, { params }: Params) {
             ? {}
             : {
                 [PERMISSIONS_POLICY_PARAMETER]: DEPLOY_PERMISSIONS_POLICY_ARN,
-                // An account can hold only one provider per URL. The first
-                // project registers it; a second must be told not to try again.
-                [CREATE_OIDC_PARAMETER]:
-                  body.createOidcProvider === false ? "no" : "yes",
+                [CREATE_OIDC_PARAMETER]: reuseOidcProvider ? "no" : "yes",
               },
       });
 
       return NextResponse.json({
         started: result.started,
+        reusedOidcProvider: reuseOidcProvider,
         stack: await describeBootstrapStack(resolved.session, stackName),
       });
     } catch (error) {

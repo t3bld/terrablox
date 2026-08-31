@@ -13,14 +13,15 @@ import {
   AlertCircle,
   ExternalLink,
   GitCommit,
-  History,
   Layers,
   Network,
+  PanelLeftOpen,
   PanelRightOpen,
   Rocket,
   Wallet,
   Workflow,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
@@ -30,10 +31,12 @@ import {
   TabsNav,
   tabPanelProps,
 } from "@/components/layout/tabs-nav";
-import { AwsProjectGate } from "@/components/project-detail/aws-project-gate";
+import { ProjectActionsMenu } from "@/components/project-actions/project-actions-menu";
+import { AwsProjectStrip } from "@/components/project-detail/aws-project-strip";
 import { ChatPanel } from "@/components/project-detail/chat-panel";
 import { CostPanel } from "@/components/project-detail/cost-panel";
 import { DeployPanel } from "@/components/project-detail/deploy-panel";
+import { DeploySetupWizard } from "@/components/project-detail/deploy-setup-wizard";
 import { HistoryPanel } from "@/components/project-detail/history-panel";
 import { IntegrationGate } from "@/components/project-detail/integration-gate";
 import { LocalInspector } from "@/components/project-detail/local-inspector";
@@ -41,6 +44,7 @@ import { ModuleInspector } from "@/components/project-detail/module-inspector";
 import { ModuleLibrary } from "@/components/project-detail/module-library";
 import { ProjectArchitectureView } from "@/components/project-detail/project-architecture-view";
 import { StatePanel } from "@/components/project-detail/state-panel";
+import { useProjectAws } from "@/lib/aws/use-project-aws";
 import { useIntegrationStatus } from "@/lib/integrations/use-integration-status";
 import { canvasNodeId } from "@/lib/projects/locals";
 import type {
@@ -51,6 +55,26 @@ import type {
 } from "@/lib/projects/types";
 
 type ProjectTab = "code" | "deploy" | "state" | "costs" | "history";
+
+/**
+ * The tab lives in the fragment, as `#deploy`, so a reload, a bookmark and the
+ * back button all land where the user was.
+ *
+ * The fragment rather than a route segment: the tabs share one page's state — the
+ * graph, the pending drops, the agent conversation — and splitting them into
+ * routes would remount the canvas on every switch. It never reaches the server,
+ * which is the honest place for "which of these panels am I looking at".
+ *
+ * `history` is deliberately absent: its tab is hidden, so an address naming it
+ * would be a way into a screen the app is not offering yet.
+ */
+const URL_TABS: ProjectTab[] = ["code", "deploy", "state", "costs"];
+const DEFAULT_TAB: ProjectTab = "code";
+
+function tabFromHash(hash: string): ProjectTab {
+  const value = hash.replace(/^#/, "");
+  return URL_TABS.find((tab) => tab === value) ?? DEFAULT_TAB;
+}
 
 /**
  * How much of the same graph is drawn: the modules a project wires together,
@@ -88,8 +112,52 @@ export default function ProjectDetailPage({
   params: { projectId: string };
 }) {
   const { projectId } = params;
+  const router = useRouter();
 
-  const [tab, setTab] = useState<ProjectTab>("code");
+  const [tab, setTabState] = useState<ProjectTab>(DEFAULT_TAB);
+
+  /**
+   * The fragment is a client-only fact, so it is read after mounting rather than
+   * during render: the server has no way to know it, and rendering a different
+   * tab than it did would be a hydration mismatch.
+   *
+   * `hashchange` covers someone editing the address bar, `popstate` covers the
+   * back and forward buttons — `pushState` below fires neither, which is why the
+   * click path sets the state itself.
+   */
+  useEffect(() => {
+    const sync = () => setTabState(tabFromHash(window.location.hash));
+
+    sync();
+    window.addEventListener("hashchange", sync);
+    window.addEventListener("popstate", sync);
+
+    return () => {
+      window.removeEventListener("hashchange", sync);
+      window.removeEventListener("popstate", sync);
+    };
+  }, []);
+
+  /**
+   * Pushed rather than replaced, so the back button walks back through the tabs
+   * the way it walks back through pages. The default tab drops the fragment
+   * altogether instead of leaving a bare `#`.
+   *
+   * Written with the History API rather than the router: this changes nothing the
+   * server renders, and a router navigation would put the whole page through a
+   * transition to move a panel.
+   */
+  const setTab = useCallback((next: ProjectTab) => {
+    setTabState(next);
+
+    window.history.pushState(
+      null,
+      "",
+      next === DEFAULT_TAB
+        ? `${window.location.pathname}${window.location.search}`
+        : `#${next}`,
+    );
+  }, []);
   const [project, setProject] = useState<ProjectDto | null>(null);
   const [graph, setGraph] = useState<ProjectGraph | null>(null);
   const [loading, setLoading] = useState(true);
@@ -112,12 +180,31 @@ export default function ProjectDetailPage({
     }>
   >([]);
   const [panelOpen, setPanelOpen] = useState(true);
+  /** The module library, collapsed the same way the agent panel is. */
+  const [libraryOpen, setLibraryOpen] = useState(true);
   const [graphLevel, setGraphLevel] = useState<GraphLevel>("detail");
   const {
     status: integrations,
     loading: integrationsLoading,
     refresh: refreshIntegrations,
   } = useIntegrationStatus();
+
+  // Read once for the whole page: the strip under the tabs shows it everywhere,
+  // and the Deploy and State gates act on the same answer.
+  const {
+    state: aws,
+    error: awsError,
+    apply: applyAws,
+    attach: attachAws,
+  } = useProjectAws(projectId);
+
+  /**
+   * The account in use, or null for "not connected".
+   *
+   * An expired or unverified session counts as not connected: both need the same
+   * sign-in, and both leave every AWS read failing until it happens.
+   */
+  const awsAccountId = aws?.connected ? aws.accountId : null;
 
   const infracostReady = integrations?.infracost.connected ?? false;
 
@@ -127,7 +214,8 @@ export default function ProjectDetailPage({
   const tabs = useMemo<TabDefinition<ProjectTab>[]>(
     () => [
       { value: "code", label: "Code", icon: Workflow },
-      { value: "history", label: "History", icon: History },
+      // History is hidden for now. The panel below stays wired up, so bringing
+      // it back is this one line.
       { value: "deploy", label: "Deploy", icon: Rocket },
       { value: "state", label: "State", icon: Layers },
       {
@@ -386,31 +474,40 @@ export default function ProjectDetailPage({
             { label: project?.name ?? "Project" },
           ]}
           actions={
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              {busy ? "Committing…" : null}
-              {lastCommit && !busy ? (
-                <>
-                  <GitCommit className="h-3 w-3" />
-                  {lastCommit}
-                </>
-              ) : null}
-              {project ? (
-                <a
-                  href={
-                    project.repoUrl ??
-                    `https://github.com/${project.repoFullName}`
-                  }
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex max-w-[min(42vw,28rem)] items-center gap-1 truncate hover:text-foreground"
-                >
-                  <span className="truncate">
-                    {project.repoFullName}@{project.repoBranch}
-                  </span>
-                  <ExternalLink className="h-3 w-3 shrink-0" />
-                </a>
-              ) : null}
-            </div>
+            <>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                {busy ? "Committing…" : null}
+                {lastCommit && !busy ? (
+                  <>
+                    <GitCommit className="h-3 w-3" />
+                    {lastCommit}
+                  </>
+                ) : null}
+                {project ? (
+                  <a
+                    href={
+                      project.repoUrl ??
+                      `https://github.com/${project.repoFullName}`
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex max-w-[min(42vw,28rem)] items-center gap-1 truncate hover:text-foreground"
+                  >
+                    <span className="truncate">
+                      {project.repoFullName}@{project.repoBranch}
+                    </span>
+                    <ExternalLink className="h-3 w-3 shrink-0" />
+                  </a>
+                ) : null}
+              </div>
+
+              <ProjectActionsMenu
+                onDeleted={() => router.push("/projects")}
+                projectId={projectId}
+                projectName={project?.name ?? null}
+                repoFullName={project?.repoFullName ?? null}
+              />
+            </>
           }
         />
 
@@ -420,6 +517,15 @@ export default function ProjectDetailPage({
           onChange={setTab}
           idPrefix="project"
           label="Project views"
+        />
+
+        {/* Outside every tab panel: the account a project works against is true
+            on the canvas as much as in Deploy, and a session that is about to run
+            out is worth seeing before, not after, the next change. */}
+        <AwsProjectStrip
+          onChanged={applyAws}
+          projectId={projectId}
+          state={aws}
         />
 
         {error ? (
@@ -432,36 +538,43 @@ export default function ProjectDetailPage({
         {tab === "deploy" ? (
           <div
             {...tabPanelProps("project", "deploy")}
-            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+            // A stable gutter keeps the centred column in the same place whether
+            // the step is tall enough to scroll or not.
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]"
           >
-            <AwsProjectGate
-              blocked={[
-                "Generating the GitHub Actions pipeline for this project",
-                "Starting a plan or an apply from here",
-                "Reading which role and state bucket the pipeline should use",
-              ]}
-              explanation="Deployments run in your own AWS account. TerraBlox never holds AWS keys, so this project needs an account of its own to know where to deploy."
+            {/* No gate: connecting AWS is the wizard's first step, so the tab
+                has to be able to render before there is a connection. */}
+            <DeployPanel
+              awsAccountId={awsAccountId}
+              onAttachAws={attachAws}
+              project={project}
               projectId={projectId}
-            >
-              <DeployPanel projectId={projectId} project={project} />
-            </AwsProjectGate>
+            />
           </div>
         ) : tab === "state" ? (
           <div
             {...tabPanelProps("project", "state")}
-            className="flex min-h-0 flex-1 flex-col overflow-y-auto"
+            // Same stable gutter as Deploy: this tab shows the same wizard.
+            className="flex min-h-0 flex-1 flex-col overflow-y-auto [scrollbar-gutter:stable]"
           >
-            <AwsProjectGate
-              blocked={[
-                "The inventory of what is really running",
-                "Links into the AWS console for each resource",
-                "Refreshing the snapshot after an apply",
-              ]}
-              explanation="This tab shows what exists in this project's AWS account, which only means something once one is connected."
-              projectId={projectId}
-            >
+            {/* The same wizard the Deploy tab shows. This tab reads the state
+                bucket that setup creates, so until it exists there is nothing
+                here to look at and only one thing to do. */}
+            {awsError ? (
+              <p className="flex items-center gap-2 p-6 text-sm text-destructive">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {awsError}
+              </p>
+            ) : aws === null ? (
+              <Skeleton className="m-6 h-64" />
+            ) : awsAccountId ? (
               <StatePanel projectId={projectId} />
-            </AwsProjectGate>
+            ) : (
+              <DeploySetupWizard
+                onAttachAws={attachAws}
+                projectId={projectId}
+              />
+            )}
           </div>
         ) : tab === "costs" ? (
           <div
@@ -500,17 +613,41 @@ export default function ProjectDetailPage({
             {/* The library only. Values used to be listed underneath, which made
                 this column a mixed inventory of "things to add" and "things that
                 exist" — two different questions sharing one scroll. */}
-            <aside className="hidden w-64 shrink-0 overflow-y-auto border-r md:block">
-              <ModuleLibrary
-                disabled={busy || loading}
-                suggestions={suggestions}
-                onAdd={(moduleId, name) =>
-                  void mutate(
-                    { action: "add-module", moduleId },
-                    { optimisticLabel: name },
-                  )
-                }
-              />
+            <aside
+              className={`hidden shrink-0 border-r md:block ${
+                libraryOpen ? "w-64" : "w-10"
+              }`}
+            >
+              {/* Stays mounted while collapsed, so a search that narrowed the
+                  list to the one module being wired up survives folding the
+                  column away to look at the canvas. */}
+              <div className={libraryOpen ? "h-full" : "hidden"}>
+                <ModuleLibrary
+                  disabled={busy || loading}
+                  suggestions={suggestions}
+                  onAdd={(moduleId, name) =>
+                    void mutate(
+                      { action: "add-module", moduleId },
+                      { optimisticLabel: name },
+                    )
+                  }
+                  onCollapse={() => setLibraryOpen(false)}
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setLibraryOpen(true)}
+                className={`h-full w-full flex-col items-center gap-2 py-3 text-muted-foreground hover:bg-muted hover:text-foreground ${
+                  libraryOpen ? "hidden" : "flex"
+                }`}
+                aria-label="Expand module library"
+              >
+                <PanelLeftOpen className="h-4 w-4 shrink-0" />
+                <span className="truncate text-xs [writing-mode:vertical-rl]">
+                  Modules
+                </span>
+              </button>
             </aside>
 
             <main className="relative min-w-0 flex-1 p-3">

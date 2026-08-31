@@ -23,6 +23,7 @@
 - **Terraform Library**: Curated catalogue of production-ready modules
 - **Cost Transparency**: The complete cost structure of your infrastructure
 - **1-Click Deployments**: Seamless cloud provider integration
+
 ## ⚙️ Tech Stack
 
 TerraBlox is designed to be **self-hosted** —  no required managed services.
