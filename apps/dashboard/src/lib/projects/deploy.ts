@@ -83,6 +83,16 @@ export interface PipelineContext extends DeploySettings {
   rootFolder: string;
   projectName: string;
   terraformVersion?: string;
+  /**
+   * The KMS alias the state stack owns, once the project has pinned one.
+   *
+   * Passed in rather than derived here, because deriving it from the name means it
+   * changes when the name does — and an alias that changes is CloudFormation
+   * creating a second one on the next update while the first keeps pointing at the
+   * key. The old derivation stays as the fallback for a project that has not been
+   * set up yet, which is the only case with nothing to preserve.
+   */
+  stateKmsAlias?: string | null;
 }
 
 /** `.` is where Terraform lives by default, but Actions wants a real path. */
@@ -403,7 +413,7 @@ export function renderStateTemplate(context: PipelineContext): string {
     throw new Error("The state stack needs a bucket name.");
   }
 
-  const alias = defaultKmsAlias(context.projectName);
+  const alias = context.stateKmsAlias ?? defaultKmsAlias(context.projectName);
   const roleName = roleNameFrom(context.awsRoleArn, context.projectName);
 
   const lockTable = context.stateLockTable

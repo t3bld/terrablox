@@ -30,6 +30,14 @@ export const DEPLOY_ROLE_OUTPUT = "DeployRoleArn";
 
 export interface BootstrapStackState {
   stackName: string;
+  /**
+   * The stack's ARN, which is what the console links by.
+   *
+   * Carried rather than rebuilt from the name: the ARN also names the region and
+   * the account the stack really lives in, so a link made from it cannot point at
+   * the wrong one after somebody edits the project's region.
+   */
+  stackId: string | null;
   /** CloudFormation's own status, e.g. `CREATE_IN_PROGRESS`. */
   status: string;
   statusReason: string | null;
@@ -91,6 +99,7 @@ export async function describeBootstrapStack(
 
     return {
       stackName,
+      stackId: stack.StackId ?? null,
       status: stack.StackStatus,
       statusReason: stack.StackStatusReason ?? null,
       settled: SETTLED.test(stack.StackStatus),

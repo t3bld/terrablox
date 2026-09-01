@@ -21,6 +21,7 @@ import {
   bootstrapStackName,
   CREATE_OIDC_PARAMETER,
   DEPLOY_PERMISSIONS_POLICY_ARN,
+  defaultKmsAlias,
   defaultLockTable,
   defaultStateBucket,
   KMS_KEY_OUTPUT_KEY,
@@ -32,7 +33,11 @@ import {
   STATE_BUCKET_VARIABLE,
   stateStackName,
 } from "@/lib/projects/deploy";
-import { pipelineContext } from "@/lib/projects/deploy-service";
+import {
+  pipelineContext,
+  roleStackNameOf,
+  stateStackNameOf,
+} from "@/lib/projects/deploy-service";
 import { findOwnedProject } from "@/lib/projects/service";
 
 /**
@@ -54,6 +59,44 @@ interface Params {
 }
 
 type StackKind = "role" | "state";
+
+/**
+ * What the project points at, when the stack that should own it is not there.
+ *
+ * The distinction this exists to draw: a project with no role and no bucket has
+ * never been set up, and the wizard should offer to create them. A project that
+ * holds a role ARN whose stack cannot be described has been set up *somewhere
+ * else* — and those two look identical from `setup.roleReady` alone, so the wizard
+ * used to offer a create that could not succeed. The role name is recovered from
+ * the stored ARN, so creating again in the same account collides with the role
+ * that is still there, and `OnFailure: DELETE` then removes the new stack: a loop
+ * with no way out of it on this screen.
+ */
+interface StackDrift {
+  /** The stack we looked for and did not find. */
+  stackName: string;
+  /** Where we looked. */
+  region: string;
+  accountId: string | null;
+  /** The role ARN or bucket name the project is still holding. */
+  pointsAt: string;
+  /** The account that name belongs to, where it can be told. */
+  pointsAtAccount: string | null;
+  /**
+   * Whether a fresh create here would collide with what is already there.
+   *
+   * IAM is global and S3 bucket names are, so "the same account" decides it for the
+   * role, and for the state it is decided already: the bucket name is a stored
+   * column carrying the old account id, so re-creating it fails wherever we are.
+   */
+  collides: boolean;
+}
+
+/** The account an IAM ARN belongs to: `arn:aws:iam::123456789012:role/name`. */
+function accountOfArn(arn: string): string | null {
+  const account = arn.split(":")[4];
+  return account && /^\d{12}$/.test(account) ? account : null;
+}
 
 function parseStack(value: unknown): StackKind {
   return value === "state" ? "state" : "role";
@@ -81,6 +124,9 @@ async function ensureDerivedSettings(
     awsAccountId?: string;
     stateBucket?: string;
     stateLockTable?: string;
+    roleStackName?: string;
+    stateStackName?: string;
+    stateKmsAlias?: string;
   } = {};
 
   if (!project.awsAccountId && account) data.awsAccountId = account;
@@ -89,6 +135,25 @@ async function ensureDerivedSettings(
   }
   if (!project.stateLockTable) {
     data.stateLockTable = defaultLockTable(project.name);
+  }
+
+  // The stack names and the alias, pinned on the first apply for the same reason
+  // the bucket is: they are derived from the project's name, and the name can be
+  // changed afterwards. Derived fresh every time, a rename made `DescribeStacks`
+  // look for a stack nobody had created — so the wizard called the setup
+  // unfinished, and the create it offered then collided with the role that was
+  // still there under its old name and took itself down with `OnFailure: DELETE`.
+  //
+  // Written here rather than at the point of use, because "the first apply" is the
+  // only moment at which the derivation is still the right answer.
+  if (!project.roleStackName) {
+    data.roleStackName = bootstrapStackName(project.name);
+  }
+  if (!project.stateStackName) {
+    data.stateStackName = stateStackName(project.name);
+  }
+  if (!project.stateKmsAlias) {
+    data.stateKmsAlias = defaultKmsAlias(project.name);
   }
 
   if (Object.keys(data).length === 0) return project;
@@ -123,14 +188,50 @@ export async function GET(_req: Request, { params }: Params) {
 
   try {
     const [role, state] = await Promise.all([
-      describeBootstrapStack(
-        resolved.session,
-        bootstrapStackName(project.name),
-      ),
-      describeBootstrapStack(resolved.session, stateStackName(project.name)),
+      describeBootstrapStack(resolved.session, roleStackNameOf(project)),
+      describeBootstrapStack(resolved.session, stateStackNameOf(project)),
     ]);
 
-    return NextResponse.json({ connected: true, role, state });
+    const here = resolved.session.accountId;
+
+    // Read off the outputs the stacks produced, not off the names derived for
+    // them: `stateBucket` is filled in before the state stack runs, so its
+    // presence says nothing about whether anything was created. The KMS key ARN
+    // and the role ARN are only ever written by adopting a stack that succeeded,
+    // which makes them the honest evidence that a setup happened.
+    const roleDrift: StackDrift | null =
+      project.awsRoleArn && !role
+        ? {
+            stackName: roleStackNameOf(project),
+            region: project.awsRegion,
+            accountId: here,
+            pointsAt: project.awsRoleArn,
+            pointsAtAccount: accountOfArn(project.awsRoleArn),
+            collides: accountOfArn(project.awsRoleArn) === here,
+          }
+        : null;
+
+    const stateDrift: StackDrift | null =
+      project.stateKmsKeyArn && project.stateBucket && !state
+        ? {
+            stackName: stateStackNameOf(project),
+            region: project.awsRegion,
+            accountId: here,
+            pointsAt: project.stateBucket,
+            pointsAtAccount: accountOfArn(project.stateKmsKeyArn),
+            // Always. The bucket name is stored and carries the account it was
+            // made for, and S3 names are global, so creating it again fails in
+            // this account and in any other.
+            collides: true,
+          }
+        : null;
+
+    return NextResponse.json({
+      connected: true,
+      role,
+      state,
+      drift: { role: roleDrift, state: stateDrift },
+    });
   } catch (error) {
     return awsRouteError(error);
   }
@@ -154,7 +255,46 @@ export async function POST(req: Request, { params }: Params) {
   };
 
   const stack = parseStack(body.stack);
-  const action = body.action === "adopt" ? "adopt" : "apply";
+  const action =
+    body.action === "adopt"
+      ? "adopt"
+      : body.action === "reset"
+        ? "reset"
+        : "apply";
+
+  /**
+   * Forgets a bootstrap this project can no longer reach, so a fresh one can be
+   * built here.
+   *
+   * Touches nothing in AWS. That is the whole design: the role and the bucket this
+   * clears are still there, in whichever account and region they were created in,
+   * and deleting them from here would be the one irreversible thing in this flow —
+   * a state bucket holds the only record of what Terraform has built.
+   *
+   * It is therefore not "delete and recreate", it is "stop pointing at that one".
+   * Offered only where the drift report says a fresh create would not collide,
+   * because clearing the pointers cannot make an existing IAM role or an existing
+   * bucket name go away, and a button that leaves you in the same trap is worse
+   * than no button.
+   */
+  if (action === "reset") {
+    await database.project.update({
+      where: { id: project.id },
+      data: {
+        awsRoleArn: null,
+        stateBucket: null,
+        stateLockTable: null,
+        stateKmsKeyArn: null,
+        // The pinned identity goes with them. Keeping it would send the next apply
+        // at a stack named for the setup that was just abandoned.
+        roleStackName: null,
+        stateStackName: null,
+        stateKmsAlias: null,
+      },
+    });
+
+    return NextResponse.json({ reset: true });
+  }
 
   if (action === "apply") {
     const resolved = await resolveProjectAwsSession(userId, project, "write");
@@ -170,10 +310,13 @@ export async function POST(req: Request, { params }: Params) {
         resolved.session.accountId,
       );
 
+      // `prepared`, not `project`: the pin above may have just been written, and
+      // reading the stale row would create the stack under a name the project has
+      // already stopped using.
       const stackName =
         stack === "state"
-          ? stateStackName(prepared.name)
-          : bootstrapStackName(prepared.name);
+          ? stateStackNameOf(prepared)
+          : roleStackNameOf(prepared);
 
       const context = pipelineContext(prepared);
 
@@ -219,9 +362,7 @@ export async function POST(req: Request, { params }: Params) {
 
   try {
     const stackName =
-      stack === "state"
-        ? stateStackName(project.name)
-        : bootstrapStackName(project.name);
+      stack === "state" ? stateStackNameOf(project) : roleStackNameOf(project);
 
     const described = await describeBootstrapStack(resolved.session, stackName);
 

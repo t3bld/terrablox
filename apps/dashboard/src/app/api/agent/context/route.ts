@@ -8,8 +8,12 @@ import {
 } from "@/lib/agent/effective-settings";
 import { AGENT_KNOWLEDGE, knowledgeEnabled } from "@/lib/agent/knowledge";
 import {
+  AGENT_APP_REPO_FILE_CHARS,
+  AGENT_APP_REPO_TREE_LIMIT,
   AGENT_HISTORY_BUDGET_CHARS,
+  AGENT_MAX_APP_REPO_READS,
   AGENT_MAX_MCP_CALLS,
+  AGENT_MAX_STEPS,
   AGENT_MAX_TOOL_CALLS,
   DEFAULT_TURN_TIMEOUT_SECONDS,
 } from "@/lib/agent/runtime-options";
@@ -122,6 +126,10 @@ function view(input: {
     maxToolCalls: number | null;
     maxMcpCalls: number | null;
     historyBudgetChars: number | null;
+    maxSteps: number | null;
+    maxAppRepoReads: number | null;
+    appRepoTreeLimit: number | null;
+    appRepoFileChars: number | null;
     disabledKnowledge: string[];
     disabledTools: string[];
     mcpServers: McpServerView[];
@@ -154,6 +162,10 @@ function view(input: {
     maxToolCalls: settings.maxToolCalls,
     maxMcpCalls: settings.maxMcpCalls,
     historyBudgetChars: settings.historyBudgetChars,
+    maxSteps: settings.maxSteps,
+    maxAppRepoReads: settings.maxAppRepoReads,
+    appRepoTreeLimit: settings.appRepoTreeLimit,
+    appRepoFileChars: settings.appRepoFileChars,
     // Not a deny list like the other two permissions, so it is reported as the
     // plain answer it is: may the agent delete here, yes or no.
     allowDestructive: settings.allowDestructive,
@@ -164,6 +176,10 @@ function view(input: {
       maxToolCalls: AGENT_MAX_TOOL_CALLS,
       maxMcpCalls: AGENT_MAX_MCP_CALLS,
       historyBudgetChars: AGENT_HISTORY_BUDGET_CHARS,
+      maxSteps: AGENT_MAX_STEPS,
+      maxAppRepoReads: AGENT_MAX_APP_REPO_READS,
+      appRepoTreeLimit: AGENT_APP_REPO_TREE_LIMIT,
+      appRepoFileChars: AGENT_APP_REPO_FILE_CHARS,
     },
     // The agent runs on the user's own Copilot seat, so no token means no turn.
     githubConnected: input.githubConnected,

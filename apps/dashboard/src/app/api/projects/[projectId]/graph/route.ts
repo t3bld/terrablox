@@ -6,6 +6,7 @@ import {
 } from "@/lib/auth/server-helpers";
 import { GithubRequestError } from "@/lib/github/repo-files";
 import { isValidLocalName } from "@/lib/projects/locals";
+import { describeRepoFailure } from "@/lib/projects/repo-failure";
 import {
   applyProjectMutation,
   findOwnedProject,
@@ -41,8 +42,11 @@ export async function GET(
     const graph = await loadProjectGraph(token, project);
     return NextResponse.json({ graph });
   } catch (e) {
+    // Diagnosed rather than forwarded: this is the request that fails for every
+    // caller of the project page after a repository is deleted or renamed, so it
+    // is the one that has to say which of those happened.
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Failed to read repository" },
+      { error: await describeRepoFailure(token, project, e) },
       { status: e instanceof GithubRequestError ? e.status : 500 },
     );
   }
@@ -213,8 +217,11 @@ export async function POST(
     if (e instanceof MutationError) {
       return NextResponse.json({ error: e.message }, { status: 409 });
     }
+    // A write hits the same wall as a read once the repository is gone, and an
+    // edit is where the raw 404 is least usable: nothing the user can retype
+    // fixes it.
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Failed to apply change" },
+      { error: await describeRepoFailure(token, project, e) },
       { status: e instanceof GithubRequestError ? e.status : 500 },
     );
   }

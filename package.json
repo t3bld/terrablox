@@ -3,7 +3,7 @@
   "private": true,
   "description": "Open source, fully local Terraform assistant and infrastructure designer",
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=22.12.0",
     "pnpm": ">=8.0.0"
   },
   "packageManager": "pnpm@8.15.0",
@@ -22,6 +22,10 @@
     "type-check": "turbo run type-check",
     "db:up": "docker compose -f docker-compose.local.yml up -d",
     "db:down": "docker compose -f docker-compose.local.yml down",
+    "docker:build": "docker build -t terrablox/dashboard:latest .",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f dashboard",
     "db:push": "pnpm --filter @terrablox/database db:push",
     "db:migrate": "pnpm --filter @terrablox/database db:migrate:deploy",
     "db:reset": "pnpm --filter @terrablox/database db:migrate:reset",

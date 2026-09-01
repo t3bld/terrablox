@@ -60,8 +60,6 @@ import {
 import {
   AGENT_HISTORY_BUDGET_CHARS,
   AGENT_MAX_MCP_CALLS,
-  AGENT_MAX_STEPS,
-  AGENT_MAX_THOUGHTS,
   AGENT_MAX_TOOL_CALLS,
 } from "./runtime-options";
 
@@ -324,6 +322,10 @@ export type HarnessSetting =
   | "maxToolCalls"
   | "maxMcpCalls"
   | "historyBudgetChars"
+  | "maxSteps"
+  | "maxAppRepoReads"
+  | "appRepoTreeLimit"
+  | "appRepoFileChars"
   | "disabledKnowledge"
   | "appRepo"
   | "disabledTools"
@@ -342,6 +344,17 @@ export interface HarnessElement {
   enforcement: HarnessEnforcement;
   /** The setting that governs it, when there is one. Absent means fixed. */
   setting?: HarnessSetting;
+  /**
+   * Further fields the same control writes.
+   *
+   * For the one element that is a group of related numbers rather than a single
+   * dial: how far the agent may read into an application is three caps — the
+   * per-turn budget, the size of a listing, the size of a file — and splitting them
+   * into three entries would put three near-identical cards on the Context plane
+   * to say one thing. Declared so the "this project" badge stays honest, which it
+   * would not if it only watched the first of the three.
+   */
+  extraSettings?: readonly HarnessSetting[];
   /**
    * The knowledge source this element is, for the ones that are one.
    *
@@ -433,6 +446,20 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     source: "project-agent.ts → appRepo, knowledge.ts → app-repo",
   },
   {
+    id: "app-repo-reads",
+    plane: "context",
+    label: "How far it reads",
+    brief:
+      "The reading budget, and how much of a listing or a file comes back.",
+    description:
+      "How much of the linked application one turn may take in. The reading budget is counted apart from the operation budget, because a read commits nothing — sharing one would mean a turn that studied an application properly had nothing left to build with. It still needs a ceiling of its own: every read is a GitHub request against your rate limit, and a model that has decided to read a whole monorepo has stopped making progress. The other two bound a single call rather than the turn. Raising the listing limit is the right answer for a large repository, where the intended remedy — narrowing the path — needs a first listing broad enough to show which subtree to narrow to. The file limit only ever truncates something whose tail was not going to help, since anything that states what an application needs is far below it. All three share the model\u2019s context window with the project and the module library, so more is not free.",
+    enforcement: "capability",
+    setting: "maxAppRepoReads",
+    extraSettings: ["appRepoTreeLimit", "appRepoFileChars"],
+    knowledgeId: KNOWLEDGE_APP_REPO,
+    source: "project-agent.ts \u2192 spendRead, list_app_files, read_app_file",
+  },
+  {
     id: "instructions",
     plane: "context",
     label: "Your instructions",
@@ -442,6 +469,17 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     enforcement: "prompt",
     setting: "instructions",
     source: "settings-service.ts → instructions",
+  },
+  {
+    id: "record-language",
+    plane: "context",
+    label: "Recorded in English",
+    brief:
+      "Decisions, plans and replies are written in English whatever you write in.",
+    description:
+      "Everything the agent produces is written in English — the decisions it records, the plans inside them, its summaries and its replies — regardless of the language of the conversation. Your own words are never rewritten, and it may quote them. The reason is the log: a decision record is documentation that outlives the conversation it came from, and a project whose reasons are half in one language and half in another cannot be read by the next person or searched by anyone. Part of the operating rules, so an administrator can change it.",
+    enforcement: "prompt",
+    source: "runtime-options.ts → DEFAULT_OPERATING_RULES",
   },
   {
     id: "operating-rules",
@@ -609,12 +647,12 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
   {
     id: "plan-first",
     plane: "loop",
-    label: "Plan before building",
+    label: "Decide before building",
     brief: "A large plan ends the turn and waits for your next message.",
     description:
-      "For anything beyond a single edit the agent states its plan first, and a plan adding more than a handful of modules is meant to end the turn so you can confirm it. Advisory rather than enforced, and honestly so: the turn runs headless, so there is nobody to answer a question mid-turn — the confirmation can only arrive as your next message.",
+      "For anything beyond a single edit the agent records what it decided and why before building, and a plan adding more than a handful of modules is meant to end the turn so you can confirm it. Advisory rather than enforced, and honestly so: the turn runs headless, so there is nobody to answer a question mid-turn — the confirmation can only arrive as your next message. The record itself is not advisory: it lands in the project's Log with the operations it produced.",
     enforcement: "prompt",
-    source: "project-agent.ts → propose_plan, PLAN_CONFIRM_THRESHOLD",
+    source: "project-agent.ts → record_decision, PLAN_CONFIRM_THRESHOLD",
   },
 
   // --- Memory --------------------------------------------------------------
@@ -657,20 +695,36 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     id: "steps",
     plane: "observability",
     label: "Step trail",
-    brief: `Thoughts, operations and MCP calls, up to ${AGENT_MAX_STEPS} entries.`,
-    description: `The reasoning summaries, operations and MCP calls of a turn, written while it runs so a long turn shows progress, then stored with the reply. An MCP call is recorded with its server, its tool, and whether that server declared the tool read-only. Up to ${AGENT_MAX_STEPS} entries, of which at most ${AGENT_MAX_THOUGHTS} may be reasoning summaries — so a narrating turn cannot crowd out the record of what it committed. A cap on the record, not on the turn: what ends a turn is the operation budget, the timeout, or the model finishing. If the trail is ever cut, its last entry says so.`,
+    brief: "Thoughts, operations and MCP calls, as far as you let it record.",
+    description:
+      "The reasoning summaries, operations and MCP calls of a turn, written while it runs so a long turn shows progress, then stored with the reply. An MCP call is recorded with its server, its tool, and whether that server declared the tool read-only. A cap on the *record*, not on the turn — worth being exact about, because it is the one number here that does not restrain the agent: past it the entry is dropped and the turn carries straight on. What ends a turn is the operation budget, the timeout, or the model finishing. Set it against your operation budget: a turn allowed a hundred operations needs room for a hundred entries plus the lookups and narration around them, and a trail too small for its budget truncates a turn you can then no longer read back. About a quarter of it may be reasoning summaries, derived from this number rather than set beside it so a narrating turn can never crowd out the record of what it committed. If the trail is ever cut, its last entry says so.",
     enforcement: "recorded",
+    setting: "maxSteps",
     source: "project-agent.ts → pushStep, Project.agentSteps",
   },
   {
     id: "history",
     plane: "observability",
-    label: "Operation history",
-    brief: "Every applied change with its commit, on the History tab.",
+    label: "Decision log",
+    brief:
+      "What was decided and why, with the edits it produced, on the Log tab.",
     description:
-      "Every applied change, with the commit it produced, on the project's History tab. The agent's edits and your own appear the same way, because they are the same mutations.",
+      "Every applied change with the commit it produced, grouped under the decision it implements, on the project's Log tab. The agent records what it was deciding, the requirements it read, what it chose and what it ruled out — so the project can still answer why it looks the way it does long after the conversation has scrolled away. A recorded decision is the agent's account rather than a fact, which is why the requirements it worked from are a field of their own and not buried in prose. Your canvas edits appear the same way minus the decision, because nobody recorded a reason for a drag and drop.",
     enforcement: "recorded",
-    source: "ProjectOperation, history-panel.tsx",
+    source: "ProjectDecision, ProjectOperation, log-panel.tsx",
+  },
+  {
+    id: "decisions-in-force",
+    plane: "memory",
+    group: MEMORY_LONG_TERM,
+    label: "Decisions in force",
+    brief:
+      "Earlier decisions travel into every turn, with what they ruled out.",
+    description:
+      "The decisions a project still stands by are put in front of the agent on every turn: the question, the choice, the reason and the options that lost. Structured memory rather than remembered conversation, and that is the point — the transcript is replayed newest-first into a character budget, so an answer settled twenty turns ago falls out of the window and gets proposed again. A few lines of decisions outlast it, and a decision that is now wrong is meant to be superseded out loud rather than quietly worked around.",
+    enforcement: "recorded",
+    source:
+      "chat/route.ts → activeDecisions, project-agent.ts → decisionsInForce",
   },
 ];
 

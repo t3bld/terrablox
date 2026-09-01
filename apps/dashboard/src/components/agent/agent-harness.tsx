@@ -39,12 +39,23 @@ import {
   type TurnStep,
 } from "@/lib/agent/harness-model";
 import {
-  AGENT_MAX_STEPS,
-  HISTORY_BUDGET_CHOICES,
-  MCP_CALL_BUDGET_CHOICES,
+  APP_REPO_FILE_CHARS_MAX,
+  APP_REPO_FILE_CHARS_MIN,
+  APP_REPO_READS_MAX,
+  APP_REPO_READS_MIN,
+  APP_REPO_TREE_MAX,
+  APP_REPO_TREE_MIN,
+  HISTORY_BUDGET_MAX_CHARS,
+  HISTORY_BUDGET_MIN_CHARS,
+  MCP_CALL_BUDGET_MAX,
+  MCP_CALL_BUDGET_MIN,
   REASONING_EFFORTS,
-  TOOL_CALL_BUDGET_CHOICES,
-  TURN_TIMEOUT_CHOICES,
+  STEP_TRAIL_MAX,
+  STEP_TRAIL_MIN,
+  TOOL_CALL_BUDGET_MAX,
+  TOOL_CALL_BUDGET_MIN,
+  TURN_TIMEOUT_MAX_SECONDS,
+  TURN_TIMEOUT_MIN_SECONDS,
 } from "@/lib/agent/runtime-options";
 
 /**
@@ -149,6 +160,12 @@ interface AgentContextView {
   maxMcpCalls: number | null;
   /** Characters of this project's conversation replayed. Null → default. */
   historyBudgetChars: number | null;
+  /** Entries of one turn recorded. Null → default. */
+  maxSteps: number | null;
+  /** How far a turn may read into the linked application. Null → default. */
+  maxAppRepoReads: number | null;
+  appRepoTreeLimit: number | null;
+  appRepoFileChars: number | null;
   /** Whether the agent may delete modules and variables. */
   allowDestructive: boolean;
   /** What a null choice above resolves to, so the UI can name it. */
@@ -159,6 +176,10 @@ interface AgentContextView {
     maxToolCalls: number;
     maxMcpCalls: number;
     historyBudgetChars: number;
+    maxSteps: number;
+    maxAppRepoReads: number;
+    appRepoTreeLimit: number;
+    appRepoFileChars: number;
   };
   githubConnected: boolean;
   instructions: string;
@@ -230,6 +251,131 @@ function EnforcementBadge({ kind }: { kind: HarnessEnforcement }) {
  * they do not exist; for those the description is the content, so it is printed
  * rather than tucked behind the info icon.
  */
+/**
+ * A number a user types, with the default as its empty state.
+ *
+ * A field rather than the picker these settings used to be. The picker was chosen
+ * because it cannot be typed wrong and needs no error state, which was true and
+ * still cost more than it bought: every value in range is accepted by the API, so
+ * the list was only ever a guess at which of them anyone would want, and a number
+ * reached by any other route had to be spliced back into the options to stop the
+ * dropdown displaying a different budget than the turn enforces. Six of these
+ * settings now exist and that guessing does not scale.
+ *
+ * Empty means "follow the default", which is the same null the API stores, so the
+ * inherit case needs no control of its own. The default shows through as the
+ * placeholder — visible without being a value the field claims somebody chose.
+ *
+ * Writes on blur and on Enter rather than on every keystroke: each save reloads the
+ * whole context, so saving per keystroke would fire a request per digit and the
+ * reload would fight the cursor. Out-of-range input is reported in place and not
+ * sent, because the server rejects rather than clamps, and a rejection arriving as
+ * a banner over the diagram would not say which field was wrong.
+ */
+function NumberSetting({
+  busy,
+  defaultValue,
+  describe,
+  hint,
+  id,
+  label,
+  max,
+  min,
+  onSave,
+  unit,
+  value,
+}: {
+  busy: boolean;
+  defaultValue: number;
+  /** Says what a number means where the unit is not the point. 1800 → "30 minutes". */
+  describe?: (value: number) => string;
+  hint?: React.ReactNode;
+  id: string;
+  label: string;
+  max: number;
+  min: number;
+  onSave: (value: number | null) => void;
+  unit?: string;
+  value: number | null;
+}) {
+  const [draft, setDraft] = useState(value === null ? "" : String(value));
+  const [problem, setProblem] = useState<string | null>(null);
+
+  // The stored value wins whenever it changes under the field: a save reloads the
+  // context, and the same field is mounted in both scopes with different values.
+  useEffect(() => {
+    setDraft(value === null ? "" : String(value));
+    setProblem(null);
+  }, [value]);
+
+  const say = (n: number) =>
+    describe ? describe(n) : `${n}${unit ? ` ${unit}` : ""}`;
+
+  const commit = () => {
+    const text = draft.trim();
+
+    if (text === "") {
+      setProblem(null);
+      // Only when it is a change. An empty field that was already inheriting must
+      // not send a write every time it loses focus.
+      if (value !== null) onSave(null);
+      return;
+    }
+
+    const next = Number(text);
+
+    if (!Number.isFinite(next) || next < min || next > max) {
+      setProblem(`Enter a number between ${min} and ${max}.`);
+      return;
+    }
+
+    setProblem(null);
+    const rounded = Math.round(next);
+    if (rounded === value) setDraft(String(rounded));
+    else onSave(rounded);
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <div className="flex items-center gap-2">
+        <Input
+          className="w-32 tabular-nums"
+          disabled={busy}
+          id={id}
+          inputMode="numeric"
+          max={max}
+          min={min}
+          onBlur={commit}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commit();
+            }
+          }}
+          placeholder={String(defaultValue)}
+          type="number"
+          value={draft}
+        />
+        {unit ? (
+          <span className="text-muted-foreground text-sm">{unit}</span>
+        ) : null}
+      </div>
+      <p className="text-muted-foreground text-xs">
+        {problem ? (
+          <span className="text-destructive">{problem}</span>
+        ) : draft.trim() === "" ? (
+          `Follows the default: ${say(defaultValue)}. Type a number to decide it here.`
+        ) : (
+          `Clear the field to follow the default (${say(defaultValue)}).`
+        )}
+      </p>
+      {hint ? <p className="text-muted-foreground text-xs">{hint}</p> : null}
+    </div>
+  );
+}
+
 function ElementRow({
   element,
   scopeBadge,
@@ -1159,7 +1305,6 @@ export function AgentHarness({
   // entry: the dropdown is then a list of model names and nothing else.
   const model = context.model ?? context.defaults.model;
   const effort = context.reasoningEffort ?? context.defaults.reasoningEffort;
-  const timeout = context.turnTimeout ?? context.defaults.turnTimeout;
 
   // A list that does not contain the selected model would otherwise drop it and
   // read as though nothing were selected.
@@ -1175,53 +1320,31 @@ export function AgentHarness({
   const efforts: readonly string[] = selectedModel?.reasoningEfforts.length
     ? selectedModel.reasoningEfforts
     : REASONING_EFFORTS;
-  // A stored value that is not one of the presets still has to be selectable, or
-  // the dropdown would silently show a different number than the agent uses.
-  const timeoutChoices = TURN_TIMEOUT_CHOICES.some(
-    (choice) => choice.seconds === timeout,
-  )
-    ? TURN_TIMEOUT_CHOICES
-    : [
-        ...TURN_TIMEOUT_CHOICES,
-        { seconds: timeout, label: `${timeout}s` },
-      ].sort((a, b) => a.seconds - b.seconds);
+  /** Seconds are what the field stores; minutes are what the number means. */
+  const minutes = (seconds: number) =>
+    seconds % 60 === 0
+      ? `${seconds / 60} minute${seconds === 60 ? "" : "s"}`
+      : `${seconds} seconds`;
 
   const toolBudget = context.maxToolCalls ?? context.defaults.maxToolCalls;
-  const mcpBudget = context.maxMcpCalls ?? context.defaults.maxMcpCalls;
 
-  /**
-   * The offered budgets, plus whatever is stored if it is not one of them.
-   *
-   * Same reason as the timeout: the API accepts any value in range, so a number
-   * set through the API or lowered in a later release still has to be selectable —
-   * otherwise the dropdown would quietly display a different budget than the one
-   * the turn enforces.
-   */
-  const withStored = (choices: readonly number[], current: number) =>
-    choices.includes(current)
-      ? choices
-      : [...choices, current].sort((a, b) => a - b);
-
-  const toolBudgetChoices = withStored(TOOL_CALL_BUDGET_CHOICES, toolBudget);
-  const mcpBudgetChoices = withStored(MCP_CALL_BUDGET_CHOICES, mcpBudget);
-
-  const historyBudget =
-    context.historyBudgetChars ?? context.defaults.historyBudgetChars;
-  const historyChoices = HISTORY_BUDGET_CHOICES.some(
-    (choice) => choice.chars === historyBudget,
-  )
-    ? HISTORY_BUDGET_CHOICES
-    : [
-        ...HISTORY_BUDGET_CHOICES,
-        { chars: historyBudget, label: `~${historyBudget} characters` },
-      ].sort((a, b) => a.chars - b.chars);
+  /** Characters are the honest unit and thousands are the readable one. */
+  const thousands = (chars: number) =>
+    `~${Math.round(chars / 1000)}k characters`;
 
   const isProject = context.scope === "project";
-  /** Marks a card whose setting this project decides for itself. */
   const overrides = new Set(context.overridden);
 
-  const scopeBadge = (field: string | undefined) =>
-    field && isProject && overrides.has(field) ? (
+  /**
+   * Marks a card whose setting this project decides for itself.
+   *
+   * Takes a list because one card can hold more than one field — the application
+   * reading caps are three numbers behind a single entry — and a badge watching
+   * only the first would call the card inherited while two of its three inputs
+   * showed an override.
+   */
+  const scopeBadge = (...fields: (string | undefined)[]) =>
+    isProject && fields.some((field) => field && overrides.has(field)) ? (
       <Badge className="align-middle font-normal" variant="secondary">
         this project
       </Badge>
@@ -1238,24 +1361,6 @@ export function AgentHarness({
 
   const knowledgeFor = (element: HarnessElement) =>
     view.knowledge.find((source) => source.id === element.knowledgeId);
-
-  /**
-   * The "leave it to the default" entry, shared by the four numeric dials.
-   *
-   * They used to offer numbers only, which meant that once a value had been picked
-   * there was no way back: the stored number won for ever, and a change to the
-   * default — the timeout going from five minutes to thirty, say — never reached
-   * anyone who had ever touched the dial. A user who has no opinion should be able
-   * to say so, and keep saying it as the default moves.
-   *
-   * The empty value is what the API reads as null. `save` sends it verbatim, and
-   * `asTurnTimeout` and friends treat "" as "not set".
-   */
-  const followsDefault = (stored: number | null) => stored === null;
-
-  const defaultOption = (label: string) => (
-    <option value="">Follow the default ({label})</option>
-  );
 
   /**
    * The control for one element, or null when the element is fixed.
@@ -1462,127 +1567,134 @@ export function AgentHarness({
 
       case "timeout":
         return (
-          <div className="space-y-1.5">
-            <Label htmlFor={fieldId("agent-timeout")}>
-              How long a turn may run
-            </Label>
-            <Select
-              disabled={busy === "turnTimeout"}
-              id={fieldId("agent-timeout")}
-              onChange={(event) =>
-                void save("turnTimeout", {
-                  turnTimeout: event.target.value || null,
-                })
-              }
-              value={followsDefault(view.turnTimeout) ? "" : String(timeout)}
-            >
-              {defaultOption(
-                `${Math.round(view.defaults.turnTimeout / 60)} minutes`,
-              )}
-              {timeoutChoices.map((choice) => (
-                <option key={choice.seconds} value={choice.seconds}>
-                  {choice.label}
-                </option>
-              ))}
-            </Select>
-          </div>
+          <NumberSetting
+            busy={busy === "turnTimeout"}
+            defaultValue={view.defaults.turnTimeout}
+            describe={minutes}
+            hint="It stops a stuck turn, not a working one. A turn killed while it was still making progress leaves no commit and no explanation."
+            id={fieldId("agent-timeout")}
+            label="How long a turn may run"
+            max={TURN_TIMEOUT_MAX_SECONDS}
+            min={TURN_TIMEOUT_MIN_SECONDS}
+            onSave={(next) => void save("turnTimeout", { turnTimeout: next })}
+            unit="seconds"
+            value={view.turnTimeout}
+          />
         );
 
       case "tool-budget":
         return (
-          <div className="space-y-1.5">
-            <Label htmlFor={fieldId("agent-tool-budget")}>
-              Operations per turn
-            </Label>
-            <Select
-              disabled={busy === "maxToolCalls"}
-              id={fieldId("agent-tool-budget")}
-              onChange={(event) =>
-                void save("maxToolCalls", {
-                  maxToolCalls: event.target.value || null,
-                })
-              }
-              value={
-                followsDefault(view.maxToolCalls) ? "" : String(toolBudget)
-              }
-            >
-              {defaultOption(String(view.defaults.maxToolCalls))}
-              {toolBudgetChoices.map((choice) => (
-                <option key={choice} value={choice}>
-                  {choice === 1 ? "1 — report after every edit" : choice}
-                </option>
-              ))}
-            </Select>
-            <p className="text-muted-foreground text-xs">
-              Each one becomes a commit after the turn.
-            </p>
-          </div>
+          <NumberSetting
+            busy={busy === "maxToolCalls"}
+            defaultValue={view.defaults.maxToolCalls}
+            hint="Each one becomes a commit after the turn, so this is the size of the largest change one unreviewed turn can make. Set to 1, the agent reports back after every single edit."
+            id={fieldId("agent-tool-budget")}
+            label="Operations per turn"
+            max={TOOL_CALL_BUDGET_MAX}
+            min={TOOL_CALL_BUDGET_MIN}
+            onSave={(next) => void save("maxToolCalls", { maxToolCalls: next })}
+            unit="operations"
+            value={view.maxToolCalls}
+          />
         );
 
       case "mcp-budget":
         return (
-          <div className="space-y-1.5">
-            <Label htmlFor={fieldId("agent-mcp-budget")}>
-              MCP calls per turn
-            </Label>
-            <Select
-              disabled={busy === "maxMcpCalls"}
-              id={fieldId("agent-mcp-budget")}
-              onChange={(event) =>
-                void save("maxMcpCalls", {
-                  maxMcpCalls: event.target.value || null,
-                })
-              }
-              value={followsDefault(view.maxMcpCalls) ? "" : String(mcpBudget)}
-            >
-              {defaultOption(String(view.defaults.maxMcpCalls))}
-              {mcpBudgetChoices.map((choice) => (
-                <option key={choice} value={choice}>
-                  {choice}
-                </option>
-              ))}
-            </Select>
-            <p className="text-muted-foreground text-xs">
-              Counted apart from operations, because a call changes nothing
-              here.
-            </p>
-          </div>
+          <NumberSetting
+            busy={busy === "maxMcpCalls"}
+            defaultValue={view.defaults.maxMcpCalls}
+            hint="Counted apart from operations, because a call changes nothing here — it is a request to a server you connected, on the credential you stored with it."
+            id={fieldId("agent-mcp-budget")}
+            label="MCP calls per turn"
+            max={MCP_CALL_BUDGET_MAX}
+            min={MCP_CALL_BUDGET_MIN}
+            onSave={(next) => void save("maxMcpCalls", { maxMcpCalls: next })}
+            unit="calls"
+            value={view.maxMcpCalls}
+          />
         );
 
       case "transcript":
         return (
-          <div className="space-y-1.5">
-            <Label htmlFor={fieldId("agent-history")}>
-              How much conversation is replayed
-            </Label>
-            <Select
-              disabled={busy === "historyBudgetChars"}
-              id={fieldId("agent-history")}
-              onChange={(event) =>
-                void save("historyBudgetChars", {
-                  historyBudgetChars: event.target.value || null,
-                })
+          <NumberSetting
+            busy={busy === "historyBudgetChars"}
+            defaultValue={view.defaults.historyBudgetChars}
+            describe={thousands}
+            hint="The oldest messages are dropped first, so a decision argued out early in a long project is what falls off. It shares the model's context window with the project and the module library, so more is not free."
+            id={fieldId("agent-history")}
+            label="How much conversation is replayed"
+            max={HISTORY_BUDGET_MAX_CHARS}
+            min={HISTORY_BUDGET_MIN_CHARS}
+            onSave={(next) =>
+              void save("historyBudgetChars", { historyBudgetChars: next })
+            }
+            unit="characters"
+            value={view.historyBudgetChars}
+          />
+        );
+
+      case "steps":
+        return (
+          <NumberSetting
+            busy={busy === "maxSteps"}
+            defaultValue={view.defaults.maxSteps}
+            hint={`Set it against your operation budget: a turn allowed ${toolBudget} operations needs room for ${toolBudget} entries plus the lookups and narration around them. About a quarter of the trail may be reasoning summaries, derived from this number so a narrating turn can never crowd out the record of what it committed.`}
+            id={fieldId("agent-steps")}
+            label="Entries recorded per turn"
+            max={STEP_TRAIL_MAX}
+            min={STEP_TRAIL_MIN}
+            onSave={(next) => void save("maxSteps", { maxSteps: next })}
+            unit="entries"
+            value={view.maxSteps}
+          />
+        );
+
+      case "app-repo-reads":
+        return (
+          <div className="space-y-4">
+            <NumberSetting
+              busy={busy === "maxAppRepoReads"}
+              defaultValue={view.defaults.maxAppRepoReads}
+              hint="Not on the operation budget: a read commits nothing, and sharing one budget would leave a turn that studied the application properly with nothing left to build with."
+              id={fieldId("agent-app-reads")}
+              label="Reads per turn"
+              max={APP_REPO_READS_MAX}
+              min={APP_REPO_READS_MIN}
+              onSave={(next) =>
+                void save("maxAppRepoReads", { maxAppRepoReads: next })
               }
-              value={
-                followsDefault(view.historyBudgetChars)
-                  ? ""
-                  : String(historyBudget)
+              unit="reads"
+              value={view.maxAppRepoReads}
+            />
+            <NumberSetting
+              busy={busy === "appRepoTreeLimit"}
+              defaultValue={view.defaults.appRepoTreeLimit}
+              hint="Raise it for a large repository: narrowing the path is the intended remedy, and that needs a first listing broad enough to show which subtree to narrow to."
+              id={fieldId("agent-app-tree")}
+              label="Paths per listing"
+              max={APP_REPO_TREE_MAX}
+              min={APP_REPO_TREE_MIN}
+              onSave={(next) =>
+                void save("appRepoTreeLimit", { appRepoTreeLimit: next })
               }
-            >
-              {defaultOption(
-                `~${Math.round(view.defaults.historyBudgetChars / 1000)}k characters`,
-              )}
-              {historyChoices.map((choice) => (
-                <option key={choice.chars} value={choice.chars}>
-                  {choice.label}
-                </option>
-              ))}
-            </Select>
-            <p className="text-muted-foreground text-xs">
-              The oldest messages are dropped first. It shares the model's
-              context window with the project and the module library, so more is
-              not free.
-            </p>
+              unit="paths"
+              value={view.appRepoTreeLimit}
+            />
+            <NumberSetting
+              busy={busy === "appRepoFileChars"}
+              defaultValue={view.defaults.appRepoFileChars}
+              describe={thousands}
+              hint="Anything that states what an application needs — a manifest, a Dockerfile, a compose file — is far below this, so the truncation only hits files whose tail was not going to help."
+              id={fieldId("agent-app-file")}
+              label="Characters per file"
+              max={APP_REPO_FILE_CHARS_MAX}
+              min={APP_REPO_FILE_CHARS_MIN}
+              onSave={(next) =>
+                void save("appRepoFileChars", { appRepoFileChars: next })
+              }
+              unit="characters"
+              value={view.appRepoFileChars}
+            />
           </div>
         );
 
@@ -1688,7 +1800,10 @@ export function AgentHarness({
             <ElementRow
               element={element}
               key={element.id}
-              scopeBadge={scopeBadge(element.setting)}
+              scopeBadge={scopeBadge(
+                element.setting,
+                ...(element.extraSettings ?? []),
+              )}
             >
               {controlFor(element, `${scope}-${element.id}`)}
             </ElementRow>
@@ -1995,6 +2110,7 @@ function buildGraph(context: AgentContextView): {
       // Named rather than counted: which application it may read is the fact, and
       // "none" is a real answer rather than a missing one.
       application: context.appRepo?.fullName ?? "no application linked",
+      reads: `${context.maxAppRepoReads ?? context.defaults.maxAppRepoReads} per turn`,
     },
     tools: {
       namespaces: "custom · mcp · builtin",
@@ -2034,7 +2150,7 @@ function buildGraph(context: AgentContextView): {
       runtime: "session deleted per turn",
     },
     observability: {
-      steps: `up to ${AGENT_MAX_STEPS} recorded`,
+      steps: `up to ${context.maxSteps ?? context.defaults.maxSteps} recorded`,
       history: `${context.projectCount} project(s) with a commit log`,
     },
   };

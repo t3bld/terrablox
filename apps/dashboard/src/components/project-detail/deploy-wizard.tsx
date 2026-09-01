@@ -10,6 +10,9 @@ import {
   AlertCircle,
   ArrowLeft,
   Check,
+  CheckCircle2,
+  Clock,
+  ExternalLink,
   FileCode2,
   KeyRound,
   Loader2,
@@ -17,21 +20,45 @@ import {
   Plug,
   Rocket,
   ShieldAlert,
+  XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AwsSsoConnect } from "@/components/account/aws-sso-connect";
 import { AwsRegionPicker } from "@/components/aws-region-picker";
 import { WizardSteps } from "@/components/layout/wizard-steps";
+import {
+  buildRoleChecklist,
+  type ChecklistItem,
+  type ChecklistState,
+} from "@/lib/projects/deploy-checklist";
 import type { ProjectDeployState } from "@/lib/projects/types";
 
 interface StackDto {
   stackName: string;
+  /** The stack ARN, which is what the console link is made from. */
+  stackId: string | null;
   status: string;
   statusReason: string | null;
   settled: boolean;
   succeeded: boolean;
   outputs: Record<string, string>;
+}
+
+/**
+ * A bootstrap this project points at but cannot reach from where it is now.
+ *
+ * Reported by the server rather than worked out here, because deciding it needs the
+ * session's account id — which is the thing the browser is not told.
+ */
+interface DriftDto {
+  stackName: string;
+  region: string;
+  accountId: string | null;
+  pointsAt: string;
+  pointsAtAccount: string | null;
+  /** True when creating it again here would fail on a name already taken. */
+  collides: boolean;
 }
 
 interface DeployWizardProps {
@@ -147,6 +174,10 @@ export function DeployWizard({
 }: DeployWizardProps) {
   const [roleStack, setRoleStack] = useState<StackDto | null>(null);
   const [stateStack, setStateStack] = useState<StackDto | null>(null);
+  const [drift, setDrift] = useState<{
+    role: DriftDto | null;
+    state: DriftDto | null;
+  }>({ role: null, state: null });
   const [connection, setConnection] = useState<{
     connected: boolean;
     message: string | null;
@@ -165,6 +196,23 @@ export function DeployWizard({
   const [chosen, setChosen] = useState<StepId | null>(null);
   /** Set when writing the role into the repository failed on its own. */
   const [saveFailed, setSaveFailed] = useState(false);
+  /**
+   * Why the Actions variables were not written, when the rest of the save worked.
+   *
+   * Its own field rather than part of `error`: the role *is* saved at that point,
+   * so a banner saying something failed would overstate it. It belongs to the one
+   * checklist line it is about.
+   */
+  const [variablesError, setVariablesError] = useState<string | null>(null);
+  /**
+   * Whether the last run reused an identity provider that was already there.
+   *
+   * Worth reporting because it is the difference between "we created a trust
+   * relationship in your account" and "we attached to the one you had", and the
+   * stack status cannot show it. Held rather than announced in a banner, so it
+   * reads as a detail of the step it belongs to.
+   */
+  const [reusedOidcProvider, setReusedOidcProvider] = useState(false);
   /**
    * Why the last role stack attempt did not survive.
    *
@@ -206,6 +254,14 @@ export function DeployWizard({
 
       setRoleStack(role);
       setStateStack((body.state as StackDto | null) ?? null);
+
+      const reported = body.drift as
+        | { role: DriftDto | null; state: DriftDto | null }
+        | undefined;
+      setDrift({
+        role: reported?.role ?? null,
+        state: reported?.state ?? null,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to read");
     }
@@ -285,10 +341,13 @@ export function DeployWizard({
         written?: boolean;
         error?: string;
       } | null;
-      setNotice(
+      // No banner: both halves of this are checklist lines, and a sentence
+      // repeating them was the third place on screen saying the same thing.
+      setVariablesError(
         github?.written
-          ? "The role is saved, and written to the repository's Actions variables."
-          : `The role is saved. ${github?.error ?? ""}`.trim(),
+          ? null
+          : (github?.error ??
+              "Could not write the repository's Actions variables."),
       );
       setSaveFailed(false);
       await onChanged();
@@ -321,6 +380,29 @@ export function DeployWizard({
 
     void saveRole();
   }, [roleStack, state.setup.roleReady, state.setup.variablesReady, saveRole]);
+
+  /**
+   * Stops pointing at a bootstrap this project can no longer reach.
+   *
+   * Nothing in AWS is touched — the role and the bucket stay where they were made.
+   * Only offered where the drift report says a fresh create would not collide,
+   * because clearing our own pointers cannot free an IAM role name or an S3 bucket
+   * name that is still taken.
+   */
+  async function forgetSetup(stepId: BusyKey) {
+    const body = await post(
+      stepId,
+      `/api/projects/${projectId}/deploy/bootstrap`,
+      { action: "reset" },
+    );
+    if (!body) return;
+
+    setRoleFailure(null);
+    setVariablesError(null);
+    setSaveFailed(false);
+    await readStacks();
+    await onChanged();
+  }
 
   /** Attaches the account signed in to in step one, then re-reads the stacks. */
   const connectAccount = useCallback(
@@ -361,6 +443,30 @@ export function DeployWizard({
     busy === "role" ||
     busy === "role-variables" ||
     (roleStack !== null && !roleStack.settled);
+
+  /**
+   * The last attempt did not leave a usable stack.
+   *
+   * Two ways to be true, because a create made with `OnFailure: DELETE` erases
+   * its own evidence: either the stack is still there and settled unsuccessfully,
+   * or it is gone and `roleFailure` is what it said on the way out.
+   */
+  const roleFailed =
+    roleFailure !== null || Boolean(roleStack?.settled && !roleStack.succeeded);
+
+  const roleChecklist = buildRoleChecklist({
+    stack: roleStack,
+    failure: roleFailure,
+    busy,
+    roleReady: state.setup.roleReady,
+    variablesReady: state.setup.variablesReady,
+    saveFailed,
+    variablesError,
+    reusedOidcProvider,
+    driftNote: drift.role
+      ? `No stack called ${drift.role.stackName} in ${drift.role.region}.`
+      : null,
+  });
 
   /** Where the work actually stands, regardless of what is being looked at. */
   const nextUnfinished = ORDER.find((id) => !done[id]) ?? FINAL_STEP;
@@ -413,7 +519,10 @@ export function DeployWizard({
   }
 
   async function applyStack(stack: "role" | "state", stepId: BusyKey) {
-    if (stack === "role") setRoleFailure(null);
+    if (stack === "role") {
+      setRoleFailure(null);
+      setVariablesError(null);
+    }
 
     const body = await post(
       stepId,
@@ -432,13 +541,18 @@ export function DeployWizard({
       setRoleStack(next);
     } else setStateStack(next);
 
-    setNotice(
-      body.started
-        ? body.reusedOidcProvider
-          ? "CloudFormation is building the stack, reusing the GitHub identity provider this account already has."
-          : "CloudFormation is building the stack."
-        : "The stack was already up to date.",
-    );
+    if (stack === "role") {
+      // Reported on the checklist line it belongs to. "CloudFormation is building
+      // the stack" was a banner restating the spinner directly beneath it.
+      setReusedOidcProvider(Boolean(body.reusedOidcProvider));
+    } else {
+      setNotice(
+        body.started
+          ? "CloudFormation is building the stack."
+          : "The stack was already up to date.",
+      );
+    }
+
     await onChanged();
   }
 
@@ -578,37 +692,52 @@ export function DeployWizard({
                     value={region}
                   />
                 </div>
-                <p className="flex items-center gap-2 text-muted-foreground text-xs">
-                  {busy === "account" ? (
+                {/* The sentence that used to sit here explained what the region
+                    decides. The next two steps show it being decided — a role
+                    and a bucket appearing in that region — so it was a caption
+                    for something the user was about to watch happen. Only the
+                    save feedback is left, because a select that saves itself
+                    otherwise gives no sign that it did. */}
+                {busy === "account" ? (
+                  <p className="flex items-center gap-2 text-muted-foreground text-xs">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : null}
-                  The role, the state bucket and every deployment are created
-                  here. Continue when it is right.
-                </p>
+                    Saving the region…
+                  </p>
+                ) : null}
               </div>
             )
           ) : null}
 
           {current === "role" ? (
             <div className="space-y-3">
-              {/* Only while there is a decision left to make. Once the stack is
-                  running, what the role will be allowed to do is settled, and
-                  the warning was competing for attention with the status. */}
-              {roleRunning ? null : (
+              {/* Only while the permissions are still a decision. Once the stack
+                  has been asked for, what the role may do is settled, and after
+                  it exists the warning is a fact about the finished setup — which
+                  is where the configuration view states it, in full, next to the
+                  account number it applies to. Here it was competing with the
+                  progress and then outliving its own usefulness. */}
+              {drift.role ? (
+                <DriftNotice
+                  busy={busy === "role"}
+                  drift={drift.role}
+                  kind="role"
+                  onForget={() => void forgetSetup("role")}
+                />
+              ) : null}
+
+              {roleStack === null &&
+              !roleRunning &&
+              !roleFailed &&
+              !drift.role ? (
                 <div className="flex items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
                   <ShieldAlert className="h-4 w-4 shrink-0 text-amber-600" />
                   <p className="font-medium">
                     The role gets AdministratorAccess.
                   </p>
                 </div>
-              )}
+              ) : null}
 
-              <StackControls
-                busy={busy === "role"}
-                disabled={busy !== null || building}
-                onRun={() => void applyStack("role", "role")}
-                stack={roleStack}
-              />
+              <StepChecklist items={roleChecklist} />
 
               {roleFailure ? (
                 <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive text-xs">
@@ -617,10 +746,16 @@ export function DeployWizard({
                 </p>
               ) : null}
 
+              {roleStack?.statusReason && roleFailed ? (
+                <p className="text-muted-foreground text-xs">
+                  {roleStack.statusReason}
+                </p>
+              ) : null}
+
               {/* An account can hold only one provider per URL. The server works
                   that out by asking IAM, so this is the escape hatch for a
                   session that may not list providers — not the normal path. */}
-              {roleFailure || (roleStack?.settled && !roleStack.succeeded) ? (
+              {roleFailed ? (
                 <label className="flex items-start gap-2 text-muted-foreground text-xs">
                   <input
                     checked={reuseOidc}
@@ -633,16 +768,47 @@ export function DeployWizard({
                 </label>
               ) : null}
 
+              {/* One control, and only where there is something to press. While
+                  it runs the checklist is the status, so a disabled button with a
+                  spinner in it said nothing the list did not. When it is finished
+                  there is nothing to ask for — rebuilding is below, quietly,
+                  because it is what you want after changing the branch or the
+                  repository and never what you want on first arrival. */}
+              {/* A create that cannot succeed is worse than no button: it fails on
+                  a name already taken, and `OnFailure: DELETE` then removes the
+                  stack it just made, so pressing it twice looks like the wizard
+                  resetting itself. The notice above says what to do instead. */}
+              {drift.role
+                ?.collides ? null : roleRunning ? null : roleStack?.succeeded ? (
+                <Button
+                  className="text-muted-foreground"
+                  disabled={busy !== null || building}
+                  onClick={() => void applyStack("role", "role")}
+                  size="sm"
+                  variant="ghost"
+                >
+                  <Rocket className="mr-2 h-3.5 w-3.5" />
+                  Rebuild the stack
+                </Button>
+              ) : (
+                <Button
+                  disabled={busy !== null || building}
+                  onClick={() => void applyStack("role", "role")}
+                  size="sm"
+                >
+                  <Rocket className="mr-2 h-3.5 w-3.5" />
+                  {roleFailed ? "Try again" : "Create"}
+                </Button>
+              )}
+
               {/* The Actions variables are written for you once the stack has
-                  finished — see `saveRole`. They were three rows saying "not
-                  set" and a button, which asked the user to press a thing that
-                  had no decision in it. Only a failure is worth surfacing. */}
-              {busy === "role-variables" ? (
-                <p className="flex items-center gap-2 text-muted-foreground text-xs">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  Writing the role into the repository's Actions variables…
-                </p>
-              ) : saveFailed ? (
+                  finished — see `saveRole`. Only a failure needs a control, and
+                  the checklist line above has already said which part failed.
+                  Two failures reach here: the whole save threw (`saveFailed`), or
+                  it worked except for the repository (`variablesError`). The
+                  second one used to fall through to the stack's own button, which
+                  offered to rebuild a role that was never the problem. */}
+              {!roleRunning && (saveFailed || variablesError !== null) ? (
                 <Button
                   disabled={busy !== null}
                   onClick={() => void saveRole()}
@@ -689,12 +855,23 @@ export function DeployWizard({
                 and that one key.
               </p>
 
-              <StackControls
-                busy={busy === "state"}
-                disabled={busy !== null || building || !state.setup.roleReady}
-                onRun={() => void applyStack("state", "state")}
-                stack={stateStack}
-              />
+              {drift.state ? (
+                <DriftNotice
+                  busy={busy === "state"}
+                  drift={drift.state}
+                  kind="state"
+                  onForget={() => void forgetSetup("state")}
+                />
+              ) : null}
+
+              {drift.state?.collides ? null : (
+                <StackControls
+                  busy={busy === "state"}
+                  disabled={busy !== null || building || !state.setup.roleReady}
+                  onRun={() => void applyStack("state", "state")}
+                  stack={stateStack}
+                />
+              )}
 
               {state.setup.roleReady ? null : (
                 <p className="text-muted-foreground text-xs">
@@ -833,6 +1010,174 @@ export function DeployWizard({
         </div>
       </Card>
     </div>
+  );
+}
+
+/**
+ * Says that this project's bootstrap is somewhere it cannot be reached from, and
+ * what the way out is.
+ *
+ * Three cases, and they need different answers — which is the whole reason this is
+ * not one sentence. The role in the same account means the region was changed after
+ * setup, and because IAM is global the role is still there and its name is still
+ * taken: creating again cannot work, so the only remedy is to point the project
+ * back. The role in a *different* account can be rebuilt here perfectly well, and
+ * the old one is simply no longer ours to manage. The state bucket can never be
+ * rebuilt under the same name, because S3 names are global and this one carries the
+ * account it was made for.
+ *
+ * Nothing here offers to delete anything in AWS. Forgetting a pointer is reversible
+ * by setting it up again; deleting a state bucket is the one act in this flow that
+ * loses the only record of what Terraform built.
+ */
+function DriftNotice({
+  busy,
+  drift,
+  kind,
+  onForget,
+}: {
+  busy: boolean;
+  drift: DriftDto;
+  kind: "role" | "state";
+  onForget: () => void;
+}) {
+  const what = kind === "role" ? "deployment role" : "state bucket";
+  const elsewhere =
+    drift.pointsAtAccount && drift.pointsAtAccount !== drift.accountId
+      ? drift.pointsAtAccount
+      : null;
+
+  return (
+    <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+      <p className="flex items-start gap-2">
+        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+        <span>
+          This project points at a {what} that is not managed from here. It
+          expects the stack{" "}
+          <code className="rounded bg-muted px-1 font-mono">
+            {drift.stackName}
+          </code>{" "}
+          in {drift.accountId ?? "this account"} / {drift.region}, and there is
+          none.
+        </span>
+      </p>
+
+      <dl className="grid gap-1 pl-6 sm:grid-cols-[7rem_1fr]">
+        <dt className="text-muted-foreground">Points at</dt>
+        <dd className="break-all font-mono">{drift.pointsAt}</dd>
+        {elsewhere ? (
+          <>
+            <dt className="text-muted-foreground">Which lives in</dt>
+            <dd className="font-mono">{elsewhere}</dd>
+          </>
+        ) : null}
+      </dl>
+
+      {/* Deliberately not alarming: in every one of these cases the thing still
+          exists and still works. What is broken is only which of them this screen
+          can manage. */}
+      <p className="pl-6 text-muted-foreground">
+        Nothing has been lost. The {what} is still where it was created —{" "}
+        {elsewhere
+          ? "in the account named above"
+          : "this project's region was most likely changed after it was set up"}
+        .{" "}
+        {drift.collides
+          ? kind === "state"
+            ? "It cannot be built again under the same name: S3 bucket names are global. Connect the account and region it was created in to manage it from here again."
+            : "It cannot be built again here either: IAM roles are account-wide, so that name is already taken. Set this project's region back to reach it again."
+          : "You can either connect that account again, or start fresh in this one — the old one stays untouched."}
+      </p>
+
+      {drift.collides ? null : (
+        <div className="pl-6">
+          <Button
+            disabled={busy}
+            onClick={onForget}
+            size="sm"
+            variant="outline"
+          >
+            {busy ? (
+              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+            ) : null}
+            Start fresh in this account
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChecklistIcon({ state }: { state: ChecklistState }) {
+  if (state === "done") {
+    return <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />;
+  }
+  if (state === "failed") {
+    return <XCircle className="h-4 w-4 shrink-0 text-destructive" />;
+  }
+  if (state === "active") {
+    return <Loader2 className="h-4 w-4 shrink-0 animate-spin" />;
+  }
+  // Not started. A clock rather than an empty circle: it says "this is coming",
+  // where an outline reads as "this is off".
+  return <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />;
+}
+
+/**
+ * What a step is going to do, ticked off as it does it.
+ *
+ * Written out before anything runs, in grey, because that is the part a single
+ * status line could never show: `CREATE_COMPLETE` next to a spinner told the
+ * reader that something had finished without ever having said what was going to
+ * happen, or how much of it was left. The same three lines then carry the
+ * progress, so watching the step and reading what it did are the same act.
+ *
+ * Every line is derived from state the server actually reports. Nothing here is
+ * on a timer or advanced optimistically — a tick means the thing was read back.
+ */
+function StepChecklist({ items }: { items: ChecklistItem[] }) {
+  return (
+    <ol className="space-y-1.5">
+      {items.map((item) => (
+        <li
+          className="flex items-start gap-2 rounded-md border px-3 py-2 text-sm"
+          key={item.id}
+        >
+          <span className="mt-0.5">
+            <ChecklistIcon state={item.state} />
+          </span>
+          <span className="min-w-0">
+            <span
+              className={
+                item.state === "pending" ? "text-muted-foreground" : undefined
+              }
+            >
+              {item.label}
+            </span>
+            {item.detail ? (
+              <span
+                className={`mt-0.5 block break-words text-muted-foreground text-xs ${
+                  item.mono ? "font-mono" : ""
+                }`}
+              >
+                {item.detail}
+              </span>
+            ) : null}
+            {item.link ? (
+              <a
+                className="mt-0.5 inline-flex items-center gap-1 text-muted-foreground text-xs hover:text-foreground"
+                href={item.link.href}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {item.link.label}
+                <ExternalLink className="h-3 w-3 shrink-0" />
+              </a>
+            ) : null}
+          </span>
+        </li>
+      ))}
+    </ol>
   );
 }
 

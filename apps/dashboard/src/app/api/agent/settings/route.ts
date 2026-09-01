@@ -106,6 +106,10 @@ export async function PATCH(request: Request) {
     maxToolCalls?: unknown;
     maxMcpCalls?: unknown;
     historyBudgetChars?: unknown;
+    maxSteps?: unknown;
+    maxAppRepoReads?: unknown;
+    appRepoTreeLimit?: unknown;
+    appRepoFileChars?: unknown;
     allowDestructive?: unknown;
   };
 
@@ -146,6 +150,22 @@ export async function PATCH(request: Request) {
       | null;
   }
 
+  if ("maxSteps" in body) {
+    runtime.maxSteps = body.maxSteps as number | string | null;
+  }
+
+  if ("maxAppRepoReads" in body) {
+    runtime.maxAppRepoReads = body.maxAppRepoReads as number | string | null;
+  }
+
+  if ("appRepoTreeLimit" in body) {
+    runtime.appRepoTreeLimit = body.appRepoTreeLimit as number | string | null;
+  }
+
+  if ("appRepoFileChars" in body) {
+    runtime.appRepoFileChars = body.appRepoFileChars as number | string | null;
+  }
+
   const hasRuntime = Object.keys(runtime).length > 0;
 
   // Only a real boolean, so a truthy string cannot grant a permission.
@@ -161,7 +181,7 @@ export async function PATCH(request: Request) {
     return NextResponse.json(
       {
         error:
-          "Send `disabledKnowledge`, `disabledTools`, `allowDestructive`, `model`, `reasoningEffort`, `turnTimeout`, `maxToolCalls`, `maxMcpCalls` or `historyBudgetChars`.",
+          "Send `disabledKnowledge`, `disabledTools`, `allowDestructive`, `model`, `reasoningEffort`, `turnTimeout`, `maxToolCalls`, `maxMcpCalls`, `historyBudgetChars`, `maxSteps`, `maxAppRepoReads`, `appRepoTreeLimit` or `appRepoFileChars`.",
       },
       { status: 400 },
     );

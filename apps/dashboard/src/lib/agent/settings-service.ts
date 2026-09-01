@@ -7,12 +7,20 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto/secret-box";
 import { isKnownKnowledge } from "./knowledge";
 import { listMcpTools, McpClientError, type McpToolInfo } from "./mcp-client";
 import {
+  APP_REPO_FILE_CHARS_MAX,
+  APP_REPO_FILE_CHARS_MIN,
+  APP_REPO_READS_MAX,
+  APP_REPO_READS_MIN,
+  APP_REPO_TREE_MAX,
+  APP_REPO_TREE_MIN,
   HISTORY_BUDGET_MAX_CHARS,
   HISTORY_BUDGET_MIN_CHARS,
   MCP_CALL_BUDGET_MAX,
   MCP_CALL_BUDGET_MIN,
   REASONING_EFFORTS,
   type ReasoningEffortValue,
+  STEP_TRAIL_MAX,
+  STEP_TRAIL_MIN,
   TOOL_CALL_BUDGET_MAX,
   TOOL_CALL_BUDGET_MIN,
   TURN_TIMEOUT_MAX_SECONDS,
@@ -93,6 +101,14 @@ export interface AgentSettingsView {
   maxMcpCalls: number | null;
   /** Characters of conversation replayed into a turn. Null → default. */
   historyBudgetChars: number | null;
+  /** Entries of one turn that get recorded. Null → default. */
+  maxSteps: number | null;
+  /** Reads of the linked application repository per turn. Null → default. */
+  maxAppRepoReads: number | null;
+  /** Paths one application listing returns. Null → default. */
+  appRepoTreeLimit: number | null;
+  /** Characters of one application file handed to the model. Null → default. */
+  appRepoFileChars: number | null;
   /** Whether the agent may delete modules and variables. Off by default. */
   allowDestructive: boolean;
 }
@@ -123,6 +139,10 @@ export async function getAgentSettings(
     maxToolCalls: settings?.maxToolCalls ?? null,
     maxMcpCalls: settings?.maxMcpCalls ?? null,
     historyBudgetChars: settings?.historyBudgetChars ?? null,
+    maxSteps: settings?.maxSteps ?? null,
+    maxAppRepoReads: settings?.maxAppRepoReads ?? null,
+    appRepoTreeLimit: settings?.appRepoTreeLimit ?? null,
+    appRepoFileChars: settings?.appRepoFileChars ?? null,
     // A user who has never opened the settings gets the safe answer, which is the
     // same one the column defaults to.
     allowDestructive: settings?.allowDestructive ?? false,
@@ -243,6 +263,42 @@ export function asHistoryBudget(value: unknown): number | null {
   });
 }
 
+/** How many entries of one turn are recorded. */
+export function asStepTrailSize(value: unknown): number | null {
+  return asCallBudget(value, {
+    min: STEP_TRAIL_MIN,
+    max: STEP_TRAIL_MAX,
+    what: "A step trail",
+  });
+}
+
+/** How many times one turn may read the application repository. */
+export function asAppRepoReads(value: unknown): number | null {
+  return asCallBudget(value, {
+    min: APP_REPO_READS_MIN,
+    max: APP_REPO_READS_MAX,
+    what: "A reading budget",
+  });
+}
+
+/** How many paths one application listing returns. */
+export function asAppRepoTreeLimit(value: unknown): number | null {
+  return asCallBudget(value, {
+    min: APP_REPO_TREE_MIN,
+    max: APP_REPO_TREE_MAX,
+    what: "A listing limit",
+  });
+}
+
+/** How much of one application file is handed to the model, in characters. */
+export function asAppRepoFileChars(value: unknown): number | null {
+  return asCallBudget(value, {
+    min: APP_REPO_FILE_CHARS_MIN,
+    max: APP_REPO_FILE_CHARS_MAX,
+    what: "A file limit",
+  });
+}
+
 /**
  * Replaces the runtime choices — model, thinking effort, turn timeout.
  *
@@ -260,6 +316,10 @@ export async function setAgentRuntime(
     maxToolCalls?: number | string | null;
     maxMcpCalls?: number | string | null;
     historyBudgetChars?: number | string | null;
+    maxSteps?: number | string | null;
+    maxAppRepoReads?: number | string | null;
+    appRepoTreeLimit?: number | string | null;
+    appRepoFileChars?: number | string | null;
   },
 ): Promise<void> {
   const data: {
@@ -269,6 +329,10 @@ export async function setAgentRuntime(
     maxToolCalls?: number | null;
     maxMcpCalls?: number | null;
     historyBudgetChars?: number | null;
+    maxSteps?: number | null;
+    maxAppRepoReads?: number | null;
+    appRepoTreeLimit?: number | null;
+    appRepoFileChars?: number | null;
   } = {};
 
   if ("model" in input) {
@@ -313,6 +377,22 @@ export async function setAgentRuntime(
 
   if ("historyBudgetChars" in input) {
     data.historyBudgetChars = asHistoryBudget(input.historyBudgetChars);
+  }
+
+  if ("maxSteps" in input) {
+    data.maxSteps = asStepTrailSize(input.maxSteps);
+  }
+
+  if ("maxAppRepoReads" in input) {
+    data.maxAppRepoReads = asAppRepoReads(input.maxAppRepoReads);
+  }
+
+  if ("appRepoTreeLimit" in input) {
+    data.appRepoTreeLimit = asAppRepoTreeLimit(input.appRepoTreeLimit);
+  }
+
+  if ("appRepoFileChars" in input) {
+    data.appRepoFileChars = asAppRepoFileChars(input.appRepoFileChars);
   }
 
   if (Object.keys(data).length === 0) return;

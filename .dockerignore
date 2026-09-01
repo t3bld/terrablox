@@ -1,0 +1,60 @@
+# Everything the build does not need, plus everything it must never see.
+#
+# The two entries that matter most are node_modules and .env: the first because a
+# macOS install would overwrite the Linux one the image just made (wrong Prisma
+# engine, wrong Copilot CLI binary), the second because a build context is not a
+# place for secrets — anyone who can pull the image can read them.
+
+# Dependencies - reinstalled inside the image for the target platform.
+node_modules
+.pnp
+.pnp.js
+
+# Build output - produced inside the image.
+.next
+.next-*
+out
+dist
+build
+*.tsbuildinfo
+
+# Caches
+.turbo
+coverage
+
+# Secrets and local config.
+#
+# The ** prefixes are not stylistic. A bare `.env` matches the repo root and
+# nothing else, which quietly let apps/dashboard/.env - GitHub client secret,
+# session secret and all - into the build context, and packages/database/.env all
+# the way into the finished image. Nothing in the build reads these files: the
+# .env.example files are documentation and the real values arrive as runtime
+# environment variables.
+**/.env
+**/.env.*
+**/.mcp.json
+
+# Version control and CI
+.git
+.gitignore
+.github
+
+# Editors and OS noise
+.vscode
+.idea
+.kiro
+*.swp
+*.swo
+*~
+.DS_Store
+*.pem
+
+# Docs and local tooling that no build step reads
+docs
+README.md
+LICENSE
+todo.md
+*.log
+docker-compose*.yml
+Dockerfile
+.dockerignore

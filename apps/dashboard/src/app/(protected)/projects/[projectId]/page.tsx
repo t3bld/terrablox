@@ -18,6 +18,7 @@ import {
   PanelLeftOpen,
   PanelRightOpen,
   Rocket,
+  ScrollText,
   Wallet,
   Workflow,
 } from "lucide-react";
@@ -37,9 +38,9 @@ import { ChatPanel } from "@/components/project-detail/chat-panel";
 import { CostPanel } from "@/components/project-detail/cost-panel";
 import { DeployPanel } from "@/components/project-detail/deploy-panel";
 import { DeploySetupWizard } from "@/components/project-detail/deploy-setup-wizard";
-import { HistoryPanel } from "@/components/project-detail/history-panel";
 import { IntegrationGate } from "@/components/project-detail/integration-gate";
 import { LocalInspector } from "@/components/project-detail/local-inspector";
+import { LogPanel } from "@/components/project-detail/log-panel";
 import { ModuleInspector } from "@/components/project-detail/module-inspector";
 import { ModuleLibrary } from "@/components/project-detail/module-library";
 import { ProjectArchitectureView } from "@/components/project-detail/project-architecture-view";
@@ -54,7 +55,7 @@ import type {
   ProjectMutationResult,
 } from "@/lib/projects/types";
 
-type ProjectTab = "code" | "deploy" | "state" | "costs" | "history";
+type ProjectTab = "code" | "deploy" | "state" | "costs" | "log";
 
 /**
  * The tab lives in the fragment, as `#deploy`, so a reload, a bookmark and the
@@ -65,10 +66,8 @@ type ProjectTab = "code" | "deploy" | "state" | "costs" | "history";
  * routes would remount the canvas on every switch. It never reaches the server,
  * which is the honest place for "which of these panels am I looking at".
  *
- * `history` is deliberately absent: its tab is hidden, so an address naming it
- * would be a way into a screen the app is not offering yet.
  */
-const URL_TABS: ProjectTab[] = ["code", "deploy", "state", "costs"];
+const URL_TABS: ProjectTab[] = ["code", "deploy", "state", "costs", "log"];
 const DEFAULT_TAB: ProjectTab = "code";
 
 function tabFromHash(hash: string): ProjectTab {
@@ -163,6 +162,14 @@ export default function ProjectDetailPage({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Kept apart from `error`, which is for actions that failed and can be retried.
+   * This one is a standing condition of the project: its repository cannot be
+   * read, so the canvas is empty for a reason, and Delete needs to stop promising
+   * the repository is safe.
+   */
+  const [repoError, setRepoError] = useState<string | null>(null);
   const [lastCommit, setLastCommit] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   /**
@@ -214,8 +221,6 @@ export default function ProjectDetailPage({
   const tabs = useMemo<TabDefinition<ProjectTab>[]>(
     () => [
       { value: "code", label: "Code", icon: Workflow },
-      // History is hidden for now. The panel below stays wired up, so bringing
-      // it back is this one line.
       { value: "deploy", label: "Deploy", icon: Rocket },
       { value: "state", label: "State", icon: Layers },
       {
@@ -225,31 +230,52 @@ export default function ProjectDetailPage({
         locked: !integrationsLoading && !infracostReady,
         lockedReason: INFRACOST_REASON,
       },
+      // Last, because it is read after the fact. It replaces the History tab
+      // that was hidden here: the same operations, under the decision that
+      // produced them and the reason it was made.
+      { value: "log", label: "Log", icon: ScrollText },
     ],
     [infracostReady, integrationsLoading],
   );
 
+  /**
+   * The project row and the repository it points at are two independent facts,
+   * so they are settled independently.
+   *
+   * They used to share one `Promise.all`, which meant a repository deleted on
+   * GitHub took the project's own page with it: the row loaded fine, but the
+   * rejection threw the pair away, `project` stayed null, and the header's
+   * actions menu — the only route to Delete — stayed disabled on a project that
+   * now existed nowhere else. The one action still worth offering was the one
+   * that had become unreachable.
+   *
+   * Kept apart, a missing repository is what it actually is: this page minus its
+   * canvas.
+   */
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
 
-    Promise.all([
-      fetch(`/api/projects/${projectId}`).then(async (res) => {
+    const wantProject = fetch(`/api/projects/${projectId}`).then(
+      async (res) => {
         const body = await res.json();
         if (!res.ok) throw new Error(body?.error ?? "Failed to load project");
         return body.project as ProjectDto;
-      }),
-      fetch(`/api/projects/${projectId}/graph`).then(async (res) => {
+      },
+    );
+
+    const wantGraph = fetch(`/api/projects/${projectId}/graph`).then(
+      async (res) => {
         const body = await res.json();
         if (!res.ok)
           throw new Error(body?.error ?? "Failed to read repository");
         return body.graph as ProjectGraph;
-      }),
-    ])
-      .then(([loadedProject, loadedGraph]) => {
-        if (cancelled) return;
-        setProject(loadedProject);
-        setGraph(loadedGraph);
+      },
+    );
+
+    const settledProject = wantProject
+      .then((loaded) => {
+        if (!cancelled) setProject(loaded);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -257,10 +283,26 @@ export default function ProjectDetailPage({
             err instanceof Error ? err.message : "Failed to load project",
           );
         }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
       });
+
+    const settledGraph = wantGraph
+      .then((loaded) => {
+        if (!cancelled) {
+          setGraph(loaded);
+          setRepoError(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setRepoError(
+            err instanceof Error ? err.message : "Failed to read repository",
+          );
+        }
+      });
+
+    Promise.all([settledProject, settledGraph]).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
 
     return () => {
       cancelled = true;
@@ -506,6 +548,9 @@ export default function ProjectDetailPage({
                 projectId={projectId}
                 projectName={project?.name ?? null}
                 repoFullName={project?.repoFullName ?? null}
+                // So the dialog stops assuring the user their Terraform is safe
+                // on GitHub at the exact moment we know it is not readable.
+                repoUnreachable={repoError !== null}
               />
             </>
           }
@@ -527,6 +572,17 @@ export default function ProjectDetailPage({
           projectId={projectId}
           state={aws}
         />
+
+        {/* Above the retryable errors, and in a warning tone rather than a
+            destructive one: nothing failed just now, the repository is simply not
+            there. The page below it still works — the Log is in the database, and
+            the header can delete the project. */}
+        {repoError ? (
+          <p className="flex items-start gap-2 border-b bg-amber-500/10 px-4 py-2 text-amber-700 text-sm dark:text-amber-400">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            {repoError}
+          </p>
+        ) : null}
 
         {error ? (
           <p className="flex items-start gap-2 border-b bg-destructive/5 px-4 py-2 text-sm text-destructive">
@@ -598,12 +654,14 @@ export default function ProjectDetailPage({
               />
             )}
           </div>
-        ) : tab === "history" ? (
+        ) : tab === "log" ? (
+          // No scroll here: the panel splits into a list and a detail column that
+          // scroll independently, which an outer scroller would collapse into one.
           <div
-            {...tabPanelProps("project", "history")}
-            className="min-h-0 flex-1 overflow-y-auto"
+            {...tabPanelProps("project", "log")}
+            className="flex min-h-0 flex-1"
           >
-            <HistoryPanel projectId={projectId} />
+            <LogPanel projectId={projectId} />
           </div>
         ) : (
           <div

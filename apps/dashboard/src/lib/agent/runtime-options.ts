@@ -44,24 +44,15 @@ export const DEFAULT_TURN_TIMEOUT_SECONDS = 1800;
 export const TURN_TIMEOUT_MIN_SECONDS = 30;
 export const TURN_TIMEOUT_MAX_SECONDS = 1800;
 
-/**
- * The timeouts offered in the settings dropdown.
- *
- * A fixed list rather than a free number field: every value in range is accepted
- * by the API, but a picker cannot be typed wrong, needs no error state, and the
- * labels say what the number means without arithmetic.
+/*
+ * The lists of offered values that used to sit here are gone, along with the three
+ * others like them. They existed so a dial could not be typed wrong, which held —
+ * but every value in range was accepted by the API regardless, so each list was a
+ * guess at which numbers anyone would want, and any value reached by another route
+ * had to be spliced back in to stop the dropdown showing something other than what
+ * the turn enforced. Six such settings now exist; the fields validate against these
+ * bounds instead.
  */
-export const TURN_TIMEOUT_CHOICES: ReadonlyArray<{
-  seconds: number;
-  label: string;
-}> = [
-  { seconds: 60, label: "1 minute" },
-  { seconds: 120, label: "2 minutes" },
-  { seconds: 300, label: "5 minutes" },
-  { seconds: 600, label: "10 minutes" },
-  { seconds: 900, label: "15 minutes" },
-  { seconds: 1800, label: "30 minutes" },
-];
 
 /**
  * Models offered when the runtime cannot be asked.
@@ -95,7 +86,7 @@ export const FALLBACK_MODELS: ReadonlyArray<{
 ];
 
 /**
- * How many entries of a turn we are willing to record.
+ * How many entries of a turn we are willing to record, by default.
  *
  * A cap on the *record*, and nothing more — worth stating plainly, because it is
  * routinely read as a limit on the agent. Overflow drops the entry; the turn
@@ -112,18 +103,33 @@ export const FALLBACK_MODELS: ReadonlyArray<{
  *
  * 500 sits above what the real budgets allow: a hundred operations, a hundred MCP
  * calls and forty repository reads come to 240 entries, and the lookups and
- * reasoning summaries around them fit in what is left. It is a backstop against a
- * looping turn writing an unbounded row, not a rationing decision.
+ * reasoning summaries around them fit in what is left.
  *
- * Still not a setting. Every number a user might want to turn down — operations,
- * MCP calls, replayed history — bounds something that costs them a commit, a
- * request or a token. This one bounds a JSON column, and a smaller value buys them
- * nothing but a shorter explanation of what happened.
+ * A setting, after all. The earlier argument against one was that every other dial
+ * bounds something that costs the user a commit, a request or a token, while this
+ * bounds a JSON column — so turning it down buys nothing. True, but it only
+ * covered turning it *down*. The row is read back by every client that loads the
+ * transcript, and someone running long turns against a raised operation budget has
+ * a real reason to want more of it than we guessed, while someone on a slow
+ * connection has a real reason to want less. Both are answers about their own
+ * transcript, which is theirs to give.
  */
 export const AGENT_MAX_STEPS = 500;
 
 /**
- * How many reasoning summaries one turn records, out of {@link AGENT_MAX_STEPS}.
+ * Bounds on the recorded trail.
+ *
+ * The floor is where the record still explains a turn: below about fifty entries a
+ * turn spending even a modest budget would be truncated, which is the failure this
+ * limit was raised from 40 to avoid in the first place. The ceiling is what keeps a
+ * looping turn from writing an unbounded row — the reason the cap exists at all,
+ * and the one part of it that is not the user's call.
+ */
+export const STEP_TRAIL_MIN = 50;
+export const STEP_TRAIL_MAX = 2_000;
+
+/**
+ * How many of those entries may be reasoning summaries.
  *
  * The trail carries two different things. A tool entry is the audit record of a
  * change that reached the repository; a thought is the model narrating. Only the
@@ -131,10 +137,16 @@ export const AGENT_MAX_STEPS = 500;
  * chatty turn could spend the whole record on commentary and leave the reader
  * unable to see what was committed.
  *
- * Comfortably above a normal turn's narration, so in practice it only bites when a
- * model has started talking to itself.
+ * Derived from the trail size rather than set beside it, which is what stops the
+ * pair from ever contradicting each other. A second dial would let someone allow
+ * 300 thoughts in a 100-entry trail: accepted by every validator, meaningless in
+ * effect, and impossible to explain on the screen that offered it. The proportion
+ * reproduces today's 120-in-500 exactly, so raising the trail buys proportionally
+ * more narration and the same guarantee that operations cannot be crowded out.
  */
-export const AGENT_MAX_THOUGHTS = 120;
+export function maxThoughtsFor(maxSteps: number): number {
+  return Math.max(10, Math.round(maxSteps * 0.24));
+}
 
 /**
  * How many operations one turn may queue.
@@ -155,17 +167,6 @@ export const AGENT_MAX_TOOL_CALLS = 100;
 
 export const TOOL_CALL_BUDGET_MIN = 1;
 export const TOOL_CALL_BUDGET_MAX = 100;
-
-/**
- * The budgets offered in the settings dropdowns.
- *
- * A picker rather than a number field, matching the turn timeout: every value in
- * range is accepted by the API, but a list cannot be typed wrong, needs no error
- * state, and nobody has an opinion about 23 versus 25.
- */
-export const TOOL_CALL_BUDGET_CHOICES: readonly number[] = [
-  1, 5, 10, 25, 50, 100,
-];
 
 /**
  * How many MCP tool calls one turn may make.
@@ -189,10 +190,6 @@ export const AGENT_MAX_MCP_CALLS = 100;
 export const MCP_CALL_BUDGET_MIN = 1;
 export const MCP_CALL_BUDGET_MAX = 100;
 
-export const MCP_CALL_BUDGET_CHOICES: readonly number[] = [
-  1, 5, 10, 25, 50, 100,
-];
-
 /**
  * The sentences that tell the agent how to work, before any project detail.
  *
@@ -212,9 +209,14 @@ export const DEFAULT_OPERATING_RULES: readonly string[] = [
   // calls and reports work it never finished.
   "Your edits are queued, not applied, while you work. `review_project` is the only way to see what they add up to: call it after changing anything, and fix what it reports before you answer.",
   "Look a module up with `describe_module` before wiring it. An input or output name you guessed is written exactly as you gave it, and only fails when somebody runs Terraform.",
-  "For anything larger than a single edit, state the plan with `propose_plan` before building. If it adds more than a handful of modules, present it and let the user confirm rather than building it in the same turn.",
+  "For anything larger than a single edit, record what you decided and why with `record_decision` before building. Everything you queue after it is filed under it, so the project's log can explain itself later. If it adds more than a handful of modules, present it and let the user confirm rather than building it in the same turn.",
   "Cost is a design decision, not an afterthought. When a module you place has resources that bill for merely existing, say so and name the input that decides how many there are.",
   "Keep replies short and concrete. Say what you changed, not how the tools work.",
+  // Last, because it is about how everything above is written rather than about
+  // what to do. The reasoning summaries already arrive in English whatever the
+  // conversation is in; this is what stops the durable half — decisions, plans,
+  // replies — from following the prompt into a second language.
+  "Write in English: decisions, plans, summaries and your replies, whatever language the user writes in. Their own words stay as they wrote them, and quoting them is fine. Everything you record becomes this project's documentation, and documentation in two languages cannot be read by the next person or searched by anyone.",
 ];
 
 /**
@@ -269,26 +271,6 @@ export const HISTORY_BUDGET_MIN_CHARS = 2_000;
 export const HISTORY_BUDGET_MAX_CHARS = 120_000;
 
 /**
- * The budgets offered in the dropdown, labelled in the unit people think in.
- *
- * Characters rather than messages, for the reason the budget itself is in
- * characters — eight short answers and eight long ones are not the same amount of
- * context — but nobody reasons in units of 24000, so the labels say roughly how
- * much conversation that is.
- */
-export const HISTORY_BUDGET_CHOICES: ReadonlyArray<{
-  chars: number;
-  label: string;
-}> = [
-  { chars: 4_000, label: "~4k characters — the last few messages" },
-  { chars: 12_000, label: "~12k characters" },
-  { chars: 24_000, label: "~24k characters — dozens of turns" },
-  { chars: 48_000, label: "~48k characters" },
-  { chars: 80_000, label: "~80k characters" },
-  { chars: 120_000, label: "~120k characters — a whole project's chat" },
-];
-
-/**
  * How often the running turn's progress is written to the database, in ms.
  *
  * A reasoning model emits summaries in bursts, and every tool call adds another
@@ -314,6 +296,18 @@ export const AGENT_PROGRESS_INTERVAL_MS = 2_000;
 export const AGENT_MAX_APP_REPO_READS = 40;
 
 /**
+ * Bounds on the reading budget.
+ *
+ * The floor is one, which is a coherent choice rather than a broken one: it lets a
+ * turn look at a single named file — a manifest — and no further. The ceiling is
+ * well above what understanding an application takes, because what it guards
+ * against is not a thorough turn but a model that has decided to read a monorepo,
+ * spending somebody's GitHub rate limit on it.
+ */
+export const APP_REPO_READS_MIN = 1;
+export const APP_REPO_READS_MAX = 200;
+
+/**
  * How many paths one `list_app_files` call may return.
  *
  * A monorepo tree is tens of thousands of entries, which would fill the model's
@@ -324,6 +318,18 @@ export const AGENT_MAX_APP_REPO_READS = 40;
 export const AGENT_APP_REPO_TREE_LIMIT = 400;
 
 /**
+ * Bounds on one listing.
+ *
+ * Raising it is the honest answer for a genuinely large repository, where the
+ * intended one — narrow the `path` — needs a first listing broad enough to see
+ * which subtree to narrow to. The ceiling is where the paths would start crowding
+ * out the reasoning about them, which costs the turn the context it was spending
+ * the listing to get.
+ */
+export const APP_REPO_TREE_MIN = 50;
+export const APP_REPO_TREE_MAX = 2_000;
+
+/**
  * How much of one application file is handed to the model, in characters.
  *
  * A lock file or a bundled asset is megabytes, and reading one would cost the
@@ -332,6 +338,18 @@ export const AGENT_APP_REPO_TREE_LIMIT = 400;
  * truncation only ever hits files whose tail was not going to help.
  */
 export const AGENT_APP_REPO_FILE_CHARS = 20_000;
+
+/**
+ * Bounds on one file.
+ *
+ * The floor still holds a manifest or a Dockerfile whole, which is the case this
+ * operation exists for. The ceiling shares its reasoning with the conversation
+ * budget: the file competes for the same context window as the graph and the
+ * module library, so a limit large enough to swallow a lock file would trade the
+ * project being edited for one file about it.
+ */
+export const APP_REPO_FILE_CHARS_MIN = 2_000;
+export const APP_REPO_FILE_CHARS_MAX = 200_000;
 
 /**
  * Directories never listed from an application repository.

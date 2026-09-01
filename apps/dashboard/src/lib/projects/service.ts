@@ -429,6 +429,22 @@ function autoWire(
 }
 
 /**
+ * Where an edit came from, beyond which hand made it.
+ *
+ * An object rather than more positional arguments, because the canvas supplies
+ * only the origin and the agent supplies three things — and because the next thing
+ * to thread through here is a batched commit, which will want the same shape.
+ */
+export interface MutationProvenance {
+  /** Defaults to `canvas`, which is the call with nothing to say about itself. */
+  origin?: OperationOrigin;
+  /** Assistant message of the turn that queued this edit. */
+  chatMessageId?: string;
+  /** Decision this edit implements, when one was recorded. */
+  decisionId?: string;
+}
+
+/**
  * Applies a graph edit to the repository.
  *
  * The edit is computed against the files as they are on the branch right now
@@ -439,8 +455,9 @@ export async function applyProjectMutation(
   token: string,
   project: Project,
   mutation: ProjectGraphMutation,
-  origin: OperationOrigin = "canvas",
+  provenance: MutationProvenance = {},
 ): Promise<ProjectMutationResult> {
+  const origin = provenance.origin ?? "canvas";
   const { files, sha: parentSha } = await readProjectFiles(token, project);
   const next = new Map(files);
 
@@ -457,7 +474,12 @@ export async function applyProjectMutation(
   const commit = await commitFiles(token, {
     repoFullName: project.repoFullName,
     branch: project.repoBranch,
-    message: commitMessage(message, mutation.action, origin),
+    message: commitMessage(
+      message,
+      mutation.action,
+      origin,
+      provenance.decisionId,
+    ),
     changes,
   });
 
@@ -516,6 +538,11 @@ export async function applyProjectMutation(
       // The branch head the edit was computed against, not the last sha we
       // happened to sync: a push made outside the app moves one but not the other.
       parentSha,
+      // Absent for a canvas gesture, which is one edit and needs no grouping.
+      ...(provenance.chatMessageId
+        ? { chatMessageId: provenance.chatMessageId }
+        : {}),
+      ...(provenance.decisionId ? { decisionId: provenance.decisionId } : {}),
     },
   });
 
@@ -538,6 +565,7 @@ interface MutationOutcome {
 /** Trailer names, in the `Key: value` convention `git interpret-trailers` reads. */
 export const OPERATION_TRAILER = "TerraBlox-Operation";
 export const ORIGIN_TRAILER = "TerraBlox-Origin";
+export const DECISION_TRAILER = "TerraBlox-Decision";
 
 /**
  * The commit message, with the operation attached as trailers.
@@ -545,13 +573,24 @@ export const ORIGIN_TRAILER = "TerraBlox-Origin";
  * Puts the structured form of the edit in the repository rather than only in
  * our database, so a commit still says which operation produced it — and can be
  * told apart from a hand-written push — if the history table is ever lost.
+ *
+ * The decision id joins them for the same reason, and it is the cheap 80% of
+ * putting decisions in the repository: `git log --grep` reconstructs which commits
+ * belonged to one decision without a single new file in somebody's Terraform.
  */
 function commitMessage(
   summary: string,
   action: string,
   origin: OperationOrigin,
+  decisionId?: string,
 ): string {
-  return `${summary}\n\n${OPERATION_TRAILER}: ${action}\n${ORIGIN_TRAILER}: ${origin}\n`;
+  const trailers = [
+    `${OPERATION_TRAILER}: ${action}`,
+    `${ORIGIN_TRAILER}: ${origin}`,
+    ...(decisionId ? [`${DECISION_TRAILER}: ${decisionId}`] : []),
+  ];
+
+  return `${summary}\n\n${trailers.join("\n")}\n`;
 }
 
 async function mutate(

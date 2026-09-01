@@ -52,10 +52,10 @@ import {
   AGENT_MAX_APP_REPO_READS,
   AGENT_MAX_MCP_CALLS,
   AGENT_MAX_STEPS,
-  AGENT_MAX_THOUGHTS,
   AGENT_MAX_TOOL_CALLS,
   DEFAULT_OPERATING_RULES,
   DEFAULT_TURN_TIMEOUT_SECONDS,
+  maxThoughtsFor,
   renderOperatingRule,
 } from "./runtime-options";
 import type { ReasoningEffortValue } from "./settings-service";
@@ -100,6 +100,16 @@ export interface AgentAppRepo {
   token: string;
 }
 
+/** A decision in force, as the prompt states it back to the agent. */
+export interface AgentDecision {
+  id: string;
+  question: string;
+  choice: string;
+  reason: string;
+  /** What was rejected, so the agent does not re-propose it. */
+  rejected: string[];
+}
+
 export interface AgentPipelineCheck {
   name: string;
   /** `queued`, `in_progress`, `completed`. */
@@ -125,6 +135,17 @@ export interface AgentContext {
    */
   library: AgentLibraryModule[];
   history: Array<{ role: string; content: string }>;
+  /**
+   * Decisions this project still stands by, oldest first.
+   *
+   * Structured memory, and the reason it is worth more than the transcript it is
+   * derived from. The conversation is replayed newest-first into a character
+   * budget, so an answer settled twenty turns ago falls off the end and the agent
+   * proposes DocumentDB again. Five lines of decisions survive that, and they say
+   * what was rejected as well as what was chosen — which the prose rarely does as
+   * plainly.
+   */
+  decisions?: AgentDecision[];
   /** Identifies the Copilot session; the turn runs as this user. */
   userId: string;
   projectId: string;
@@ -235,6 +256,24 @@ export interface AgentContext {
    */
   historyBudgetChars?: number | null;
   /**
+   * How many entries of this turn to record, or null for the default.
+   *
+   * A cap on the record. The reasoning-summary cap rides along with it through
+   * {@link maxThoughtsFor} rather than being passed separately, so the two cannot
+   * be handed in contradicting each other.
+   */
+  maxSteps?: number | null;
+  /**
+   * The application-repository caps, or null for the defaults.
+   *
+   * The reads are a per-turn budget like the operations and the MCP calls; the
+   * other two bound one call each. All three are the caller's because the linked
+   * repository is, and because the requests are made on their rate limit.
+   */
+  maxAppRepoReads?: number | null;
+  appRepoTreeLimit?: number | null;
+  appRepoFileChars?: number | null;
+  /**
    * Called whenever the trail grows, with the whole trail so far.
    *
    * A turn that builds a stack can run for minutes, and until it returned the UI
@@ -245,10 +284,48 @@ export interface AgentContext {
   onStep?: (steps: AgentStep[]) => void;
 }
 
+/**
+ * A decision the turn recorded, ready to be written.
+ *
+ * Queued rather than persisted during the turn, for the reason mutations are: the
+ * agent changes nothing while it works, and the app decides afterwards what to
+ * keep. A decision that reached the database from a turn that then failed would be
+ * a recorded reason for infrastructure that does not exist.
+ */
+export interface RecordedDecision {
+  question: string;
+  context: string;
+  choice: string;
+  reason: string;
+  alternatives: Array<{ option: string; reason: string }>;
+  plan: {
+    modules: Array<{ moduleId: string; name?: string; purpose?: string }>;
+    wiring: Array<{
+      target: string;
+      targetInput: string;
+      source?: string;
+      sourceOutput?: string;
+    }>;
+  };
+  /** Decision this one replaces, when the turn changed an earlier answer. */
+  supersedes?: string;
+  /**
+   * Index into `mutations` from which this decision is in force.
+   *
+   * The two queues share one order, so the decision an operation belongs to is the
+   * last one recorded before it. That is what lets a turn record "use Postgres",
+   * build it, then record "three availability zones" and build that, without the
+   * second decision claiming the first one's commits.
+   */
+  fromMutation: number;
+}
+
 export interface AgentTurn {
   reply: string;
   /** Mutations to apply, in order. Empty when the turn only answers. */
   mutations: ProjectGraphMutation[];
+  /** Decisions to record, in the order they were made. */
+  decisions: RecordedDecision[];
   /** How the turn got to its answer, in the order it happened. */
   steps: AgentStep[];
 }
@@ -274,8 +351,6 @@ export interface AgentTurn {
  * shorter leash is wanted.
  */
 const DEFAULT_TURN_TIMEOUT_MS = DEFAULT_TURN_TIMEOUT_SECONDS * 1000;
-
-const MAX_STEPS = AGENT_MAX_STEPS;
 
 /**
  * The operations that delete something, and every reference to it.
@@ -323,13 +398,26 @@ export async function runProjectAgent(
   context: AgentContext,
 ): Promise<AgentTurn> {
   const mutations: ProjectGraphMutation[] = [];
+  const decisions: RecordedDecision[] = [];
   const steps: AgentStep[] = [];
+
+  /**
+   * The caps this turn runs under, resolved once.
+   *
+   * Read here rather than at each use so a turn cannot end up enforcing two
+   * different numbers, and so the fallback to the default appears once instead of
+   * beside every reference.
+   */
+  const trail = {
+    maxSteps: context.maxSteps ?? AGENT_MAX_STEPS,
+    maxThoughts: maxThoughtsFor(context.maxSteps ?? AGENT_MAX_STEPS),
+  };
   /**
    * Records a step and tells the caller, so progress is visible while the turn
    * is still running rather than only in the finished message.
    */
   const record = (step: AgentStep) => {
-    pushStep(steps, step);
+    pushStep(steps, step, trail);
     context.onStep?.(steps);
   };
   const client = copilotClient();
@@ -358,7 +446,7 @@ export async function runProjectAgent(
       sessionId: `terrablox-${context.userId}-${context.projectId}-${Date.now()}`,
       model: context.model || COPILOT_MODEL,
       gitHubToken: context.githubToken,
-      tools: buildTools(context, mutations, record),
+      tools: buildTools(context, mutations, decisions, record),
       ...(usesMcp ? { mcpServers } : {}),
       // Omitted rather than defaulted: a model that does not support the
       // setting rejects the session, so "leave it alone" has to mean absent.
@@ -465,6 +553,7 @@ export async function runProjectAgent(
         response?.data.content?.trim() ||
         "I could not put together an answer for that.",
       mutations,
+      decisions,
       steps,
     };
   } catch (error) {
@@ -498,12 +587,20 @@ export async function runProjectAgent(
 function buildTools(
   context: AgentContext,
   sink: ProjectGraphMutation[],
+  decisions: RecordedDecision[],
   record: (step: AgentStep) => void,
 ) {
   const disabled = new Set(context.disabledTools ?? []);
 
   /** This turn's operation budget: the caller's choice, or the default. */
   const maxToolCalls = context.maxToolCalls ?? AGENT_MAX_TOOL_CALLS;
+
+  /** The application-repository caps, resolved the same way. */
+  const maxAppRepoReads = context.maxAppRepoReads ?? AGENT_MAX_APP_REPO_READS;
+  const appRepoTreeLimit =
+    context.appRepoTreeLimit ?? AGENT_APP_REPO_TREE_LIMIT;
+  const appRepoFileChars =
+    context.appRepoFileChars ?? AGENT_APP_REPO_FILE_CHARS;
 
   // Withheld rather than refused at call time, for the same reason the library
   // withholds `add_module`: the model is told in the prompt which operations are
@@ -573,10 +670,10 @@ function buildTools(
    */
   let reads = 0;
   const spendRead = (tool: string) => {
-    if (reads >= AGENT_MAX_APP_REPO_READS) {
+    if (reads >= maxAppRepoReads) {
       return refuse(
         tool,
-        `Reading budget spent: a single turn may read the application repository at most ${AGENT_MAX_APP_REPO_READS} times. Work with what you have already seen, and say what you were still looking for.`,
+        `Reading budget spent: a single turn may read the application repository at most ${maxAppRepoReads} times. Work with what you have already seen, and say what you were still looking for.`,
       );
     }
     reads += 1;
@@ -1166,7 +1263,7 @@ function buildTools(
             .filter((entry) => !isIgnoredAppPath(entry))
             .sort();
 
-          const shown = files.slice(0, AGENT_APP_REPO_TREE_LIMIT);
+          const shown = files.slice(0, appRepoTreeLimit);
           const omitted = files.length - shown.length;
 
           record({
@@ -1230,7 +1327,7 @@ function buildTools(
             );
           }
 
-          const truncated = file.content.length > AGENT_APP_REPO_FILE_CHARS;
+          const truncated = file.content.length > appRepoFileChars;
 
           record({
             kind: "tool",
@@ -1243,11 +1340,11 @@ function buildTools(
             repository: appRepo.fullName,
             path: wanted,
             content: truncated
-              ? file.content.slice(0, AGENT_APP_REPO_FILE_CHARS)
+              ? file.content.slice(0, appRepoFileChars)
               : file.content,
             ...(truncated
               ? {
-                  truncated: `Only the first ${AGENT_APP_REPO_FILE_CHARS} characters are shown.`,
+                  truncated: `Only the first ${appRepoFileChars} characters are shown.`,
                 }
               : {}),
           };
@@ -1257,23 +1354,38 @@ function buildTools(
       },
     }),
     defineTool<{
-      summary: string;
-      modules?: Array<{ moduleId: string; name?: string; purpose?: string }>;
-      wiring?: Array<{
-        target: string;
-        targetInput: string;
-        source?: string;
-        sourceOutput?: string;
-      }>;
-    }>("propose_plan", {
-      ...spec("propose_plan"),
-      handler: async ({ summary, modules, wiring }) => {
-        const text = summary?.trim();
-        if (!text) {
-          return refuse("propose_plan", "Say what the plan is.");
+      question: string;
+      context: string;
+      choice: string;
+      reason: string;
+      alternatives?: Array<{ option: string; reason: string }>;
+      plan?: {
+        modules?: Array<{ moduleId: string; name?: string; purpose?: string }>;
+        wiring?: Array<{
+          target: string;
+          targetInput: string;
+          source?: string;
+          sourceOutput?: string;
+        }>;
+      };
+      supersedes?: string;
+    }>("record_decision", {
+      ...spec("record_decision"),
+      handler: async (args) => {
+        const question = args.question?.trim();
+        const choice = args.choice?.trim();
+        const reason = args.reason?.trim();
+
+        if (!question || !choice || !reason) {
+          return refuse(
+            "record_decision",
+            "A decision needs at least `question`, `choice` and `reason`. Say what was being decided, what you chose, and why.",
+          );
         }
 
-        const planned = modules ?? [];
+        const planned = args.plan?.modules ?? [];
+        const wiring = args.plan?.wiring ?? [];
+
         // Named against the library while it is still only a plan. "I will add the
         // ECS module" is worth correcting before three other modules are wired to
         // a block that was never going to exist.
@@ -1281,16 +1393,45 @@ function buildTools(
           .map((entry) => entry.moduleId)
           .filter((id) => !context.library.some((mod) => mod.id === id));
 
+        // Only a decision this project actually holds may be superseded, or the
+        // log would grow a chain pointing at nothing.
+        const supersedes = args.supersedes?.trim();
+        const knownSupersedes = (context.decisions ?? []).some(
+          (entry) => entry.id === supersedes,
+        );
+
+        decisions.push({
+          question,
+          context: args.context?.trim() || "(not stated)",
+          choice,
+          reason,
+          alternatives: (args.alternatives ?? [])
+            .map((entry) => ({
+              option: entry.option?.trim() ?? "",
+              reason: entry.reason?.trim() ?? "",
+            }))
+            .filter((entry) => entry.option),
+          plan: { modules: planned, wiring },
+          ...(supersedes && knownSupersedes ? { supersedes } : {}),
+          // Everything queued from here belongs to this decision.
+          fromMutation: sink.length,
+        });
+
         record({
           kind: "tool",
-          tool: "propose_plan",
+          tool: "record_decision",
           summary: [
-            text,
+            `${question} → ${choice}`,
+            `Because: ${reason}`,
+            ...(args.context?.trim() ? [`Given: ${args.context.trim()}`] : []),
+            ...(args.alternatives ?? []).map(
+              (entry) => `Not ${entry.option}: ${entry.reason}`,
+            ),
             ...planned.map(
               (entry) =>
                 `+ ${entry.name ?? entry.moduleId}${entry.purpose ? ` — ${entry.purpose}` : ""}`,
             ),
-            ...(wiring ?? []).map(
+            ...wiring.map(
               (wire) =>
                 `→ ${wire.target}.${wire.targetInput} = ${
                   wire.source
@@ -1309,13 +1450,18 @@ function buildTools(
                 problem: `Not in the library: ${unknown.join(", ")}. Pick real ids before building — check the library list in your instructions.`,
               }
             : {}),
+          ...(supersedes && !knownSupersedes
+            ? {
+                note: `No decision ${supersedes} is in force on this project, so this one supersedes nothing. Check the list in your instructions.`,
+              }
+            : {}),
           // The turn is headless: nobody can answer a question in the middle of
           // it. So a plan the user should weigh in on has to end the turn, and
           // the confirmation arrives as their next message.
           guidance:
             planned.length > PLAN_CONFIRM_THRESHOLD
-              ? `This plan adds ${planned.length} modules. Unless the user has already told you to go ahead, answer with the plan now and ask them to confirm — do not queue the edits in this turn.`
-              : "Now build it, then call review_project before you answer.",
+              ? `This plan adds ${planned.length} modules. Unless the user has already told you to go ahead, answer with the decision now and ask them to confirm — do not queue the edits in this turn.`
+              : "Recorded. Everything you queue from now is filed under it. Build, then call review_project before you answer.",
         };
       },
     }),
@@ -1470,14 +1616,18 @@ function describeAppRepoError(error: unknown, appRepo: AgentAppRepo): string {
  * saying the trail was cut, because a trail that simply stops looks exactly like a
  * turn that stopped, which is how eighty committed operations came to be invisible.
  */
-function pushStep(steps: AgentStep[], step: AgentStep): void {
-  if (steps.length >= MAX_STEPS) return;
+function pushStep(
+  steps: AgentStep[],
+  step: AgentStep,
+  caps: { maxSteps: number; maxThoughts: number },
+): void {
+  if (steps.length >= caps.maxSteps) return;
 
-  if (steps.length === MAX_STEPS - 1) {
+  if (steps.length === caps.maxSteps - 1) {
     steps.push({
       kind: "tool",
       tool: "trail",
-      summary: `Only the first ${MAX_STEPS - 1} entries of this turn were recorded. The operations after them still ran and still committed.`,
+      summary: `Only the first ${caps.maxSteps - 1} entries of this turn were recorded. The operations after them still ran and still committed.`,
       ok: true,
     });
     return;
@@ -1488,7 +1638,7 @@ function pushStep(steps: AgentStep[], step: AgentStep): void {
       (count, entry) => count + (entry.kind === "thought" ? 1 : 0),
       0,
     );
-    if (thoughts >= AGENT_MAX_THOUGHTS) return;
+    if (thoughts >= caps.maxThoughts) return;
   }
 
   steps.push(
@@ -1692,6 +1842,41 @@ function openInputs(context: AgentContext): string[] {
 }
 
 /**
+ * The decisions this project stands by, and what they ruled out.
+ *
+ * Cheap and load-bearing. Without it the only memory a turn has is the replayed
+ * transcript, filled backwards into a character budget — so the answer to "managed
+ * document database?" was settled once, fell out of the window, and would be
+ * proposed again by a turn with no way to know. Five lines here outlast twenty
+ * turns of conversation.
+ *
+ * The rejected options are listed because that is the half the prose usually
+ * loses: a reply says what was built, and rarely says what was considered and why
+ * it lost.
+ */
+function decisionsInForce(context: AgentContext): string[] {
+  const decisions = context.decisions ?? [];
+  if (decisions.length === 0) return [];
+
+  return [
+    `## Decisions this project stands by (${decisions.length})`,
+    "Yours and the user's, from earlier turns. Build on them rather than re-opening",
+    "them, and if one is now wrong say so and record a new decision that supersedes",
+    "it — do not quietly do something else.",
+    ...decisions.map((decision) =>
+      [
+        `- [${decision.id}] ${decision.question} → ${decision.choice}`,
+        `  because ${decision.reason}`,
+        ...(decision.rejected.length
+          ? [`  ruled out: ${decision.rejected.join("; ")}`]
+          : []),
+      ].join("\n"),
+    ),
+    "",
+  ];
+}
+
+/**
  * The project, written out for the model.
  *
  * The graph is small and already loaded, so handing it over up front is
@@ -1813,6 +1998,7 @@ function systemPrompt(context: AgentContext): string {
           "## Inputs still to decide",
           ...openInputs(context),
           "",
+          ...decisionsInForce(context),
           `Root-level resource/data blocks: ${graph.resourceCount}. Files: ${graph.files.join(", ") || "none"}.`,
           "",
           // The rule the canvas wires by, stated rather than left to be inferred

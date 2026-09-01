@@ -17,6 +17,12 @@ interface DeleteProjectDialogProps {
   projectName: string;
   /** Shown so it is obvious the repository survives the delete. */
   repoFullName: string | null;
+  /**
+   * The repository could not be read just now. Only the reassurance changes:
+   * deleting has never depended on reaching GitHub, and this is usually the
+   * reason somebody is here.
+   */
+  repoUnreachable?: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDeleted: (projectId: string) => void;
@@ -40,6 +46,7 @@ export function DeleteProjectDialog({
   projectId,
   projectName,
   repoFullName,
+  repoUnreachable = false,
   open,
   onOpenChange,
   onDeleted,
@@ -115,14 +122,31 @@ export function DeleteProjectDialog({
 
         {/* The Terraform itself lives in Git, so deleting here loses no code. Said
             as its own block rather than a footnote: it is the one thing a person is
-            actually worried about when they hover over a red button. */}
+            actually worried about when they hover over a red button.
+
+            Unless we could not reach the repository, in which case the same
+            sentence is a false assurance — and the reader is most likely here
+            *because* they deleted it. Then the block answers the question they do
+            have: is this going to work at all. */}
         <div className="rounded-md border p-3 text-sm">
           <div className="flex items-center gap-2 font-medium">
             <Github className="h-4 w-4 shrink-0" />
-            Kept on GitHub
+            {repoUnreachable ? "Not readable on GitHub" : "Kept on GitHub"}
           </div>
           <p className="mt-2 text-muted-foreground">
-            {repoFullName ? (
+            {repoUnreachable ? (
+              <>
+                {repoFullName ? (
+                  <code className="font-mono text-xs">{repoFullName}</code>
+                ) : (
+                  "The repository this project points at"
+                )}{" "}
+                could not be read — deleted, renamed, or no longer covered by
+                TerraBlox's access. Deleting here does not depend on it and will
+                work. Nothing is deleted on GitHub either way, so if the
+                repository is still there, it and its commits stay as they are.
+              </>
+            ) : repoFullName ? (
               <>
                 <code className="font-mono text-xs">{repoFullName}</code> is
                 left untouched, with every commit TerraBlox made to it. Your

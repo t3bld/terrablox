@@ -17,6 +17,8 @@ interface ProjectActionsMenuProps {
   /** Null while the project is still loading; the menu stays disabled. */
   projectName: string | null;
   repoFullName: string | null;
+  /** Passed through so the dialog does not promise a repository we cannot read. */
+  repoUnreachable?: boolean;
   onDeleted: (projectId: string) => void;
   /** Stops the click bubbling into a surrounding link (project cards). */
   stopPropagation?: boolean;
@@ -33,6 +35,7 @@ export function ProjectActionsMenu({
   projectId,
   projectName,
   repoFullName,
+  repoUnreachable = false,
   onDeleted,
   stopPropagation = false,
 }: ProjectActionsMenuProps) {
@@ -81,6 +84,7 @@ export function ProjectActionsMenu({
         projectId={projectId}
         projectName={projectName ?? "this project"}
         repoFullName={repoFullName}
+        repoUnreachable={repoUnreachable}
       />
     </>
   );

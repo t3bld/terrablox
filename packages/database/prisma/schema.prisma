@@ -180,6 +180,23 @@ model Project {
   /// sides: the pipeline writes the state through it, and reading the inventory
   /// back requires `kms:Decrypt` on this exact key.
   stateKmsKeyArn String? @map("state_kms_key_arn") @db.Text
+  /// The CloudFormation stacks that own the two halves of the bootstrap, and the
+  /// KMS alias inside the second one.
+  ///
+  /// Stored rather than derived from `name`, which is what they used to be. A
+  /// derived name is only stable while the name is, and a project can be renamed:
+  /// after one, `DescribeStacks` looked for a stack nobody had created, the wizard
+  /// concluded the setup was unfinished, and the create it then offered failed on
+  /// `EntityAlreadyExists` — because the role name is recovered from the stored
+  /// ARN and was therefore still the old one. With `OnFailure: DELETE` that took
+  /// the new stack down again, leaving a loop with no way out of it in the UI.
+  ///
+  /// Set once, on the first apply, and never recomputed — the same rule the bucket
+  /// and the lock table above already follow. It makes a rename cosmetic, which is
+  /// what a rename should be.
+  roleStackName  String? @map("role_stack_name") @db.Text
+  stateStackName String? @map("state_stack_name") @db.Text
+  stateKmsAlias  String? @map("state_kms_alias") @db.Text
 
   /// Which deployment workflow templates this project uses and how they are
   /// configured, as `{ disabled?: string[], terraformVersion?, requireApproval?,
@@ -195,6 +212,7 @@ model Project {
   connections  Connection[]
   chatMessages ProjectChatMessage[]
   operations   ProjectOperation[]
+  decisions    ProjectDecision[]
 
   @@index([userId])
   @@map("projects")
@@ -224,12 +242,92 @@ model ProjectOperation {
   commitSha String? @map("commit_sha") @db.Text
   parentSha String? @map("parent_sha") @db.Text
 
+  /// The turn that produced this edit, and the decision it serves.
+  ///
+  /// Both null for a canvas edit, which is one gesture and needs no grouping, and
+  /// null on every row written before these columns existed. Until they did, the
+  /// only way to tell which operations belonged together was to intersect commit
+  /// shas with an assistant message's metadata — so "the agent added ten modules
+  /// and then ran out of budget" was a sentence nobody could reconstruct.
+  chatMessageId String? @map("chat_message_id") @db.Uuid
+  decisionId    String? @map("decision_id") @db.Uuid
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// Set null rather than cascade: losing the conversation must not lose the
+  /// record of what reached the repository.
+  chatMessage ProjectChatMessage? @relation(fields: [chatMessageId], references: [id], onDelete: SetNull)
+  decision    ProjectDecision?    @relation(fields: [decisionId], references: [id], onDelete: SetNull)
 
   @@index([projectId, createdAt])
+  @@index([chatMessageId])
+  @@index([decisionId])
   @@map("project_operations")
+  @@schema("public")
+}
+
+/// Why the infrastructure looks the way it does, in the words of whoever decided.
+///
+/// The operation log answers "what changed, when". This answers the question the
+/// operation log structurally cannot: *why*. They are different grains — one turn
+/// of the agent produced one decision about where the application's data lives and
+/// twenty-nine operations implementing it — so grouping the operations differently
+/// would not have produced this, and reading the reason back out of them is not
+/// possible at all.
+///
+/// Shaped after an architecture decision record, and for its reasons: the context
+/// and the alternatives are the parts worth keeping, and a decision is never
+/// edited to reflect a change of mind — a later one supersedes it, so the log
+/// keeps saying what was believed at the time.
+///
+/// What it is not: a fact. A decision the agent records is the agent's own account
+/// of what it understood and chose, which is exactly why `context` is a column of
+/// its own. A misread requirement is visible there before it becomes
+/// infrastructure, and `origin` says whose account this is.
+model ProjectDecision {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+
+  /// Who recorded it: `agent` or `user`.
+  origin String @db.Text
+
+  /// What was being decided, as a heading. "Where the application's data lives."
+  question String @db.Text
+  /// The requirements and constraints in force, as understood at the time.
+  ///
+  /// ADR calls this the context, and it is the field a reader corrects first:
+  /// "self-hosted, containers, managed document database, test environment,
+  /// publicly reachable" is a reading of a conversation, not a fact about it.
+  context String @db.Text
+  /// What was decided.
+  choice String @db.Text
+  /// Why, in terms a reader can disagree with.
+  reason String @db.Text
+  /// What was weighed and rejected, each with the reason it lost.
+  alternatives Json @default("[]") @db.JsonB
+
+  /// The intended shape: modules to add and wires to draw, as declared.
+  ///
+  /// Kept separate from the operations that followed, because the difference is
+  /// the interesting part — a plan naming ten modules and nine wires next to a
+  /// turn that queued ten and none is the whole story of that turn.
+  plan Json @default("{}") @db.JsonB
+
+  /// `active` or `superseded`.
+  status         String  @default("active") @db.Text
+  supersededById String? @map("superseded_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  project    Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  /// Self-relation: the decision that replaced this one, and what it replaced.
+  supersededBy ProjectDecision?  @relation("DecisionSupersedes", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes   ProjectDecision[] @relation("DecisionSupersedes")
+  operations ProjectOperation[]
+
+  @@index([projectId, createdAt])
+  @@map("project_decisions")
   @@schema("public")
 }
 
@@ -336,7 +434,8 @@ model ProjectChatMessage {
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project    Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  operations ProjectOperation[]
 
   @@index([projectId, createdAt])
   @@map("project_chat_messages")
@@ -671,6 +770,37 @@ model AgentSettings {
   /// exists. A budget in characters rather than a message count, because eight
   /// short answers and eight long ones are not the same amount of context.
   historyBudgetChars Int? @map("history_budget_chars")
+
+  /// How many entries of one turn are recorded. Null means the default (500).
+  ///
+  /// A cap on the record, not on the turn: past it the entry is dropped and the
+  /// turn carries on. It is a setting because the row is read back by everyone who
+  /// opens the transcript — someone running long turns wants more of it than we
+  /// guessed, someone on a slow connection wants less, and both are answers about
+  /// their own transcript. The reasoning-summary cap is derived from this rather
+  /// than stored, so the two can never contradict each other.
+  maxSteps Int? @map("max_steps")
+
+  /// How many times one turn may read the linked application repository. Null
+  /// means the default (40).
+  ///
+  /// Apart from `maxToolCalls` because reads commit nothing — spending the
+  /// operation budget on looking would leave a turn that studied an application
+  /// carefully with nothing left to build with. It still needs its own ceiling:
+  /// every read is a GitHub request against the user's rate limit.
+  maxAppRepoReads Int? @map("max_app_repo_reads")
+
+  /// How many paths one application-repository listing returns. Null means the
+  /// default (400).
+  ///
+  /// Raising it is the honest answer for a large monorepo, where narrowing the
+  /// path — the intended remedy — needs a first listing broad enough to show which
+  /// subtree to narrow to.
+  appRepoTreeLimit Int? @map("app_repo_tree_limit")
+
+  /// How much of one application file is handed to the model, in characters. Null
+  /// means the default (20000).
+  appRepoFileChars Int? @map("app_repo_file_chars")
 
   /// Whether the agent may call the operations that delete a module or a
   /// variable, along with every reference to them.

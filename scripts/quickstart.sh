@@ -76,8 +76,13 @@ command -v node >/dev/null 2>&1 || die "node is not installed. See https://nodej
 command -v pnpm >/dev/null 2>&1 || die "pnpm is not installed. Run: npm install -g pnpm"
 command -v docker >/dev/null 2>&1 || die "docker is not installed. See https://docs.docker.com/get-docker/"
 
+# Node 22, and this used to say 18. The Copilot SDK spawns the CLI with
+# process.execPath, so the CLI's bundle runs on whatever Node is installed here,
+# and it uses Promise.withResolvers - Node 22 and later. On Node 20 everything
+# below succeeds, the dashboard serves every page, and the first chat message
+# fails with a TypeError from a minified file that names no version at all.
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
-[ "$node_major" -ge 18 ] || die "Node 18 or newer is required (found $(node -v))."
+[ "$node_major" -ge 22 ] || die "Node 22 or newer is required (found $(node -v)); the agent cannot run on older versions."
 ok "node $(node -v), pnpm $(pnpm -v)"
 
 docker compose version >/dev/null 2>&1 || die "'docker compose' is unavailable. Please update Docker."

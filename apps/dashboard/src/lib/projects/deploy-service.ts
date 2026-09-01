@@ -56,7 +56,27 @@ export function pipelineContext(project: Project): PipelineContext {
     stateBucket: project.stateBucket,
     stateLockTable: project.stateLockTable,
     stateKmsKeyArn: project.stateKmsKeyArn,
+    stateKmsAlias: project.stateKmsAlias,
   };
+}
+
+/**
+ * Which CloudFormation stacks this project's bootstrap lives in.
+ *
+ * The stored name wins, and the old derivation is the fallback — so a project set
+ * up before the names were pinned keeps looking at the stack it always did, and one
+ * that has never been set up gets the name its first apply will pin.
+ *
+ * Both of these exist so that no caller derives a stack name itself. That is what
+ * went wrong before: `DescribeStacks(bootstrapStackName(project.name))` silently
+ * became a different stack the moment somebody renamed the project.
+ */
+export function roleStackNameOf(project: Project): string {
+  return project.roleStackName ?? bootstrapStackName(project.name);
+}
+
+export function stateStackNameOf(project: Project): string {
+  return project.stateStackName ?? stateStackName(project.name);
 }
 
 /** The template configuration this project deploys with. */
@@ -279,13 +299,13 @@ export async function readDeployState(
       branch: project.repoBranch,
     }),
     bootstrap: {
-      stackName: bootstrapStackName(project.name),
+      stackName: roleStackNameOf(project),
       template: renderBootstrapTemplate(context),
       command: renderBootstrapCommand(context),
       consoleUrl: consoleUrl(project.awsRegion),
     },
     state: {
-      stackName: stateStackName(project.name),
+      stackName: stateStackNameOf(project),
       // Rendering needs a bucket name, which only exists once the wizard has
       // derived one; before that there is nothing to show.
       template: project.stateBucket ? renderStateTemplate(context) : null,

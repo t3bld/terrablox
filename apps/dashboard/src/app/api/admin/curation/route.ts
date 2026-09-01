@@ -157,7 +157,9 @@ export async function GET() {
         // in a rule is substituted per user with whatever that person chose.
         defaultMaxToolCalls: AGENT_MAX_TOOL_CALLS,
         defaultMaxMcpCalls: AGENT_MAX_MCP_CALLS,
-        maxRecordedSteps: AGENT_MAX_STEPS,
+        // A default too, for the same reason: the trail size is a per-user
+        // setting now, so this screen can only report what an unset one gets.
+        defaultMaxRecordedSteps: AGENT_MAX_STEPS,
         historyBudgetChars: AGENT_HISTORY_BUDGET_CHARS,
         defaultTurnTimeoutSeconds: DEFAULT_TURN_TIMEOUT_SECONDS,
       },

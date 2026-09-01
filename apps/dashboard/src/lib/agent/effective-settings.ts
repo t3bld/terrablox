@@ -4,9 +4,17 @@ import { prisma } from "@terrablox/database";
 
 import { isKnownKnowledge } from "./knowledge";
 import {
+  APP_REPO_FILE_CHARS_MAX,
+  APP_REPO_FILE_CHARS_MIN,
+  APP_REPO_READS_MAX,
+  APP_REPO_READS_MIN,
+  APP_REPO_TREE_MAX,
+  APP_REPO_TREE_MIN,
   HISTORY_BUDGET_MAX_CHARS,
   HISTORY_BUDGET_MIN_CHARS,
   MCP_CALL_BUDGET_MAX,
+  STEP_TRAIL_MAX,
+  STEP_TRAIL_MIN,
   TOOL_CALL_BUDGET_MAX,
   TOOL_CALL_BUDGET_MIN,
 } from "./runtime-options";
@@ -51,6 +59,24 @@ export interface AgentOverrides {
    */
   historyBudgetChars?: number | null;
   /**
+   * How much of a turn is recorded here.
+   *
+   * Per project because the transcript is per project: the one somebody reviews
+   * carefully wants the whole trail, and a scratch project reading back forty
+   * lookups is noise they have to scroll past.
+   */
+  maxSteps?: number | null;
+  /**
+   * How far a turn may read into the linked application.
+   *
+   * Per project for the same reason the link itself is: the application is a fact
+   * about this project, and how much of it is worth reading is a fact about that
+   * application rather than about the user.
+   */
+  maxAppRepoReads?: number | null;
+  appRepoTreeLimit?: number | null;
+  appRepoFileChars?: number | null;
+  /**
    * Whether the agent may delete in this project.
    *
    * Worth overriding per project more than any other field here: a scratch
@@ -85,6 +111,14 @@ export interface EffectiveAgentSettings {
   maxMcpCalls: number | null;
   /** Characters of this project's conversation replayed. Null → default. */
   historyBudgetChars: number | null;
+  /** Entries of one turn recorded here. Null → default. */
+  maxSteps: number | null;
+  /** Reads of the linked application repository per turn. Null → default. */
+  maxAppRepoReads: number | null;
+  /** Paths one application listing returns. Null → default. */
+  appRepoTreeLimit: number | null;
+  /** Characters of one application file handed to the model. Null → default. */
+  appRepoFileChars: number | null;
   /** Whether the agent may delete modules and variables here. */
   allowDestructive: boolean;
   /** Which fields the project decides itself, for the UI to mark as overridden. */
@@ -128,6 +162,10 @@ export function mergeAgentSettings(
     maxMcpCalls: overrides.maxMcpCalls ?? global.maxMcpCalls,
     historyBudgetChars:
       overrides.historyBudgetChars ?? global.historyBudgetChars,
+    maxSteps: overrides.maxSteps ?? global.maxSteps,
+    maxAppRepoReads: overrides.maxAppRepoReads ?? global.maxAppRepoReads,
+    appRepoTreeLimit: overrides.appRepoTreeLimit ?? global.appRepoTreeLimit,
+    appRepoFileChars: overrides.appRepoFileChars ?? global.appRepoFileChars,
     // `??` is wrong for a boolean override: a project that deliberately set
     // `false` would fall through to a global `true`. Presence is the question.
     allowDestructive:
@@ -212,6 +250,46 @@ export function parseOverrides(value: unknown): AgentOverrides {
       chars <= HISTORY_BUDGET_MAX_CHARS
         ? Math.round(chars)
         : null;
+  }
+
+  /**
+   * A stored number, or null when it is outside today's bounds.
+   *
+   * Same reasoning as the call budgets above: the column is JSON that outlives any
+   * one version of these limits, so a value written before a ceiling moved reads as
+   * "inherit" rather than as a number the code would no longer accept.
+   */
+  const bounded = (value: unknown, min: number, max: number) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= min && n <= max ? Math.round(n) : null;
+  };
+
+  if ("maxSteps" in raw) {
+    overrides.maxSteps = bounded(raw.maxSteps, STEP_TRAIL_MIN, STEP_TRAIL_MAX);
+  }
+
+  if ("maxAppRepoReads" in raw) {
+    overrides.maxAppRepoReads = bounded(
+      raw.maxAppRepoReads,
+      APP_REPO_READS_MIN,
+      APP_REPO_READS_MAX,
+    );
+  }
+
+  if ("appRepoTreeLimit" in raw) {
+    overrides.appRepoTreeLimit = bounded(
+      raw.appRepoTreeLimit,
+      APP_REPO_TREE_MIN,
+      APP_REPO_TREE_MAX,
+    );
+  }
+
+  if ("appRepoFileChars" in raw) {
+    overrides.appRepoFileChars = bounded(
+      raw.appRepoFileChars,
+      APP_REPO_FILE_CHARS_MIN,
+      APP_REPO_FILE_CHARS_MAX,
+    );
   }
 
   // Only a real boolean counts. Anything else is dropped rather than coerced,

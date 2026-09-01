@@ -43,6 +43,7 @@ import {
   getRepository,
   listWorkflowRuns,
 } from "@/lib/github/repo-files";
+import { activeDecisions, recordDecision } from "@/lib/projects/decisions";
 import { toChatMessageDto } from "@/lib/projects/serialize";
 import {
   applyProjectMutation,
@@ -319,6 +320,7 @@ export async function POST(
       curation,
       lastCheck,
       application,
+      decisions,
     ] = await Promise.all([
       loadProjectGraph(token, project),
       readModuleLibrary(userId),
@@ -330,6 +332,7 @@ export async function POST(
       getHarnessCuration(),
       readLastCheck(token, project.repoFullName, project.repoBranch),
       resolveAppRepo(token, project),
+      activeDecisions(project.id),
     ]);
 
     // Knowledge is withheld by not assembling it, not by asking the model to
@@ -371,6 +374,10 @@ export async function POST(
       maxToolCalls: settings.maxToolCalls,
       maxMcpCalls: settings.maxMcpCalls,
       historyBudgetChars: settings.historyBudgetChars,
+      maxSteps: settings.maxSteps,
+      maxAppRepoReads: settings.maxAppRepoReads,
+      appRepoTreeLimit: settings.appRepoTreeLimit,
+      appRepoFileChars: settings.appRepoFileChars,
       allowDestructive: settings.allowDestructive,
       // Curated in the admin panel, defaults in code. Read per turn rather than
       // cached, so an edit takes effect on the next message instead of on the
@@ -409,20 +416,88 @@ export async function POST(
         role: entry.role,
         content: entry.content,
       })),
+      // Withheld with the repository: a decision is a statement about the
+      // Terraform, and describing it to an agent that cannot see the project
+      // would be telling it what was built without letting it look.
+      decisions: seesRepo
+        ? decisions.map((decision) => ({
+            id: decision.id,
+            question: decision.question,
+            choice: decision.choice,
+            reason: decision.reason,
+            rejected: decision.alternatives.map(
+              (entry) => `${entry.option} (${entry.reason})`,
+            ),
+          }))
+        : [],
     });
 
     let currentGraph: ProjectGraph = graph;
     const commits: string[] = [];
     const mutationErrors: string[] = [];
 
-    for (const mutation of turn.mutations) {
+    /**
+     * The assistant message, created before the edits rather than after.
+     *
+     * Every operation of a turn points at it, so it has to exist before the first
+     * one is written. Created here and not earlier: the turn has already produced
+     * its reply, so there is never a moment when the transcript holds an empty
+     * assistant bubble.
+     */
+    const assistantMessage = await database.projectChatMessage.create({
+      data: {
+        projectId: project.id,
+        role: "assistant",
+        content: turn.reply,
+        metadata: { mutations: turn.mutations.length },
+      },
+    });
+
+    /**
+     * The decisions this turn recorded, written before the edits they explain.
+     *
+     * Ids in queue order, so `decisionFor` below can name the one in force when a
+     * given mutation was queued.
+     */
+    const decisionIds: string[] = [];
+    for (const decision of turn.decisions) {
       try {
-        const result = await applyProjectMutation(
-          token,
-          project,
-          mutation,
-          "agent",
+        decisionIds.push(
+          await recordDecision(project.id, "agent", {
+            question: decision.question,
+            context: decision.context,
+            choice: decision.choice,
+            reason: decision.reason,
+            alternatives: decision.alternatives,
+            plan: decision.plan,
+            ...(decision.supersedes ? { supersedes: decision.supersedes } : {}),
+          }),
         );
+      } catch {
+        // A decision that cannot be written must not cost the edits it explains.
+        decisionIds.push("");
+      }
+    }
+
+    /** The decision in force when mutation `index` was queued, if any. */
+    const decisionFor = (index: number): string | undefined => {
+      for (let i = turn.decisions.length - 1; i >= 0; i--) {
+        const decision = turn.decisions[i];
+        if (decision && decision.fromMutation <= index) {
+          return decisionIds[i] || undefined;
+        }
+      }
+      return undefined;
+    };
+
+    for (const [index, mutation] of turn.mutations.entries()) {
+      try {
+        const decisionId = decisionFor(index);
+        const result = await applyProjectMutation(token, project, mutation, {
+          origin: "agent",
+          chatMessageId: assistantMessage.id,
+          ...(decisionId ? { decisionId } : {}),
+        });
         currentGraph = result.graph;
         if (result.commit) commits.push(result.commit.sha);
       } catch (mutationErr) {
@@ -459,17 +534,22 @@ export async function POST(
       })),
     ];
 
-    const assistantMessage = await database.projectChatMessage.create({
+    // The row already exists — the operations point at it — so this fills in what
+    // only the commit loop could know.
+    const completed = await database.projectChatMessage.update({
+      where: { id: assistantMessage.id },
       data: {
-        projectId: project.id,
-        role: "assistant",
-        content: turn.reply,
-        metadata: { commits, mutations: turn.mutations.length, steps },
+        metadata: {
+          commits,
+          mutations: turn.mutations.length,
+          decisions: decisionIds.filter(Boolean),
+          steps,
+        },
       },
     });
 
     return NextResponse.json({
-      messages: [userMessage, assistantMessage].map(toChatMessageDto),
+      messages: [userMessage, completed].map(toChatMessageDto),
       graph: currentGraph,
       changed: commits.length > 0,
     });

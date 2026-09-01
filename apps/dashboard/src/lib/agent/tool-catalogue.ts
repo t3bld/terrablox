@@ -17,9 +17,10 @@
  *
  *   library    looks a module up before placing it. The prompt can only afford a
  *              line per module, so anything more has to be asked for.
- *   review     asks what the queued edits add up to, and states a plan before
- *              making them. Both exist because a turn that cannot check itself
- *              ends when it runs out of steps rather than when the work is done.
+ *   review     records what is being decided and why, and asks what the queued
+ *              edits add up to. Both exist because a turn that cannot check itself
+ *              ends when it runs out of steps rather than when the work is done —
+ *              and because a turn that does not say why leaves nobody able to ask.
  *   app-repo   reads the linked application's own repository, read-only.
  *
  * `name` is stored in the deny list, so renaming one re-enables it for anyone who
@@ -56,49 +57,86 @@ export const PROJECT_AGENT_TOOLS = [
   },
   // ---- Planning and checking ----------------------------------------------
   {
-    name: "propose_plan",
+    name: "record_decision",
     group: "review",
-    label: "Propose Plan",
-    summary:
-      "State which modules to add and how to wire them, before building.",
+    label: "Record Decision",
+    summary: "Write down what you decided, why, and what you intend to build.",
     description:
-      "Write down what you intend to build before building it: the modules to add, and which output feeds which input. Recorded in the turn's trail, so the user can see the intent and stop you while it is still cheap. Use it for anything beyond a single edit. If the plan is large, present it and ask the user to confirm instead of building it in the same turn.",
+      "Record a decision in the project's log: what was being decided, the requirements you are working from, what you chose, why, and what you rejected. Add `plan` when you are about to build it — the modules to add and the wires to draw. Every edit you queue after this is filed under it, so the log can say why the infrastructure looks the way it does long after this conversation. Use it for anything beyond a single edit, and also when you decide *not* to do something. `context` is your reading of the requirements, not a fact: write it so the user can correct it. Write every field in English even when the conversation is not — this is a record somebody else will read. If the plan adds more than a handful of modules, record it and let the user confirm rather than building in the same turn.",
     parameters: {
       type: "object",
       properties: {
-        summary: {
+        question: {
           type: "string",
-          description: "One or two sentences on what this will build and why.",
+          description:
+            "What is being decided, as a heading, e.g. `Where the application's data lives`.",
         },
-        modules: {
+        context: {
+          type: "string",
+          description:
+            "The requirements and constraints you are working from, as you understand them.",
+        },
+        choice: { type: "string", description: "What you decided." },
+        reason: {
+          type: "string",
+          description: "Why, in terms the user can disagree with.",
+        },
+        alternatives: {
           type: "array",
-          description: "Library modules to add, with the label each will get.",
+          description:
+            "What you considered and rejected, each with its reason.",
           items: {
             type: "object",
             properties: {
-              moduleId: { type: "string" },
-              name: { type: "string" },
-              purpose: { type: "string" },
+              option: { type: "string" },
+              reason: { type: "string" },
             },
-            required: ["moduleId"],
+            required: ["option", "reason"],
           },
         },
-        wiring: {
-          type: "array",
-          description: "Connections to make, as target input to source output.",
-          items: {
-            type: "object",
-            properties: {
-              target: { type: "string" },
-              targetInput: { type: "string" },
-              source: { type: "string" },
-              sourceOutput: { type: "string" },
+        plan: {
+          type: "object",
+          description:
+            "What you are about to build. Omit for a decision you are not building yet.",
+          properties: {
+            modules: {
+              type: "array",
+              description:
+                "Library modules to add, with the label each will get.",
+              items: {
+                type: "object",
+                properties: {
+                  moduleId: { type: "string" },
+                  name: { type: "string" },
+                  purpose: { type: "string" },
+                },
+                required: ["moduleId"],
+              },
             },
-            required: ["target", "targetInput"],
+            wiring: {
+              type: "array",
+              description:
+                "Connections to make, as target input to source output.",
+              items: {
+                type: "object",
+                properties: {
+                  target: { type: "string" },
+                  targetInput: { type: "string" },
+                  source: { type: "string" },
+                  sourceOutput: { type: "string" },
+                },
+                required: ["target", "targetInput"],
+              },
+            },
           },
+        },
+        supersedes: {
+          type: "string",
+          description:
+            "Id of a decision in force that this one replaces, when you are changing an earlier answer.",
         },
       },
-      required: ["summary"],
+      required: ["question", "context", "choice", "reason"],
     },
   },
   {

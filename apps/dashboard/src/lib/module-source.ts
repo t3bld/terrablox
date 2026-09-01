@@ -2,7 +2,7 @@
  * Condenses a Terraform module source into something that fits on a graph node.
  *
  * A source like
- * `git::https://github.com/porsche-code/aac-aws-vmland.git//terraform?ref=1.0.1`
+ * `git::https://github.com/terrablox/vpc.git//terraform?ref=1.0.1`
  * carries the host, the subdirectory and the ref, none of which distinguish one
  * node from another in a graph where every call points at the same forge. The
  * repository name does.

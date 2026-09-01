@@ -243,6 +243,91 @@ export interface ProjectOperationDto {
   createdAt: string;
 }
 
+/** One rejected option and the reason it lost. */
+export interface DecisionAlternativeDto {
+  option: string;
+  reason: string;
+}
+
+/**
+ * The intent a decision declared, before anything was built.
+ *
+ * Kept beside the operations rather than merged into them: a plan naming ten
+ * modules next to a turn that added ten and wired none is the story of that turn,
+ * and merging the two would erase it.
+ */
+export interface DecisionPlanDto {
+  modules: Array<{ moduleId: string; name?: string; purpose?: string }>;
+  wiring: Array<{
+    target: string;
+    targetInput: string;
+    source?: string;
+    sourceOutput?: string;
+  }>;
+}
+
+/**
+ * Why the infrastructure looks the way it does — an architecture decision record,
+ * shaped after one and named plainly.
+ *
+ * `context` is what the requirements were understood to be, and it is a claim
+ * rather than a fact. `origin` says whose claim.
+ */
+export interface ProjectDecisionDto {
+  id: string;
+  origin: "agent" | "user";
+  question: string;
+  context: string;
+  choice: string;
+  reason: string;
+  alternatives: DecisionAlternativeDto[];
+  plan: DecisionPlanDto;
+  status: "active" | "superseded";
+  supersededById: string | null;
+  createdAt: string;
+}
+
+/**
+ * One turn's worth of work: what was asked, what the agent did, what it changed.
+ *
+ * The assistant message *is* the turn — it already carries the reply, the step
+ * trail and the commit list — so the log groups operations by it rather than by a
+ * table of its own.
+ *
+ * Built from messages rather than from operations, which matters for the turns that
+ * changed nothing: "the library has no DocumentDB module, tell me what you want
+ * instead" is a turn worth reading and it produced no commit at all.
+ */
+export interface ProjectLogTurnDto {
+  /** Null for a canvas gesture, which is an operation with no turn behind it. */
+  chatMessageId: string | null;
+  prompt: string | null;
+  reply: string | null;
+  createdAt: string;
+  /**
+   * What the agent did on the way to its answer: reasoning summaries, tool calls,
+   * refusals. The trajectory proper — operations are only the part that committed.
+   */
+  steps: AgentStep[];
+  commits: string[];
+  decisionId: string | null;
+  operations: ProjectOperationDto[];
+}
+
+/**
+ * The project's log, flat.
+ *
+ * Two lists rather than a nesting, because the two views slice it differently: a
+ * trajectory reads across turns and ignores decisions, a decision record reads the
+ * other way round. Nesting forced one of the two to be reconstructed.
+ */
+export interface ProjectLogDto {
+  /** Newest turn first. */
+  turns: ProjectLogTurnDto[];
+  /** Newest decision first. */
+  decisions: ProjectDecisionDto[];
+}
+
 export interface ProjectDeploySettings {
   awsAccountId: string | null;
   awsRegion: string;

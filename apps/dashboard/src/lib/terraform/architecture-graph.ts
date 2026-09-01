@@ -634,6 +634,16 @@ export function buildArchitecture(
       isContainer && scope ? instanceFrames(resource, scope) : null;
 
     if (!instances) {
+      // Nothing resolved the count — no inputs to resolve it with, or a guard the
+      // evaluator cannot settle. The expression still says something the frame
+      // would otherwise leave out entirely; see `declaredSpread`.
+      const spread = declaredSpread(resource);
+      if (spread) {
+        template.sublabel = template.sublabel
+          ? `${template.sublabel} · ${spread}`
+          : spread;
+      }
+
       nodes.push(template);
       nodeOfAddress.set(address, template.id);
       continue;
@@ -1311,6 +1321,38 @@ function entryForNode(node: ArchitectureNode) {
     : first.split(".")[0];
 
   return type ? architectureEntry(type) : null;
+}
+
+/**
+ * What a block's own expressions say about its multiplicity, when nothing
+ * resolved it.
+ *
+ * The module pages are the case this exists for. A module viewed on its own has no
+ * caller, so there are no inputs and no scope — and giving it one built from its
+ * own defaults would be worse than nothing: the upstream VPC module defaults every
+ * subnet list to `[]` and `enable_nat_gateway` to false, so every subnet, the NAT
+ * and the subnet group evaluate to zero instances. The page would show one empty
+ * VPC box for a module that builds a seven-tier network.
+ *
+ * So the numbers stay unknown, which is honest, and the *shape* is read off the
+ * expression instead, which is also honest and is the part a reader was missing.
+ * `availability_zone = element(var.azs, count.index)` says one subnet per zone
+ * however many zones there turn out to be — a fact that needs no inputs, cannot be
+ * wrong, and is exactly what distinguishes a tier from a single subnet.
+ *
+ * Reported rather than acted on, the same way `publicRouteCondition` is: the frame
+ * stays one frame, because how many is still unknown.
+ */
+function declaredSpread(resource: ArchitectureResource): string | null {
+  const zone = resource.availabilityZone;
+  if (!zone) return null;
+
+  // `count.index` or `each.key` over a zone list is the idiom for spreading one
+  // block across the zones. A literal `availability_zone = "eu-central-1a"` says
+  // the opposite and must not be labelled as a spread.
+  if (!/\bcount\.index\b|\beach\.(key|value)\b/.test(zone)) return null;
+
+  return "one per availability zone";
 }
 
 /**

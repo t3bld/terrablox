@@ -1,0 +1,99 @@
+# TerraBlox, self-hosted: the dashboard and its database, nothing else.
+#
+# Distinct from docker-compose.local.yml, which starts only Postgres for `pnpm
+# dev`. This one runs the built image, so it is also how you check that an image
+# actually works before pushing it anywhere.
+#
+#   cp .env.docker.example .env
+#   # fill in the four values it asks for
+#   docker compose up --build
+#
+# Configuration comes from a root .env file, which compose reads automatically.
+# Nothing here has a secret as a default: an instance that boots with a
+# predictable BETTER_AUTH_SECRET is an instance where anyone can forge a session.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: terrablox-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-terrablox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-terrablox}
+    volumes:
+      - terrablox-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-terrablox} -d ${POSTGRES_DB:-terrablox}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published. The dashboard reaches it over the compose network, and a
+    # database on a host port is a database on the internet more often than
+    # anyone intends.
+
+  # Migrations as their own container, so the schema is up to date before the
+  # first request rather than racing it. Runs to completion and exits; the
+  # dashboard waits for that exit.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: terrablox/dashboard:${TERRABLOX_VERSION:-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-terrablox}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-terrablox}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      MIGRATE_ONLY: "true"
+    restart: "no"
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: terrablox/dashboard:${TERRABLOX_VERSION:-latest}
+    container_name: terrablox
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-terrablox}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-terrablox}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      # The public URL users reach this instance on. Wrong here means GitHub sends
+      # people back to a host that is not serving the app.
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3001}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      TERRABLOX_BUILTIN_MODULES: ${TERRABLOX_BUILTIN_MODULES:-true}
+    ports:
+      - "${TERRABLOX_PORT:-3001}:3001"
+    # An agent turn can hold a request for up to 300s, so a 10s default SIGKILL
+    # would cut conversations off mid-answer during every restart.
+    stop_grace_period: 330s
+    # Read-only root filesystem with writable holes cut for the three paths that
+    # are actually written to at runtime. Nothing in them is meant to outlive the
+    # container: session state is scratch, the transcript lives in Postgres.
+    read_only: true
+    tmpfs:
+      # Copilot session directories (see lib/agent/copilot.ts). `exec` is not
+      # decoration: Docker mounts tmpfs noexec by default, and the CLI loads a
+      # native addon from wherever its distribution lives - the image pins that to
+      # /opt, but a noexec /tmp is one CLI change away from breaking every turn
+      # with "failed to map segment from shared object".
+      - /tmp:size=512m,mode=1777,exec
+      # HOME for the CLI child process.
+      - /home/node:size=64m,mode=0700,uid=1000,gid=1000
+      # Next writes its fetch and image caches here after boot. Read-only without
+      # this and image optimisation fails at request time, not at startup.
+      - /app/apps/dashboard/.next/cache:size=512m,mode=0700,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  terrablox-data:
