@@ -48,11 +48,11 @@
     "@terrablox/terraform": "workspace:*"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.11",
-    "@turbo/gen": "^2.7.3",
+    "@biomejs/biome": "^2.5.15",
+    "@turbo/gen": "^2.11.7",
     "prisma": "5.22.0",
-    "turbo": "^2.7.3",
-    "vitest": "^4.1.11",
+    "turbo": "^2.11.7",
+    "vitest": "^5.0.3",
     "yaml": "^2.9.0"
   },
   "prisma": {
