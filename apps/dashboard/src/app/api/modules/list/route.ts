@@ -1,9 +1,11 @@
+import {
+  pickDefaultVersion,
+  sortVersionsDesc,
+} from "@terrablox/terraform/versions";
 import { NextResponse } from "next/server";
-
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { isBuiltin, visibleToUser } from "@/lib/modules/ownership";
-import { pickDefaultVersion, sortVersionsDesc } from "@/lib/terraform/versions";
+import { isBuiltin, visibleToUser } from "@/lib/module-library/ownership";
 
 /**
  * Lists modules grouped by repository.
@@ -58,7 +60,7 @@ export async function GET() {
     /** A bundled AWS icon chosen at import, without the extension. */
     iconName: string | null;
     /**
-     * Part of the catalogue TerraBlox ships with, so the card hides the actions
+     * Part of the catalogue Terrablox ships with, so the card hides the actions
      * that would fail. Read from the row rather than passed in: a group is keyed
      * by source, and a source is either shipped or owned, never both.
      */

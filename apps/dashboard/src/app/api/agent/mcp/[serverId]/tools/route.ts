@@ -4,7 +4,8 @@ import {
   AgentSettingsError,
   syncMcpServerTools,
 } from "@/lib/agent/settings-service";
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import { requireUserWithLimit } from "@/lib/api/guard";
+import { badRequest, routeError } from "@/lib/api/route-error";
 
 /**
  * Re-reads one server's tool catalogue.
@@ -23,12 +24,12 @@ export async function POST(
   _request: Request,
   { params }: { params: { serverId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
   try {
+    // Rate limited because it is an outbound request to a third party made from our
+    // network, on the user's stored credential. Unbounded, it is a way to have this
+    // server hammer somebody else's endpoint.
+    const userId = await requireUserWithLimit("agent.mcp.sync");
+
     const { server, toolsProblem } = await syncMcpServerTools(
       userId,
       params.serverId,
@@ -37,13 +38,8 @@ export async function POST(
     return NextResponse.json({ ...server, toolsProblem });
   } catch (error) {
     if (error instanceof AgentSettingsError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return badRequest(error.message);
     }
-
-    console.error("[agent] failed to read mcp tools", error);
-    return NextResponse.json(
-      { error: "Could not read that server's tools. Check the server log." },
-      { status: 500 },
-    );
+    return routeError("agent.mcp.sync", error);
   }
 }

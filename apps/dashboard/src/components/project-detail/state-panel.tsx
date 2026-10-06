@@ -14,7 +14,6 @@ import {
   AlertCircle,
   Boxes,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -48,7 +47,6 @@ export function StatePanel({ projectId }: StatePanelProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
   const load = useCallback(async () => {
@@ -81,7 +79,6 @@ export function StatePanel({ projectId }: StatePanelProps) {
     if (refreshing) return;
 
     setRefreshing(true);
-    setNotice(null);
     await load();
     setRefreshing(false);
   }
@@ -130,12 +127,6 @@ export function StatePanel({ projectId }: StatePanelProps) {
         <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
           {error}
-        </p>
-      ) : null}
-      {notice ? (
-        <p className="flex items-start gap-2 rounded-lg border bg-muted/50 px-3 py-2 text-sm">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-          {notice}
         </p>
       ) : null}
 
@@ -196,7 +187,7 @@ export function StatePanel({ projectId }: StatePanelProps) {
               {/* Only identifiers ever leave the server, which is worth saying
                   here rather than only in the code that enforces it. */}
               <p className="text-muted-foreground text-xs">
-                Terraform state can contain generated passwords. TerraBlox reads
+                Terraform state can contain generated passwords. Terrablox reads
                 only resource identifiers and non-sensitive outputs from it —
                 attribute values are never sent to the browser.
               </p>

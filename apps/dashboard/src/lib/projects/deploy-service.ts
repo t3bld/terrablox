@@ -1,16 +1,14 @@
 import "server-only";
 
 import type { Project } from "@terrablox/database";
-
-import { getRepoVariable } from "@/lib/github/actions-config";
+import { getRepoVariable, listWorkflowRuns } from "@terrablox/git/actions";
+import { GithubRequestError } from "@terrablox/git/client";
 import {
   commitFiles,
   type FileChange,
-  GithubRequestError,
   listRepoTree,
-  listWorkflowRuns,
   readRepoFile,
-} from "@/lib/github/repo-files";
+} from "@terrablox/git/files";
 
 import {
   AWS_REGION_VARIABLE,
@@ -27,6 +25,7 @@ import {
   renderTrustPolicy,
   STATE_BUCKET_VARIABLE,
   stateStackName,
+  TERRAFORM_VERSIONS,
   WORKFLOW_DIR,
 } from "./deploy";
 import { normalizeFolder } from "./service";
@@ -54,7 +53,6 @@ export function pipelineContext(project: Project): PipelineContext {
     awsRegion: project.awsRegion,
     awsRoleArn: project.awsRoleArn,
     stateBucket: project.stateBucket,
-    stateLockTable: project.stateLockTable,
     stateKmsKeyArn: project.stateKmsKeyArn,
     stateKmsAlias: project.stateKmsAlias,
   };
@@ -91,7 +89,7 @@ function backendPath(project: Project): string {
 }
 
 /**
- * The files TerraBlox writes for this project.
+ * The files Terrablox writes for this project.
  *
  * Driven by the catalogue and the project's configuration, so a template the
  * project turned off is not merely hidden — it is never rendered, and
@@ -211,7 +209,7 @@ export async function readDeployState(
       return {
         path: entry.path,
         managed,
-        // A file TerraBlox owns but this project no longer wants counts as out
+        // A file Terrablox owns but this project no longer wants counts as out
         // of date, which is what makes the "needs update" badge honest.
         upToDate: managed
           ? current?.content.trim() === rendered?.content.trim()
@@ -238,7 +236,6 @@ export async function readDeployState(
     awsRegion: project.awsRegion,
     awsRoleArn: project.awsRoleArn,
     stateBucket: project.stateBucket,
-    stateLockTable: project.stateLockTable,
     stateKmsKeyArn: project.stateKmsKeyArn,
   };
 
@@ -268,6 +265,7 @@ export async function readDeployState(
     variables,
     templates: {
       config,
+      terraformVersions: [...TERRAFORM_VERSIONS],
       catalogue: WORKFLOW_TEMPLATES.map((template) => ({
         id: template.id,
         path: template.path,

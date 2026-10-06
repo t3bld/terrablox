@@ -38,12 +38,17 @@ interface BetterAuthSession {
   expiresAt: Date | string;
 }
 
-/** Shape returned by Better Auth's `/list-accounts` endpoint. */
+/**
+ * Shape returned by Better Auth's `/list-accounts` endpoint.
+ *
+ * It also reports `scopes`, which is not mapped: the provider is a GitHub App and
+ * those tokens carry none, so the field arrives empty and a caller reading it would
+ * conclude the account was linked without permission.
+ */
 interface BetterAuthAccount {
   id: string;
   providerId: string;
   accountId: string;
-  scopes?: string[] | null;
   createdAt?: Date | string | null;
   updatedAt?: Date | string | null;
 }
@@ -121,7 +126,6 @@ export class BetterAuthAdapter extends AuthAdapter {
     const { error } = await this.client.signIn.social({
       provider: options.provider,
       callbackURL: options.redirectTo,
-      scopes: options.scopes,
     });
 
     if (error) {
@@ -139,7 +143,6 @@ export class BetterAuthAdapter extends AuthAdapter {
     const { error } = await this.client.linkSocial({
       provider: options.provider,
       callbackURL: options.redirectTo,
-      scopes: options.scopes,
     });
 
     if (error) {
@@ -161,7 +164,6 @@ export class BetterAuthAdapter extends AuthAdapter {
     return ((data ?? []) as BetterAuthAccount[]).map((account) => ({
       provider: account.providerId,
       accountId: account.accountId,
-      scopes: account.scopes ?? [],
       createdAt: account.createdAt ? new Date(account.createdAt) : undefined,
       updatedAt: account.updatedAt ? new Date(account.updatedAt) : undefined,
     }));

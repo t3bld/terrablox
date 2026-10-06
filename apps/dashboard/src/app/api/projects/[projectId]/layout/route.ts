@@ -1,8 +1,30 @@
 import { NextResponse } from "next/server";
-
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import { z } from "zod";
+import { parseJsonBody, requireUserWithLimit } from "@/lib/api/guard";
+import { notFound, routeError } from "@/lib/api/route-error";
+import * as schema from "@/lib/api/schemas";
 import { database } from "@/lib/database";
+import { maxGraphLayoutNodes } from "@/lib/graph-layout";
 import { findOwnedProject } from "@/lib/projects/service";
+
+/**
+ * Node positions.
+ *
+ * `z.record` validates the values and drops nothing silently — the previous version
+ * filtered non-numeric entries out and accepted the request, which meant a client bug
+ * produced a half-saved layout and no error. Coordinates must be finite so a `NaN`,
+ * which `typeof === "number"` happily admits, cannot reach the column and come back
+ * as `null` in JSON.
+ */
+const layoutBody = z.object({
+  positions: z
+    .record(z.string().min(1).max(200), schema.position)
+    // The same ceiling the module layout uses, from the same constant: both are a
+    // node-position map in a JSON column, and the map used to be unbounded here.
+    .refine((value) => Object.keys(value).length <= maxGraphLayoutNodes, {
+      message: `A layout may describe at most ${maxGraphLayoutNodes} nodes.`,
+    }),
+});
 
 /**
  * Stores node positions.
@@ -14,35 +36,21 @@ export async function PUT(
   req: Request,
   { params }: { params: { projectId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const userId = await requireUserWithLimit("project.layout");
+
+    const project = await findOwnedProject(userId, params.projectId);
+    if (!project) return notFound("Project not found");
+
+    const body = await parseJsonBody(req, layoutBody);
+
+    await database.project.update({
+      where: { id: project.id },
+      data: { graphPositions: body.positions },
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return routeError("project.layout", error);
   }
-
-  const project = await findOwnedProject(userId, params.projectId);
-  if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  }
-
-  const body = (await req.json().catch(() => null)) as {
-    positions?: Record<string, { x?: unknown; y?: unknown }>;
-  } | null;
-
-  if (!body?.positions || typeof body.positions !== "object") {
-    return NextResponse.json({ error: "Missing positions" }, { status: 400 });
-  }
-
-  const positions: Record<string, { x: number; y: number }> = {};
-  for (const [id, value] of Object.entries(body.positions)) {
-    if (typeof value?.x === "number" && typeof value?.y === "number") {
-      positions[id] = { x: value.x, y: value.y };
-    }
-  }
-
-  await database.project.update({
-    where: { id: project.id },
-    data: { graphPositions: positions },
-  });
-
-  return NextResponse.json({ ok: true });
 }

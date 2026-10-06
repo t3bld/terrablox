@@ -4,18 +4,18 @@ import {
   ArchitectureDiagram,
   type ArchitectureDiagramNode,
 } from "@terrablox/graph";
-import { Skeleton } from "@terrablox/ui/skeleton";
-import { LayoutGrid } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ProjectGraph } from "@/lib/projects/types";
 import type {
   ArchitectureModuleCall,
   ArchitectureReference,
   NestedModuleData,
-} from "@/lib/terraform/architecture-graph";
-import { buildArchitecture } from "@/lib/terraform/architecture-graph";
-import { layoutArchitecture } from "@/lib/terraform/architecture-layout";
-import { createScope } from "@/lib/terraform/evaluate";
+} from "@terrablox/terraform/architecture-graph";
+import { buildArchitecture } from "@terrablox/terraform/architecture-graph";
+import { layoutArchitecture } from "@terrablox/terraform/architecture-layout";
+import { createScope } from "@terrablox/terraform/evaluate";
+import { Skeleton } from "@terrablox/ui/skeleton";
+import { LayoutGrid } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ProjectGraph } from "@/lib/projects/types";
 
 /**
  * The project canvas one level up.

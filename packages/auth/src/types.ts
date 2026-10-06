@@ -5,8 +5,6 @@ export interface UserIdentity {
   provider: string;
   /** The user's account id at the provider. */
   accountId: string;
-  /** OAuth scopes that were granted when the account was linked. */
-  scopes: string[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -47,7 +45,6 @@ export type OAuthProvider = "github";
 export interface OAuthSignInOptions {
   provider: OAuthProvider;
   redirectTo?: string;
-  scopes?: string[];
 }
 
 export interface AuthResult {
@@ -108,9 +105,18 @@ export interface AuthActions {
     credentials: SignInCredentials,
     options?: { onSuccess?: () => void },
   ) => Promise<void>;
+  /**
+   * No scopes anywhere in this interface, deliberately.
+   *
+   * The only provider is a GitHub App, and GitHub Apps do not take scopes: access
+   * comes from the app's registered permissions, narrowed to the repositories each
+   * installation was granted. The parameter existed while Terrablox was an OAuth
+   * App and would now be accepted, forwarded, and ignored by GitHub — a knob that
+   * looks like access control and turns nothing.
+   */
   signInWithOAuth: (
     provider: OAuthProvider,
-    options?: { redirectTo?: string; scopes?: string[] },
+    options?: { redirectTo?: string },
   ) => Promise<void>;
   /**
    * Links an OAuth account to the *currently signed-in* user. Use this instead
@@ -119,7 +125,7 @@ export interface AuthActions {
    */
   linkOAuth: (
     provider: OAuthProvider,
-    options?: { redirectTo?: string; scopes?: string[] },
+    options?: { redirectTo?: string },
   ) => Promise<void>;
   /** Re-reads the linked OAuth accounts of the current user. */
   refreshIdentities: () => Promise<void>;
@@ -141,20 +147,6 @@ export interface AuthProviderProps {
   loadingComponent?: ReactNode;
   onAuthStateChange?: (user: User | null) => void;
 }
-
-export type CookieOptions = {
-  domain?: string;
-  expires?: Date;
-  httpOnly?: boolean;
-  maxAge?: number;
-  path?: string;
-  sameSite?: "lax" | "strict" | "none" | boolean;
-  secure?: boolean;
-};
-
-export type NextResponseCookies = {
-  set: (name: string, value: string, options?: CookieOptions) => void;
-};
 
 export abstract class AuthAdapter {
   abstract signUp(credentials: SignUpCredentials): Promise<AuthResult>;

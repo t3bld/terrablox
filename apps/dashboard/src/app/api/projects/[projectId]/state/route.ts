@@ -1,9 +1,9 @@
+import { stateReadPolicy } from "@terrablox/aws/connection";
+import { readStateObject } from "@terrablox/aws/state-backend";
 import { NextResponse } from "next/server";
+import { awsRouteError } from "@/lib/api/route-error";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
-import { stateReadPolicy } from "@/lib/aws/connection";
 import { resolveProjectAwsSession } from "@/lib/aws/credentials";
-import { awsRouteError } from "@/lib/aws/route-error";
-import { readStateObject } from "@/lib/aws/state-backend";
 import { stateKey } from "@/lib/projects/deploy";
 import { findOwnedProject } from "@/lib/projects/service";
 import type { ProjectStateDto } from "@/lib/projects/state";

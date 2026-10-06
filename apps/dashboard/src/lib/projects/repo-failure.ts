@@ -2,7 +2,8 @@ import "server-only";
 
 import type { Project } from "@terrablox/database";
 
-import { GithubRequestError, getRepository } from "@/lib/github/repo-files";
+import { GithubRequestError } from "@terrablox/git/client";
+import { getRepository } from "@terrablox/git/repositories";
 
 /**
  * Turns a failed read of a project's own repository into a sentence a user can
@@ -59,5 +60,5 @@ export async function describeRepoFailure(
     return `Branch ${project.repoBranch} no longer exists in ${repo}. Point the project at a branch that does, or restore it on GitHub.`;
   }
 
-  return `${repo} is no longer readable on GitHub — it was deleted, renamed, or is no longer covered by the access TerraBlox was granted. The Terraform in it cannot be loaded. The project's log is kept here, and the project itself can still be deleted.`;
+  return `${repo} is no longer readable on GitHub — it was deleted, renamed, or is no longer covered by the access Terrablox was granted. The Terraform in it cannot be loaded. The project's log is kept here, and the project itself can still be deleted.`;
 }

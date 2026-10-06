@@ -1,5 +1,6 @@
 "use client";
 
+import { pickDefaultVersion } from "@terrablox/terraform/versions";
 import { Button } from "@terrablox/ui/button";
 import {
   DropdownMenu,
@@ -11,8 +12,6 @@ import {
 } from "@terrablox/ui/dropdown-menu";
 import { Check, ChevronDown, GitBranch } from "lucide-react";
 import Link from "next/link";
-
-import { pickDefaultVersion } from "@/lib/terraform/versions";
 
 export interface ModuleVersionRef {
   id: string;

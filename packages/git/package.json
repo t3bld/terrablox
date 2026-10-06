@@ -1,0 +1,27 @@
+{
+  "name": "@terrablox/git",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reads and writes git repositories through a host's API. One transport, one error shape.",
+  "exports": {
+    "./actions": "./src/actions.ts",
+    "./client": "./src/client.ts",
+    "./files": "./src/files.ts",
+    "./github-provider": "./src/github-provider.ts",
+    "./installations": "./src/installations.ts",
+    "./repositories": "./src/repositories.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@terrablox/tsconfig": "workspace:*",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.11"
+  }
+}

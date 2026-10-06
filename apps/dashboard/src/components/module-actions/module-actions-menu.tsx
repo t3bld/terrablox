@@ -1,5 +1,6 @@
 "use client";
 
+import type { DeleteScope } from "@terrablox/terraform/delete-scope";
 import { Button } from "@terrablox/ui/button";
 import {
   DropdownMenu,
@@ -8,7 +9,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@terrablox/ui/dropdown-menu";
-
 import {
   Check,
   Copy,
@@ -19,8 +19,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-
-import type { DeleteScope } from "@/lib/terraform/delete-scope";
 
 import { DeleteModuleDialog } from "./delete-module-dialog";
 
@@ -47,7 +45,7 @@ interface ModuleActionsMenuProps {
   /** Detail pages expose deletion separately from repository navigation. */
   deleteOnly?: boolean;
   /**
-   * False for modules that ship with TerraBlox, which no user owns. Offering the
+   * False for modules that ship with Terrablox, which no user owns. Offering the
    * entry and letting the request come back 403 would be worse than not offering
    * it: the dialog names projects it would break, and none of that is true here.
    */

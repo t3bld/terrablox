@@ -1,19 +1,19 @@
 import {
+  findBlock,
+  listBlockAttributes,
+  listBlocks,
+} from "@terrablox/terraform/hcl-edit";
+import {
+  type LinkCandidate,
+  resolveModuleLink,
+} from "@terrablox/terraform/module-link";
+import type { TerraformAnalysis } from "@terrablox/terraform/types";
+import {
   type ModuleOutputDto,
   type ModuleVariableDto,
   parseOutputs,
   parseVariables,
-} from "@/components/module-detail/types";
-import {
-  findBlock,
-  listBlockAttributes,
-  listBlocks,
-} from "@/lib/terraform/hcl-edit";
-import {
-  type LinkCandidate,
-  resolveModuleLink,
-} from "@/lib/terraform/module-link";
-import type { TerraformAnalysis } from "@/lib/terraform/types";
+} from "@/lib/module-library/types";
 
 import { localNodeId, localsReferencedIn } from "./locals";
 import type {

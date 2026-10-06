@@ -9,11 +9,12 @@ import { Button } from "@terrablox/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
 import { Github } from "lucide-react";
 import { useEffect, useState } from "react";
+import { defaultAuthRouting, safeNextPath } from "@/lib/auth/auth-routing";
 
 /**
  * The only way in: GitHub.
  *
- * Email and password are gone, and not only to save a form. Everything TerraBlox
+ * Email and password are gone, and not only to save a form. Everything Terrablox
  * does needs a GitHub identity — reading the repository a project is built from,
  * committing the graph, importing modules, running the agent on the user's own
  * Copilot seat. An account without GitHub could sign in and then do nothing, so
@@ -28,8 +29,10 @@ export default function LoginPage() {
 
   useEffect(() => {
     const sp = new URLSearchParams(window.location.search);
-    const next = sp.get("next");
-    if (next) setNextPath(next);
+    // Validated rather than trusted: this value is concatenated onto the origin
+    // below, and `next=@evil.com` would make that an absolute URL on someone else's
+    // host. See `safeNextPath` for why that particular payload is the one that works.
+    setNextPath(safeNextPath(sp.get("next"), defaultAuthRouting.homePath));
   }, []);
 
   const handleSignIn = async () => {
@@ -37,9 +40,13 @@ export default function LoginPage() {
     setSubmitting(true);
 
     try {
+      // No scopes. Terrablox signs in through a GitHub App, where what the
+      // resulting token may do is fixed by the app's registered permissions and
+      // narrowed to the repositories each installation was granted. GitHub ignores
+      // a `scope` parameter on this flow, so asking for one here would read like
+      // access control while doing nothing.
       await signInWithOAuth("github", {
         redirectTo: `${window.location.origin}${nextPath}`,
-        scopes: ["read:org", "repo"],
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to sign in");
@@ -51,7 +58,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center px-4">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl">Sign in to TerraBlox</CardTitle>
+          <CardTitle className="text-2xl">Sign in to Terrablox</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           {error ? (

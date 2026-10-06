@@ -1,12 +1,7 @@
-import { NextResponse } from "next/server";
-
-import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
 import {
-  type AgentOverrides,
-  getEffectiveAgentSettings,
-  parseOverrides,
-} from "@/lib/agent/effective-settings";
-import { AGENT_KNOWLEDGE, knowledgeEnabled } from "@/lib/agent/knowledge";
+  AGENT_KNOWLEDGE,
+  knowledgeEnabled,
+} from "@terrablox/agent-harness/knowledge";
 import {
   AGENT_APP_REPO_FILE_CHARS,
   AGENT_APP_REPO_TREE_LIMIT,
@@ -16,18 +11,25 @@ import {
   AGENT_MAX_STEPS,
   AGENT_MAX_TOOL_CALLS,
   DEFAULT_TURN_TIMEOUT_SECONDS,
-} from "@/lib/agent/runtime-options";
+} from "@terrablox/agent-harness/runtime-options";
+import { PROJECT_AGENT_TOOLS } from "@terrablox/agent-harness/tool-catalogue";
+import { NextResponse } from "next/server";
+import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
+import {
+  type AgentOverrides,
+  getEffectiveAgentSettings,
+  parseOverrides,
+} from "@/lib/agent/effective-settings";
 import {
   getAgentSettings,
   type McpServerView,
 } from "@/lib/agent/settings-service";
-import { PROJECT_AGENT_TOOLS } from "@/lib/agent/tool-catalogue";
 import {
   getCurrentUserId,
   getUserGithubToken,
 } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { visibleToUser } from "@/lib/modules/ownership";
+import { visibleToUser } from "@/lib/module-library/ownership";
 
 /**
  * What the project agent can draw on, read from the same places a turn reads.

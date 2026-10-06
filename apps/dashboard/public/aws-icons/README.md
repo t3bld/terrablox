@@ -17,7 +17,7 @@ The repackager can license his own work; he cannot grant rights to Amazon's
 trademarks. Use of the official icons is governed by the AWS Architecture Icons
 terms and the AWS Trademark Guidelines, not by the MIT text above.
 
-Confirmed with the project owner: TerraBlox is an AWS partner and holds the
+Confirmed with the project owner: Terrablox is an AWS partner and holds the
 rights to use these marks. That is what covers the two places they are
 distributed from — this app, and the `icon.png` committed to each of the fifty
 public catalogue repositories, which is a rendering of the matching SVG here.
@@ -46,6 +46,6 @@ Three names collided across source categories and carry a `-resource` suffix:
 ## Adding a service
 
 Add a line to `ARCHITECTURE_MAP` in
-`apps/dashboard/src/lib/terraform/aws-architecture.ts`. The icon is resolved
+`@terrablox/terraform/aws-architecture`. The icon is resolved
 from the resource type's service prefix, so `icon` only needs to be set when
 the automatic match is wrong or missing.

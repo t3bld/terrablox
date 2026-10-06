@@ -1,8 +1,6 @@
 import "server-only";
 
-import { prisma } from "@terrablox/database";
-
-import { isKnownKnowledge } from "./knowledge";
+import { isKnownKnowledge } from "@terrablox/agent-harness/knowledge";
 import {
   APP_REPO_FILE_CHARS_MAX,
   APP_REPO_FILE_CHARS_MIN,
@@ -17,7 +15,9 @@ import {
   STEP_TRAIL_MIN,
   TOOL_CALL_BUDGET_MAX,
   TOOL_CALL_BUDGET_MIN,
-} from "./runtime-options";
+} from "@terrablox/agent-harness/runtime-options";
+import { isKnownTool } from "@terrablox/agent-harness/tool-catalogue";
+import { prisma } from "@/lib/database";
 import {
   type AgentSettingsView,
   getAgentSettings,
@@ -25,7 +25,6 @@ import {
   REASONING_EFFORTS,
   type ReasoningEffortValue,
 } from "./settings-service";
-import { isKnownTool } from "./tool-catalogue";
 
 /**
  * Global agent settings, narrowed by whatever a project overrides.

@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 
-import {
-  getCurrentUserId,
-  getProviderTokenForRequest,
-} from "@/lib/auth/server-helpers";
+import { parseJsonBody, requireUserWithLimit } from "@/lib/api/guard";
+import { routeError } from "@/lib/api/route-error";
+import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import {
   AppRepoInputError,
@@ -26,20 +26,23 @@ export async function PUT(
   req: Request,
   { params }: { params: { projectId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let userId: string;
+  let body: { appRepo?: unknown };
+  try {
+    userId = await requireUserWithLimit("project.write");
+    // Shape only: `parseAppRepoInput` owns the owner/name and branch rules, and it
+    // has to keep owning them because the agent path calls it too. What this adds is
+    // the body-size cap that `req.json()` had no notion of.
+    body = await parseJsonBody(req, z.object({ appRepo: z.unknown() }));
+  } catch (error) {
+    return routeError("project.app-repo", error);
   }
-
-  const body = (await req.json().catch(() => null)) as {
-    appRepo?: unknown;
-  } | null;
 
   let link: ReturnType<typeof parseAppRepoInput>;
   try {
     // `undefined` would mean "leave it alone", which is not something this
     // endpoint can be asked for: it exists only to set the value.
-    link = parseAppRepoInput(body?.appRepo ?? null);
+    link = parseAppRepoInput(body.appRepo ?? null);
 
     // Checked against the credential that will do the reading, so a link that
     // cannot work is refused here rather than discovered by the agent mid-turn.

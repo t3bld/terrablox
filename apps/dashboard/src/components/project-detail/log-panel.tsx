@@ -1,11 +1,15 @@
 "use client";
 
+import { PROJECT_AGENT_TOOLS } from "@terrablox/agent-harness/tool-catalogue";
 import { Badge } from "@terrablox/ui/badge";
 import { Input } from "@terrablox/ui/input";
 import { Skeleton } from "@terrablox/ui/skeleton";
+import { TabsNav, tabPanelProps } from "@terrablox/ui/tabs-nav";
 import {
   AlertCircle,
   Bot,
+  ChevronDown,
+  ChevronRight,
   ExternalLink,
   GitCommit,
   MessageSquare,
@@ -15,13 +19,15 @@ import {
   Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
-import { TabsNav, tabPanelProps } from "@/components/layout/tabs-nav";
-import { PROJECT_AGENT_TOOLS } from "@/lib/agent/tool-catalogue";
+import {
+  filterGroups,
+  type Row,
+  type TurnGroup,
+  toGroups,
+} from "@/lib/projects/log-view";
 import type {
   ProjectDecisionDto,
   ProjectLogDto,
-  ProjectLogTurnDto,
   ProjectOperationDto,
 } from "@/lib/projects/types";
 
@@ -89,118 +95,6 @@ function stamp(iso: string): string {
       });
 }
 
-/**
- * One line of the trajectory.
- *
- * `kind` drives the badge and nothing else; `detail` is what the panel shows when
- * the row is picked. Flattened up front rather than rendered from nested data,
- * because a flat list is what can be filtered, counted and keyboard-navigated
- * without every consumer re-deriving the same order.
- */
-interface Row {
-  id: string;
-  kind: "prompt" | "thought" | "tool" | "reply" | "canvas";
-  /** Uppercase badge text: `USER`, `THOUGHT`, the tool name, `CANVAS`. */
-  badge: string;
-  /** The single line shown in the list. */
-  line: string;
-  /** Turn label for the gutter, on the first row of each turn only. */
-  turnLabel?: string;
-  ok: boolean;
-  turn: ProjectLogTurnDto;
-}
-
-/**
- * Turns to rows, newest turn first and chronological within each turn.
- *
- * Newest first because a log is read from the top for what just happened; forward
- * within a turn because a turn is a story — the prompt, then the work, then the
- * answer — and reversing it would make every turn read backwards.
- */
-function toRows(turns: ProjectLogTurnDto[]): Row[] {
-  const rows: Row[] = [];
-  // Numbered from the oldest, so a turn keeps its number as newer ones arrive.
-  const numberOf = new Map<string, number>();
-  let counter = 0;
-  for (const turn of [...turns].reverse()) {
-    if (turn.chatMessageId) numberOf.set(turn.chatMessageId, ++counter);
-  }
-
-  for (const turn of turns) {
-    const key = turn.chatMessageId ?? turn.createdAt;
-    const label = turn.chatMessageId
-      ? `Turn ${numberOf.get(turn.chatMessageId)}`
-      : undefined;
-    let first = true;
-    const gutter = () => {
-      if (!first) return undefined;
-      first = false;
-      return label;
-    };
-
-    if (!turn.chatMessageId) {
-      const operation = turn.operations[0];
-      rows.push({
-        id: `${key}-canvas`,
-        kind: "canvas",
-        badge: "canvas",
-        line: operation?.summary ?? "Change",
-        ok: true,
-        turn,
-      });
-      continue;
-    }
-
-    if (turn.prompt !== null) {
-      rows.push({
-        id: `${key}-prompt`,
-        kind: "prompt",
-        badge: "user",
-        line: turn.prompt,
-        turnLabel: gutter(),
-        ok: true,
-        turn,
-      });
-    }
-
-    for (const [index, step] of turn.steps.entries()) {
-      rows.push(
-        step.kind === "thought"
-          ? {
-              id: `${key}-s${index}`,
-              kind: "thought",
-              badge: "thought",
-              line: step.text,
-              turnLabel: gutter(),
-              ok: true,
-              turn,
-            }
-          : {
-              id: `${key}-s${index}`,
-              kind: "tool",
-              badge: step.tool,
-              line: step.summary,
-              turnLabel: gutter(),
-              ok: step.ok,
-              turn,
-            },
-      );
-    }
-
-    rows.push({
-      id: `${key}-reply`,
-      kind: "reply",
-      badge: "reply",
-      line: turn.reply ?? "",
-      turnLabel: gutter(),
-      ok: true,
-      turn,
-    });
-  }
-
-  return rows;
-}
-
 const BADGE_TONE: Record<Row["kind"], string> = {
   prompt: "bg-primary/10 text-primary",
   thought: "bg-muted text-muted-foreground",
@@ -220,17 +114,12 @@ function RowLine({
 }) {
   return (
     <button
-      className={`flex w-full items-baseline gap-2 border-b px-3 py-1 text-left text-sm hover:bg-accent/50 ${
+      className={`flex w-full items-baseline gap-2 border-b py-1 pr-3 pl-10 text-left text-sm hover:bg-accent/50 ${
         selected ? "bg-accent" : ""
       }`}
       onClick={onSelect}
       type="button"
     >
-      {/* A fixed gutter so the badges line up into a column that can be scanned
-          rather than read. */}
-      <span className="w-14 shrink-0 text-right text-[10px] text-muted-foreground">
-        {row.turnLabel}
-      </span>
       <span
         className={`w-28 shrink-0 truncate rounded px-1.5 py-0.5 font-medium text-[10px] uppercase tracking-wide ${
           row.ok ? BADGE_TONE[row.kind] : "bg-destructive/15 text-destructive"
@@ -245,6 +134,97 @@ function RowLine({
         {row.line.replace(/\s+/g, " ")}
       </span>
     </button>
+  );
+}
+
+/**
+ * One turn, collapsed: what was asked, and what it cost.
+ *
+ * Two controls in one row, which is deliberate and is the only fiddly part of this
+ * component. The chevron expands the turn; everything else selects it and fills the
+ * panel. They are separate because they answer different questions — "show me the
+ * steps" and "tell me everything about this turn" — and a single click doing both
+ * meant you could not read a turn's summary without also unfolding thirty lines.
+ */
+function TurnRow({
+  expanded,
+  group,
+  onSelect,
+  onToggle,
+  selected,
+}: {
+  expanded: boolean;
+  group: TurnGroup;
+  onSelect: () => void;
+  onToggle: () => void;
+  selected: boolean;
+}) {
+  const { turn } = group;
+  const counts = [
+    group.calls ? `${group.calls} call${group.calls === 1 ? "" : "s"}` : null,
+    turn.operations.length
+      ? `${turn.operations.length} op${turn.operations.length === 1 ? "" : "s"}`
+      : null,
+  ].filter(Boolean);
+
+  return (
+    <div
+      className={`flex items-center border-b text-sm ${
+        selected ? "bg-accent" : "hover:bg-accent/50"
+      }`}
+    >
+      {group.canvas ? (
+        // A canvas gesture is one operation with nothing behind it — no prompt, no
+        // trail. An empty disclosure would promise something to unfold.
+        <span className="w-8 shrink-0" />
+      ) : (
+        <button
+          aria-expanded={expanded}
+          aria-label={
+            expanded
+              ? `Collapse ${group.label ?? "the turn"}`
+              : `Expand ${group.label ?? "the turn"}`
+          }
+          className="flex w-8 shrink-0 items-center justify-center self-stretch text-muted-foreground hover:text-foreground"
+          onClick={onToggle}
+          type="button"
+        >
+          {expanded ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+        </button>
+      )}
+
+      <button
+        className="flex min-w-0 flex-1 items-baseline gap-2 py-1.5 pr-3 text-left"
+        onClick={onSelect}
+        type="button"
+      >
+        <span className="w-14 shrink-0 truncate text-[10px] text-muted-foreground">
+          {group.label ?? "canvas"}
+        </span>
+        <span className="min-w-0 flex-1 truncate">
+          {group.canvas
+            ? group.rows[0]?.line
+            : (turn.prompt ?? (
+                <span className="text-muted-foreground">(no prompt)</span>
+              ))}
+        </span>
+        {group.failed ? (
+          <AlertCircle className="h-3.5 w-3.5 shrink-0 text-destructive" />
+        ) : null}
+        {counts.length ? (
+          <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+            {counts.join(" · ")}
+          </span>
+        ) : null}
+        <span className="w-16 shrink-0 text-right text-muted-foreground text-xs">
+          {stamp(turn.createdAt)}
+        </span>
+      </button>
+    </div>
   );
 }
 
@@ -309,6 +289,122 @@ function OperationList({
         </li>
       ))}
     </ol>
+  );
+}
+
+/**
+ * A whole turn, for the panel: the question, the answer, every step, every change.
+ *
+ * The turn's own view, not a row's. Picking the turn is how you ask "what happened
+ * here" without unfolding it, so this has to answer that completely — which means
+ * the trail is written out in full rather than counted, and the counts in the header
+ * exist to tell you whether it is worth opening.
+ */
+function TurnDetail({
+  decision,
+  group,
+  onShowDecision,
+  repo,
+}: {
+  decision: ProjectDecisionDto | null;
+  group: TurnGroup;
+  onShowDecision: () => void;
+  repo: string | null;
+}) {
+  const { turn } = group;
+
+  return (
+    <div className="space-y-4">
+      <PanelSection title={group.label ?? "Canvas change"}>
+        <p className="whitespace-pre-wrap text-sm [overflow-wrap:anywhere]">
+          {group.canvas
+            ? (group.rows[0]?.line ?? "Change")
+            : (turn.prompt ?? "(no prompt)")}
+        </p>
+      </PanelSection>
+
+      <PanelSection title="At a glance">
+        <dl>
+          <Meta label="At" value={new Date(turn.createdAt).toLocaleString()} />
+          {group.canvas ? null : (
+            <Meta
+              label="Trail"
+              value={`${group.calls} tool call${group.calls === 1 ? "" : "s"}, ${group.thoughts} reasoning step${group.thoughts === 1 ? "" : "s"}`}
+            />
+          )}
+          <Meta
+            label="Changed"
+            value={`${turn.operations.length} operation${
+              turn.operations.length === 1 ? "" : "s"
+            }, ${turn.commits.length} commit${turn.commits.length === 1 ? "" : "s"}`}
+          />
+        </dl>
+      </PanelSection>
+
+      {turn.reply ? (
+        <PanelSection title="Answer">
+          <p className="whitespace-pre-wrap text-xs [overflow-wrap:anywhere]">
+            {turn.reply}
+          </p>
+        </PanelSection>
+      ) : null}
+
+      {decision ? (
+        <PanelSection title="Under decision">
+          <button
+            className="flex w-full items-start gap-2 rounded-md border p-2 text-left text-xs hover:bg-accent"
+            onClick={onShowDecision}
+            type="button"
+          >
+            <Scale className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+              {decision.question} → {decision.choice}
+            </span>
+          </button>
+        </PanelSection>
+      ) : null}
+
+      {/* In full, because this is the only place it is written out — the list shows
+          it only when the turn is unfolded, and the question this panel answers is
+          what the agent did rather than which line you clicked. */}
+      {turn.steps.length ? (
+        <PanelSection title={`Trail (${turn.steps.length})`}>
+          <ol className="divide-y rounded-md border">
+            {turn.steps.map((step, index) => (
+              <li
+                className="flex items-baseline gap-2 px-2 py-1 text-xs"
+                key={`${group.key}-step-${index}`}
+              >
+                <span
+                  className={`w-20 shrink-0 truncate rounded px-1 py-0.5 font-medium text-[10px] uppercase tracking-wide ${
+                    step.kind === "thought"
+                      ? BADGE_TONE.thought
+                      : step.ok
+                        ? BADGE_TONE.tool
+                        : "bg-destructive/15 text-destructive"
+                  }`}
+                  title={step.kind === "thought" ? "thought" : step.tool}
+                >
+                  {(step.kind === "thought" ? "thought" : step.tool).replace(
+                    /_/g,
+                    " ",
+                  )}
+                </span>
+                <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                  {step.kind === "thought" ? step.text : step.summary}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </PanelSection>
+      ) : null}
+
+      {turn.operations.length ? (
+        <PanelSection title={`Operations (${turn.operations.length})`}>
+          <OperationList operations={turn.operations} repo={repo} />
+        </PanelSection>
+      ) : null}
+    </div>
   );
 }
 
@@ -391,14 +487,17 @@ function RowDetail({
 /** What a picked decision shows: the record, then what it produced. */
 function DecisionDetail({
   decision,
-  turns,
+  groups,
+  onShowTurn,
   repo,
 }: {
   decision: ProjectDecisionDto;
-  turns: ProjectLogTurnDto[];
+  /** The turns filed under this decision, as the trajectory groups them. */
+  groups: TurnGroup[];
+  onShowTurn: (key: string) => void;
   repo: string | null;
 }) {
-  const operations = turns.flatMap((turn) => turn.operations);
+  const operations = groups.flatMap((group) => group.turn.operations);
 
   return (
     <div className="space-y-4">
@@ -457,24 +556,48 @@ function DecisionDetail({
         </PanelSection>
       ) : null}
 
-      <PanelSection title="Carried out by">
-        {turns.length === 0 ? (
+      {/* The turns, as rows that go there, rather than their prompts joined with a
+          separator. This is the one link that used to be missing: a decision could
+          be read from a turn but never the other way round, so "what did this
+          decision actually produce" ended in a sentence you had to go and search
+          for. */}
+      <PanelSection title={`Carried out by (${groups.length})`}>
+        {groups.length === 0 ? (
           <p className="text-muted-foreground text-xs">
             Nothing built under it yet.
           </p>
         ) : (
-          <dl>
-            <Meta
-              label="Turns"
-              value={turns
-                .map((turn) => turn.prompt ?? "(no prompt)")
-                .join(" · ")}
-            />
-            <Meta
-              label="Changed"
-              value={`${operations.length} operation${operations.length === 1 ? "" : "s"}`}
-            />
-          </dl>
+          <>
+            <ol className="divide-y rounded-md border">
+              {groups.map((group) => (
+                <li key={group.key}>
+                  <button
+                    className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-accent"
+                    onClick={() => onShowTurn(group.key)}
+                    type="button"
+                  >
+                    <span className="w-12 shrink-0 text-[10px] text-muted-foreground">
+                      {group.label ?? "canvas"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {group.turn.prompt ?? "(no prompt)"}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+                      {group.turn.operations.length
+                        ? `${group.turn.operations.length} ops`
+                        : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+            <dl>
+              <Meta
+                label="Changed"
+                value={`${operations.length} operation${operations.length === 1 ? "" : "s"}`}
+              />
+            </dl>
+          </>
         )}
       </PanelSection>
 
@@ -508,7 +631,19 @@ export function LogPanel({ projectId }: { projectId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<LogView>("trajectory");
   const [query, setQuery] = useState("");
-  const [selectedRow, setSelectedRow] = useState<string | null>(null);
+  /**
+   * What the panel is showing: a whole turn, or one line inside one.
+   *
+   * One field rather than two booleans, so the two cannot both be set — the panel
+   * has one slot and a state that allowed both would have to pick a winner
+   * somewhere further down.
+   */
+  const [picked, setPicked] = useState<{
+    kind: "turn" | "row";
+    id: string;
+  } | null>(null);
+  /** Turn keys the reader has unfolded. Collapsed is the default for all of them. */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [selectedDecision, setSelectedDecision] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -542,17 +677,35 @@ export function LogPanel({ projectId }: { projectId: string }) {
     };
   }, [load]);
 
-  const rows = useMemo(() => toRows(log?.turns ?? []), [log]);
+  const groups = useMemo(() => toGroups(log?.turns ?? []), [log]);
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return rows;
-    return rows.filter(
-      (row) =>
-        row.badge.toLowerCase().includes(needle) ||
-        row.line.toLowerCase().includes(needle),
-    );
-  }, [rows, query]);
+  /**
+   * Groups that match the filter, with their non-matching lines dropped.
+   *
+   * A search has to be able to reach inside a collapsed turn, or the filter would
+   * only ever find the prompts. So a turn survives if its prompt matches or any of
+   * its lines does, and what is left of it is the lines that did — which is also
+   * what makes the auto-expansion below honest rather than noisy.
+   */
+  const filtered = useMemo(() => filterGroups(groups, query), [groups, query]);
+
+  /**
+   * Searching unfolds what it found.
+   *
+   * Without this a filter would leave a list of collapsed headers and no sign of
+   * why any of them matched. Only while a query is set, and it does not survive
+   * clearing it — so the reader's own folding is not overwritten permanently.
+   */
+  const showAll = query.trim().length > 0;
+
+  const totalRows = useMemo(
+    () => groups.reduce((sum, group) => sum + group.rows.length, 0),
+    [groups],
+  );
+  const shownRows = useMemo(
+    () => filtered.reduce((sum, group) => sum + group.rows.length, 0),
+    [filtered],
+  );
 
   const decisions = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -566,18 +719,27 @@ export function LogPanel({ projectId }: { projectId: string }) {
     );
   }, [log, query]);
 
-  const row = filtered.find((entry) => entry.id === selectedRow) ?? null;
+  const pickedGroup =
+    picked?.kind === "turn"
+      ? (groups.find((group) => group.key === picked.id) ?? null)
+      : null;
+  const row =
+    picked?.kind === "row"
+      ? (groups
+          .flatMap((group) => group.rows)
+          .find((entry) => entry.id === picked.id) ?? null)
+      : null;
   const decision =
     (log?.decisions ?? []).find((entry) => entry.id === selectedDecision) ??
     null;
 
   /** The turns filed under the picked decision, for its detail panel. */
-  const decisionTurns = useMemo(
+  const decisionGroups = useMemo(
     () =>
       decision
-        ? (log?.turns ?? []).filter((turn) => turn.decisionId === decision.id)
+        ? groups.filter((group) => group.turn.decisionId === decision.id)
         : [],
-    [decision, log],
+    [decision, groups],
   );
 
   if (error) {
@@ -594,6 +756,21 @@ export function LogPanel({ projectId }: { projectId: string }) {
   const showDecision = (id: string) => {
     setSelectedDecision(id);
     setView("decisions");
+  };
+
+  /**
+   * Jumps from a decision to a turn it produced.
+   *
+   * Unfolds it as well as selecting it: arriving at a collapsed header from
+   * somewhere else shows a single line and hides the very steps that were the reason
+   * for following the link. The query is cleared for the same reason — a filter left
+   * over from the decisions list would very likely hide the turn just asked for.
+   */
+  const showTurn = (key: string) => {
+    setQuery("");
+    setPicked({ kind: "turn", id: key });
+    setExpanded((current) => new Set(current).add(key));
+    setView("trajectory");
   };
 
   return (
@@ -631,7 +808,7 @@ export function LogPanel({ projectId }: { projectId: string }) {
         />
         <span className="ml-auto shrink-0 text-muted-foreground text-xs tabular-nums">
           {view === "trajectory"
-            ? `${filtered.length} of ${rows.length} entries`
+            ? `${filtered.length} of ${groups.length} turns, ${shownRows} of ${totalRows} entries`
             : `${decisions.length} of ${log.decisions.length} decisions`}
         </span>
       </div>
@@ -649,18 +826,55 @@ export function LogPanel({ projectId }: { projectId: string }) {
               <Empty query={query} />
             ) : (
               <ol>
-                {filtered.map((entry) => (
-                  <li key={entry.id}>
-                    <RowLine
-                      onSelect={() => {
-                        setSelectedRow(entry.id);
-                        setSelectedDecision(null);
-                      }}
-                      row={entry}
-                      selected={entry.id === selectedRow}
-                    />
-                  </li>
-                ))}
+                {filtered.map((group) => {
+                  const open = showAll || expanded.has(group.key);
+
+                  return (
+                    <li key={group.key}>
+                      <TurnRow
+                        expanded={open}
+                        group={group}
+                        onSelect={() => {
+                          setPicked({ kind: "turn", id: group.key });
+                          setSelectedDecision(null);
+                        }}
+                        onToggle={() =>
+                          setExpanded((current) => {
+                            const next = new Set(current);
+                            if (next.has(group.key)) next.delete(group.key);
+                            else next.add(group.key);
+                            return next;
+                          })
+                        }
+                        selected={
+                          picked?.kind === "turn" && picked.id === group.key
+                        }
+                      />
+
+                      {/* Only when unfolded, and never for a canvas change: its one
+                          line is already the header. */}
+                      {open && !group.canvas ? (
+                        <ol>
+                          {group.rows.map((entry) => (
+                            <li key={entry.id}>
+                              <RowLine
+                                onSelect={() => {
+                                  setPicked({ kind: "row", id: entry.id });
+                                  setSelectedDecision(null);
+                                }}
+                                row={entry}
+                                selected={
+                                  picked?.kind === "row" &&
+                                  picked.id === entry.id
+                                }
+                              />
+                            </li>
+                          ))}
+                        </ol>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ol>
             )
           ) : decisions.length === 0 ? (
@@ -708,7 +922,22 @@ export function LogPanel({ projectId }: { projectId: string }) {
           aria-label="Details"
           className="hidden w-96 shrink-0 overflow-y-auto border-l bg-card p-4 lg:block"
         >
-          {view === "trajectory" && row ? (
+          {view === "trajectory" && pickedGroup ? (
+            <TurnDetail
+              decision={
+                (log.decisions ?? []).find(
+                  (entry) => entry.id === pickedGroup.turn.decisionId,
+                ) ?? null
+              }
+              group={pickedGroup}
+              onShowDecision={() => {
+                if (pickedGroup.turn.decisionId) {
+                  showDecision(pickedGroup.turn.decisionId);
+                }
+              }}
+              repo={repo}
+            />
+          ) : view === "trajectory" && row ? (
             <RowDetail
               decision={
                 (log.decisions ?? []).find(
@@ -724,8 +953,9 @@ export function LogPanel({ projectId }: { projectId: string }) {
           ) : view === "decisions" && decision ? (
             <DecisionDetail
               decision={decision}
+              groups={decisionGroups}
+              onShowTurn={showTurn}
               repo={repo}
-              turns={decisionTurns}
             />
           ) : (
             <p className="flex items-start gap-2 text-muted-foreground text-xs">
@@ -735,7 +965,7 @@ export function LogPanel({ projectId }: { projectId: string }) {
                 <Scale className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               )}
               {view === "trajectory"
-                ? "Pick a line to see it in full, and what the turn around it did."
+                ? "Pick a turn to see everything it did, or unfold it and pick one line."
                 : "Pick a decision to see the requirements it worked from and the edits it produced."}
             </p>
           )}

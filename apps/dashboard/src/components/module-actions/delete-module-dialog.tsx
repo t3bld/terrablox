@@ -1,5 +1,6 @@
 "use client";
 
+import type { DeleteScope } from "@terrablox/terraform/delete-scope";
 import { Button } from "@terrablox/ui/button";
 import {
   Dialog,
@@ -11,8 +12,6 @@ import {
 } from "@terrablox/ui/dialog";
 import { AlertTriangle, Loader2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-
-import type { DeleteScope } from "@/lib/terraform/delete-scope";
 
 interface DeleteImpact {
   scope: DeleteScope;

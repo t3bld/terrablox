@@ -22,7 +22,7 @@ import { readJson } from "@/lib/read-json";
  *
  * The sign-in creates the read role and is dropped, unless this instance has no
  * AWS identity of its own — then the sign-in itself is the connection.
- * TerraBlox keeps no AWS session after setup.
+ * Terrablox keeps no AWS session after setup.
  */
 
 interface ConnectionView {
@@ -416,7 +416,7 @@ export function AwsSsoConnect({
               Only the stack mode has a side effect worth spelling out. */}
           {usesSessionOnly ? null : (
             <p className="text-muted-foreground text-xs">
-              TerraBlox creates a CloudFormation stack called{" "}
+              Terrablox creates a CloudFormation stack called{" "}
               <code className="rounded bg-muted px-1 py-0.5 font-mono">
                 terrablox-read-access
               </code>{" "}

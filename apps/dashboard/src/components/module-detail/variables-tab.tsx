@@ -1,12 +1,14 @@
 "use client";
 
+import { inferOutputType } from "@terrablox/terraform/output-type";
 import { Badge } from "@terrablox/ui/badge";
 import { cn } from "@terrablox/ui/lib/utils";
 import { EyeOff } from "lucide-react";
 import { useMemo, useState } from "react";
-
-import { inferOutputType } from "@/lib/terraform/output-type";
-
+import type {
+  ModuleOutputDto,
+  ModuleVariableDto,
+} from "@/lib/module-library/types";
 import {
   EmptyMessage,
   FieldList,
@@ -15,7 +17,6 @@ import {
   SearchField,
   TypeBadge,
 } from "./field-primitives";
-import type { ModuleOutputDto, ModuleVariableDto } from "./types";
 
 type RequirementFilter = "all" | "required" | "optional";
 

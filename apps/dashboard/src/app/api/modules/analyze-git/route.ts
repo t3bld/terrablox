@@ -1,10 +1,9 @@
-import type { GitTreeEntry } from "@terrablox/git-import";
-import { githubProvider } from "@terrablox/git-import/github";
+import { githubProvider } from "@terrablox/git/github-provider";
+import type { GitTreeEntry } from "@terrablox/git/types";
 import { NextResponse } from "next/server";
-
 import { routeError } from "@/lib/api/route-error";
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
-import { analyzeTerraformFiles } from "@/lib/terraform/analyze";
+import { analyzeTerraformFiles } from "@/lib/module-library/analyze";
 
 interface AnalyzeGitModuleInput {
   provider: "github";

@@ -1,9 +1,5 @@
 import "server-only";
 
-import type { AwsConnection } from "@terrablox/database";
-
-import { database } from "@/lib/database";
-
 import {
   AwsConnectionError,
   assumeConnection,
@@ -11,8 +7,10 @@ import {
   isValidRegion,
   isValidRoleArn,
   renderConnectionTemplate,
-  resolveTerraBloxPrincipal,
-} from "./connection";
+  resolveTerrabloxPrincipal,
+} from "@terrablox/aws/connection";
+import type { AwsConnection } from "@terrablox/database";
+import { database } from "@/lib/database";
 import { sessionForConnection } from "./credentials";
 
 export interface AwsConnectionView {
@@ -75,7 +73,7 @@ export async function listConnections(
       where: { userId },
       orderBy: { createdAt: "asc" },
     }),
-    resolveTerraBloxPrincipal(),
+    resolveTerrabloxPrincipal(),
   ]);
 
   return {
@@ -126,7 +124,7 @@ export async function createConnection(
     },
   });
 
-  return toView(record, await resolveTerraBloxPrincipal());
+  return toView(record, await resolveTerrabloxPrincipal());
 }
 
 /**
@@ -187,7 +185,7 @@ export async function verifyConnection(
       },
     });
 
-    return toView(updated, await resolveTerraBloxPrincipal());
+    return toView(updated, await resolveTerrabloxPrincipal());
   } catch (error) {
     const message =
       error instanceof AwsConnectionError
@@ -199,7 +197,7 @@ export async function verifyConnection(
       data: { verifiedAt: null, lastError: message },
     });
 
-    return toView(updated, await resolveTerraBloxPrincipal());
+    return toView(updated, await resolveTerrabloxPrincipal());
   }
 }
 

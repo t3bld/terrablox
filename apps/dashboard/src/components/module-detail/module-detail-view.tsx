@@ -1,8 +1,10 @@
 "use client";
 
+import { githubFileUrl } from "@terrablox/terraform/resource-label";
 import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
+import { TabsNav, tabPanelProps } from "@terrablox/ui/tabs-nav";
 import {
   ArrowLeft,
   ArrowRightLeft,
@@ -17,28 +19,24 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
-import { TabsNav, tabPanelProps } from "@/components/layout/tabs-nav";
 import { ModuleActionsMenu } from "@/components/module-actions/module-actions-menu";
 import { ArchitectureTab } from "@/components/module-detail/architecture-tab";
 import { CostsTab } from "@/components/module-detail/costs-tab";
 import { DependenciesTab } from "@/components/module-detail/dependencies-tab";
 import { ReadmeTab } from "@/components/module-detail/readme-tab";
 import { ResourcesTab } from "@/components/module-detail/resources-tab";
-import { SourceTab } from "@/components/module-detail/source-tab";
 import { SubmoduleSwitcher } from "@/components/module-detail/submodule-switcher";
+import { VariablesTab } from "@/components/module-detail/variables-tab";
+import { VersionSwitcher } from "@/components/module-detail/version-switcher";
+import { ModuleIcon } from "@/components/module-icon";
 import {
   type ModuleDetailDto,
   type ModuleSubmoduleDto,
   parseOutputs,
   parseVariables,
-} from "@/components/module-detail/types";
-import { VariablesTab } from "@/components/module-detail/variables-tab";
-import { VersionSwitcher } from "@/components/module-detail/version-switcher";
-import { ModuleIcon } from "@/components/module-icon";
-import { githubFileUrl } from "@/lib/terraform/resource-label";
+} from "@/lib/module-library/types";
 import { useHashTab } from "@/lib/use-hash-tab";
 
 type TabKey =
@@ -47,10 +45,9 @@ type TabKey =
   | "costs"
   | "dependencies"
   | "resources"
-  | "variables"
-  | "code";
+  | "variables";
 
-/** Listed in the order they appear on the bar; `code` sits off it, see below. */
+/** Listed in the order they appear on the bar. */
 const TAB_KEYS: readonly TabKey[] = [
   "readme",
   "architecture",
@@ -58,14 +55,12 @@ const TAB_KEYS: readonly TabKey[] = [
   "dependencies",
   "resources",
   "variables",
-  "code",
 ];
 
 /** Fragments from tabs that have since been merged or renamed. */
 const TAB_ALIASES: Readonly<Record<string, TabKey>> = {
   inputs: "variables",
   outputs: "variables",
-  source: "code",
   // Connections was folded into the architecture graph as its Detail level,
   // then dropped: it drew every Terraform block as an equal card, which the
   // Resources tab already lists more legibly. The alias stays so an existing
@@ -466,10 +461,6 @@ export function ModuleDetailView({
                 icon: ArrowRightLeft,
                 count: variables.length + outputs.length,
               },
-              // No `code` entry: the file browser is off the tab bar. Everything
-              // behind it is left standing — the tab key, the `source` alias and
-              // the panel below still work — so `#code` in a URL opens it and
-              // putting it back is one line.
             ]}
             value={tab}
             onChange={setTab}
@@ -515,16 +506,6 @@ export function ModuleDetailView({
 
             {tab === "costs" ? (
               <CostsTab resources={mod.resources ?? []} variables={variables} />
-            ) : null}
-
-            {tab === "code" ? (
-              <SourceTab
-                gitRef={repoRef?.ref ?? null}
-                owner={repoRef?.owner ?? null}
-                repo={repoRef?.repo ?? null}
-                repoUrl={mod.source?.url ?? null}
-                rootFolder={mod.terraformRootFolder}
-              />
             ) : null}
           </div>
         </main>

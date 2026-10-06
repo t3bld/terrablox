@@ -1,11 +1,10 @@
+import { FALLBACK_MODELS } from "@terrablox/agent-harness/runtime-options";
 import { NextResponse } from "next/server";
-
 import {
   COPILOT_MODEL,
   COPILOT_REASONING_EFFORT,
   listCopilotModels,
 } from "@/lib/agent/copilot";
-import { FALLBACK_MODELS } from "@/lib/agent/runtime-options";
 import {
   getCurrentUserId,
   getUserGithubToken,

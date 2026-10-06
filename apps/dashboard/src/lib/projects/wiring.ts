@@ -1,7 +1,7 @@
 import {
   CONTAINMENT_ATTRIBUTES,
   VPC_SCOPED_ATTRIBUTES,
-} from "@/lib/terraform/aws-architecture";
+} from "@terrablox/terraform/aws-architecture";
 
 /**
  * Deciding which output belongs in which input.
@@ -213,29 +213,7 @@ export function providesNetworkShape(
   return outputs.some((output) => networkShapeOf(output.name) === shape);
 }
 
-/**
- * Turns what a user typed into a valid HCL right-hand side.
- *
- * The inspector offers one text field for both `t3.micro` and
- * `module.vpc.private_subnets`, because demanding that people quote their own
- * strings is how a configuration editor earns its reputation. Anything that
- * already reads as an expression is passed through untouched.
- */
-export function coerceHclValue(input: string): string {
-  const value = input.trim();
-  if (value === "") return '""';
-
-  const isExpression =
-    /^["'[{(]/.test(value) ||
-    /^-?\d+(\.\d+)?$/.test(value) ||
-    value === "true" ||
-    value === "false" ||
-    value === "null" ||
-    /^(var|local|module|data|each|count|path|terraform)\./.test(value) ||
-    // A function call or an interpolation: `merge(...)`, `"${...}"`.
-    /^[a-z_][a-z0-9_]*\s*\(/i.test(value);
-
-  if (isExpression) return value;
-
-  return JSON.stringify(value);
-}
+// Moved to `@terrablox/terraform/hcl-edit`, next to the function whose output it has to be
+// safe for, once the MCP server needed the same coercion over arguments an agent supplies.
+// Re-exported because a dozen modules import it from here.
+export { coerceHclValue } from "@terrablox/terraform/hcl-edit";

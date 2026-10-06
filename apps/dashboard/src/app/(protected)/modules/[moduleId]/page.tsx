@@ -1,12 +1,12 @@
 import { notFound, redirect } from "next/navigation";
 
 import { ModuleDetailView } from "@/components/module-detail/module-detail-view";
-import type { ModuleDetailDto } from "@/components/module-detail/types";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import {
   loadModuleDetail,
   loadModuleParent,
-} from "@/lib/modules/detail-service";
+} from "@/lib/module-library/detail-service";
+import type { ModuleDetailDto } from "@/lib/module-library/types";
 
 /**
  * Loads the module on the server.

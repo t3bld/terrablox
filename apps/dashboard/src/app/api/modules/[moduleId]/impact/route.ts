@@ -1,9 +1,12 @@
+import { parseScope } from "@terrablox/terraform/delete-scope";
 import { NextResponse } from "next/server";
-
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { isBuiltin, ownedByUser, visibleToUser } from "@/lib/modules/ownership";
-import { parseScope } from "@/lib/terraform/delete-scope";
+import {
+  isBuiltin,
+  ownedByUser,
+  visibleToUser,
+} from "@/lib/module-library/ownership";
 
 /**
  * Reports what a delete would destroy.
@@ -51,7 +54,7 @@ export async function GET(
     return NextResponse.json(
       {
         error:
-          "This module ships with TerraBlox and cannot be deleted. Every user shares it.",
+          "This module ships with Terrablox and cannot be deleted. Every user shares it.",
       },
       { status: 403 },
     );

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# TerraBlox dashboard - production image.
+# Terrablox dashboard - production image.
 #
 # Two things about this app decide the shape of this file.
 #
@@ -31,7 +31,16 @@
 
 # --- base --------------------------------------------------------------------
 
-FROM node:22-bookworm-slim AS base
+# Pinned by digest, not only by tag.
+#
+# `node:22-bookworm-slim` is a moving target: the same Dockerfile built a month apart
+# produces different operating-system layers, so a build is not reproducible and a
+# rebuild can introduce a package nobody chose. The tag is kept alongside the digest
+# because the digest alone says nothing about what it is.
+#
+# To move it forward deliberately:
+#   docker buildx imagetools inspect node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS base
 
 # openssl: Prisma's query engine links against it.
 # tini: the app spawns Copilot CLI processes, and Node as PID 1 does not reap
@@ -58,10 +67,18 @@ FROM base AS deps
 # source edit and is rebuilt only when a dependency actually changes.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/dashboard/package.json apps/dashboard/
+# Neither the marketing site nor the MCP server is built into this image — the
+# runtime stage below copies only apps/dashboard. Their manifests are here so the
+# workspace pnpm sees matches the one the lockfile was written against.
+#
+# Being under apps/ is what keeps them out: the runtime stage copies packages/
+# wholesale, so anything living there ships to every self-hoster whether the
+# dashboard imports it or not. That is why the MCP server sits beside the site
+# rather than in packages/, despite being a library in most other respects.
+COPY apps/website/package.json apps/website/
+COPY apps/mcp-server/package.json apps/mcp-server/
 COPY packages/auth/package.json packages/auth/
-COPY packages/code-viewer/package.json packages/code-viewer/
 COPY packages/database/package.json packages/database/
-COPY packages/git-import/package.json packages/git-import/
 COPY packages/graph/package.json packages/graph/
 COPY packages/tsconfig/package.json packages/tsconfig/
 COPY packages/ui/package.json packages/ui/
@@ -70,11 +87,13 @@ COPY packages/ui/package.json packages/ui/
 # has to be here before the install, not after it.
 COPY packages/database/prisma packages/database/prisma
 
-# Placeholders, and they stay placeholders: `prisma generate` only needs the
-# datasource block to resolve, it never opens a connection. The real values
-# arrive as runtime environment variables.
+# A placeholder, and it stays one: `prisma generate` only needs the datasource
+# block to resolve, it never opens a connection, and `next build` must not touch
+# the database either. The real value arrives as a runtime environment variable.
+#
+# No .env file is ever copied into this image (see .dockerignore) - the root .env
+# is for `pnpm dev` and for docker compose, never for the build context.
 ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
-ENV DIRECT_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 	pnpm install --frozen-lockfile

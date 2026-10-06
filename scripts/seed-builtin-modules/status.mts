@@ -11,7 +11,7 @@ import { prisma } from "@/lib/database";
 import {
   BUILTIN_USER_ID,
   builtinModulesEnabled,
-} from "@/lib/modules/ownership";
+} from "@/lib/module-library/ownership";
 
 const enabled = builtinModulesEnabled();
 const raw = process.env.TERRABLOX_BUILTIN_MODULES?.trim();

@@ -1,0 +1,104 @@
+name: Website
+
+# Only when the site or what it is built from changes. The dashboard is the bulk of
+# this repository and none of it reaches the landing page, so a push to it has no
+# business republishing anything.
+on:
+  push:
+    # The repository's default branch, which is `beta` and not `main` — there is no
+    # `main` here. This said `main` and therefore matched nothing: pushes went to
+    # `beta`, the workflow never fired, and the Pages API reported `"status": null`
+    # while every URL answered 404. A trigger naming a branch that does not exist
+    # fails silently, which is the worst way for a deployment to be broken.
+    #
+    # This has to track whatever the default branch is called. If the project is ever
+    # renamed to `main`, this line moves with it.
+    branches: [beta]
+    paths:
+      - "apps/website/**"
+      - "packages/ui/**"
+      # The module pages classify each module's resources at build time from the
+      # cost table in this package — the same one the dashboard reads, so the site
+      # and the product cannot disagree about what bills. That only holds if a
+      # change to the table republishes the site.
+      - "packages/terraform/**"
+      # The committed catalogue snapshot *is* the module pages: every
+      # `/modules/<slug>` route, and its costs, resources and variables tabs, is
+      # generated from it by `getStaticPaths`. Re-snapshotting without this would
+      # change what the product serves and leave the site advertising the old set.
+      - "packages/catalogue/**"
+      # The architecture diagrams on the landing page and on every module page come
+      # from here, styles included — `@terrablox/graph/styles.css` is imported by
+      # the root layout, so a change to it is a change to every page.
+      - "packages/graph/**"
+      # The documentation is Markdown in `docs/`, rendered into the site at build
+      # time. Editing a page is editing a file here, so a push to it has to
+      # republish — which is the whole point of keeping the prose out of the JSX.
+      - "docs/**"
+      - ".github/workflows/website.yml"
+      - "pnpm-lock.yaml"
+  # So the site can be republished without an empty commit — after changing the
+  # Pages settings, for instance.
+  workflow_dispatch:
+
+# Read the repository, mint an id token for the Pages deployment. Nothing writes to
+# the repository itself: the site is uploaded as an artifact rather than committed to
+# a branch, so no generated output lands in git history.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time, and let a newer one win. `cancel-in-progress` is safe
+# here in a way it is not for infrastructure: an interrupted upload leaves the
+# currently published site exactly as it was.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 8.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # `--filter` so the dashboard is never built here. It needs a database and a
+      # Prisma client to compile, neither of which exists in this job, and none of
+      # it ends up on the landing page.
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter @terrablox/website...
+
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      # `base_path` is empty for a custom domain or a `<user>.github.io` repository,
+      # and `/<repo>` for a project page. `configure-pages` works it out from the
+      # repository's own Pages settings, so this is not a value anybody maintains.
+      - name: Build
+        run: pnpm --filter @terrablox/website build
+        env:
+          PAGES_BASE_PATH: ${{ steps.pages.outputs.base_path }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/website/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

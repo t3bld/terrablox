@@ -1,5 +1,5 @@
 /**
- * The deployment workflows TerraBlox ships, as a catalogue rather than as code.
+ * The deployment workflows Terrablox ships, as a catalogue rather than as code.
  *
  * These used to be four render functions called in a fixed order, which made
  * every choice a code change: the Terraform version, whether an apply waits for
@@ -9,21 +9,19 @@
  * So the shape is a catalogue the wizard can show and a small configuration the
  * project owns. The renderers stay pure functions of `(context, config)` — the
  * files still end up in Git, readable and reviewable, and a project stays
- * deployable if TerraBlox disappears.
+ * deployable if Terrablox disappears.
  */
 
 import {
   AWS_REGION_VARIABLE,
   AWS_ROLE_VARIABLE,
-  COST_SNAPSHOT_PATH,
   DEFAULT_TERRAFORM_VERSION,
-  INFRACOST_API_KEY_SECRET,
   type PipelineContext,
   WORKFLOW_DIR,
   workingDirectory,
 } from "./deploy";
 
-export type TemplateId = "plan" | "apply" | "cost";
+export type TemplateId = "plan" | "apply";
 
 /**
  * What a project decides about its workflows.
@@ -35,27 +33,17 @@ export interface TemplateConfig {
   /** Template ids the project has turned off. Required ones are ignored here. */
   disabled?: TemplateId[];
   terraformVersion?: string;
-  /** Apply runs in a GitHub environment, so it can be held for an approval. */
-  requireApproval?: boolean;
-  /** Cost estimates also refresh on a schedule, not only when asked. */
-  scheduleRefresh?: boolean;
 }
 
 /** The config with every question answered, which is what renderers want. */
 export interface ResolvedTemplateConfig {
   disabled: TemplateId[];
   terraformVersion: string;
-  requireApproval: boolean;
-  scheduleRefresh: boolean;
 }
 
 export const TEMPLATE_DEFAULTS: ResolvedTemplateConfig = {
   disabled: [],
   terraformVersion: DEFAULT_TERRAFORM_VERSION,
-  // On by default: an apply with administrator permissions is exactly the thing
-  // worth a second pair of eyes, and the environment is free to leave unguarded.
-  requireApproval: true,
-  scheduleRefresh: false,
 };
 
 export interface WorkflowTemplate {
@@ -75,7 +63,7 @@ export interface WorkflowTemplate {
   render: (context: PipelineContext, config: ResolvedTemplateConfig) => string;
 }
 
-const GENERATED_HEADER = `# Managed by TerraBlox. Edits are kept, but regenerating the pipeline
+const GENERATED_HEADER = `# Managed by Terrablox. Edits are kept, but regenerating the pipeline
 # overwrites this file.`;
 
 /**
@@ -173,20 +161,20 @@ ${setupTerraform(config)}
 `;
 }
 
+/**
+ * The apply, with no GitHub environment on the job.
+ *
+ * An environment used to be rendered here, behind a "hold apply for an approval"
+ * switch — it is the only GitHub mechanism that can pause a job for a human. The
+ * switch is gone, so the job runs when someone starts it. Anyone who wants the
+ * pause back adds `environment:` to this file and protects it in the repository's
+ * settings; nothing else in the pipeline reads it.
+ */
 function renderApply(
   context: PipelineContext,
   config: ResolvedTemplateConfig,
 ): string {
   const dir = workingDirectory(context.rootFolder);
-
-  // An environment is the only GitHub mechanism that can hold a job for a
-  // human, so "require approval" and "use an environment" are the same switch.
-  const environment = config.requireApproval
-    ? `    # Protect this environment in GitHub to require a manual approval before
-    # anything is changed in AWS.
-    environment: production
-`
-    : "";
 
   return `${GENERATED_HEADER}
 name: Terraform Apply
@@ -209,7 +197,7 @@ concurrency:
 jobs:
   apply:
     runs-on: ubuntu-latest
-${environment}    defaults:
+    defaults:
       run:
         working-directory: ${dir}
     steps:
@@ -226,109 +214,6 @@ ${setupTerraform(config)}
       - run: terraform validate
 
       - run: terraform apply -auto-approve -input=false
-`;
-}
-
-/**
- * Prices the plan and publishes the result into the repository.
- *
- * Infracost is given a plan rather than the sources, which is the whole point:
- * every variable is resolved, `count` has a number, and an instance has a real
- * size. What it still cannot know is traffic, so usage-driven components come
- * back without a figure and are reported as such instead of being quietly
- * counted as zero.
- */
-function renderCost(
-  context: PipelineContext,
-  config: ResolvedTemplateConfig,
-): string {
-  const dir = workingDirectory(context.rootFolder);
-
-  const schedule = config.scheduleRefresh
-    ? `
-  # AWS prices move without the code moving.
-  schedule:
-    - cron: "0 7 1 * *"`
-    : "";
-
-  return `${GENERATED_HEADER}
-name: Terraform Cost
-
-on:
-  # After an apply so the estimate follows what was actually deployed.
-  workflow_run:
-    workflows: ["Terraform Apply"]
-    types: [completed]${schedule}
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  id-token: write
-
-concurrency:
-  group: terrablox-cost
-  cancel-in-progress: true
-
-jobs:
-  estimate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${context.branch}
-
-      - name: Check for the Infracost API key
-        run: |
-          if [ -z "\${{ secrets.${INFRACOST_API_KEY_SECRET} }}" ]; then
-            echo "::error::${INFRACOST_API_KEY_SECRET} is not set. Add it as a repository secret; a free key is available at infracost.io."
-            exit 1
-          fi
-
-${awsCredentialsStep(context)}
-
-${setupTerraform(config, false)}
-
-      - uses: infracost/actions/setup@v3
-        with:
-          api-key: \${{ secrets.${INFRACOST_API_KEY_SECRET} }}
-
-      - name: Price the plan
-        working-directory: ${dir}
-        run: |
-          terraform init -input=false
-          terraform plan -input=false -out=tfplan
-          terraform show -json tfplan > "$RUNNER_TEMP/plan.json"
-          infracost breakdown \\
-            --path "$RUNNER_TEMP/plan.json" \\
-            --format json \\
-            --out-file "$RUNNER_TEMP/infracost.json"
-
-      - name: Summarise the estimate
-        run: |
-          mkdir -p .terrablox
-          jq '{
-            version: 1,
-            generatedAt: (now | todate),
-            currency: (.currency // "USD"),
-            totalMonthlyCost: (.totalMonthlyCost // null),
-            resources: [
-              .projects[]?.breakdown.resources[]? | {
-                address: .name,
-                name: .name,
-                monthlyCost: (.monthlyCost // null)
-              }
-            ]
-          }' "$RUNNER_TEMP/infracost.json" > ${COST_SNAPSHOT_PATH}
-
-      - name: Publish the estimate
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ${COST_SNAPSHOT_PATH}
-          git diff --cached --quiet && exit 0
-          git commit -m "chore(terrablox): update cost estimate [skip ci]"
-          git pull --rebase --autostash origin ${context.branch}
-          git push origin HEAD:${context.branch}
 `;
 }
 
@@ -352,16 +237,6 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     required: true,
     requires: null,
     render: renderApply,
-  },
-  {
-    id: "cost",
-    path: `${WORKFLOW_DIR}/terraform-cost.yml`,
-    name: "Terraform Cost",
-    summary:
-      "Prices a real plan with Infracost and commits the estimate for the Costs tab.",
-    required: false,
-    requires: `the ${INFRACOST_API_KEY_SECRET} repository secret`,
-    render: renderCost,
   },
 ];
 
@@ -403,14 +278,10 @@ export function resolveTemplateConfig(raw: unknown): ResolvedTemplateConfig {
       /^\d+\.\d+\.\d+$/.test(record.terraformVersion)
         ? record.terraformVersion
         : TEMPLATE_DEFAULTS.terraformVersion,
-    requireApproval:
-      typeof record.requireApproval === "boolean"
-        ? record.requireApproval
-        : TEMPLATE_DEFAULTS.requireApproval,
-    scheduleRefresh:
-      typeof record.scheduleRefresh === "boolean"
-        ? record.scheduleRefresh
-        : TEMPLATE_DEFAULTS.scheduleRefresh,
+    // `requireApproval` and `scheduleRefresh` used to be read here. A project that
+    // still has them in its stored JSON is not migrated: dropping a key that is no
+    // longer asked about is what "absent means whatever the catalogue says" is for,
+    // and the column keeps whatever it holds until the next write rewrites it.
   };
 }
 
@@ -423,7 +294,22 @@ export function activeTemplates(
   );
 }
 
-/** Paths TerraBlox owns, including the ones a project has turned off. */
+/**
+ * Files Terrablox generated in an earlier version and no longer offers.
+ *
+ * Ownership outlives the template. A `terraform-cost.yml` committed while pricing
+ * was still part of the pipeline is sitting in those repositories now, and it runs
+ * on `workflow_run` after every apply — so forgetting it would not remove it, it
+ * would only stop anyone from seeing it. Listed here, the next pipeline write
+ * deletes it, because {@link allTemplatePaths} is what that diff is taken against.
+ */
+const RETIRED_TEMPLATE_PATHS = [`${WORKFLOW_DIR}/terraform-cost.yml`];
+
+/** Paths Terrablox owns: the current templates, the ones a project turned off, and
+ * the ones it used to write at all. */
 export function allTemplatePaths(): string[] {
-  return WORKFLOW_TEMPLATES.map((template) => template.path);
+  return [
+    ...WORKFLOW_TEMPLATES.map((template) => template.path),
+    ...RETIRED_TEMPLATE_PATHS,
+  ];
 }

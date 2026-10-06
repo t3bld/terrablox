@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  AWS_REGION_AREAS,
+  AWS_REGIONS,
+  type AwsRegion,
+  findAwsRegion,
+} from "@terrablox/aws/regions";
 import { Button } from "@terrablox/ui/button";
 import {
   Command,
@@ -12,13 +18,6 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@terrablox/ui/popover";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { useMemo, useState } from "react";
-
-import {
-  AWS_REGION_AREAS,
-  AWS_REGIONS,
-  type AwsRegion,
-  findAwsRegion,
-} from "@/lib/aws/regions";
 
 /** The shape the API routes validate against, so an unlisted region is checked. */
 const REGION_PATTERN = /^[a-z]{2}(-[a-z]+)+-\d$/;

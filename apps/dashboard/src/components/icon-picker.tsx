@@ -1,5 +1,6 @@
 "use client";
 
+import { AWS_ICON_NAMES } from "@terrablox/terraform/aws-icon-manifest";
 import { Button } from "@terrablox/ui/button";
 import {
   Command,
@@ -12,9 +13,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@terrablox/ui/popover";
 import { Box, ChevronsUpDown, Github, Loader2, X } from "lucide-react";
 import { useMemo, useState } from "react";
-
-import type { IconChoiceValue, IconMode } from "@/lib/modules/icon";
-import { AWS_ICON_NAMES } from "@/lib/terraform/aws-icon-manifest";
+import type { IconChoiceValue, IconMode } from "@/lib/module-library/icon";
 
 /**
  * Picks one of the bundled AWS icons.

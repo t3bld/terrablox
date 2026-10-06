@@ -30,6 +30,13 @@
  * turn's step trail is what records that.
  */
 
+import { uniqueBlockLabel } from "@terrablox/terraform/hcl-edit";
+import { closestName } from "@terrablox/terraform/identifier-suggest";
+import {
+  type BlockInterface,
+  checkArgument,
+  checkReferences as checkModuleReferences,
+} from "@terrablox/terraform/module-interface";
 import type { AgentLibraryModule, AgentPort } from "@/lib/agent/library-view";
 import { computeGaps, type GapNode } from "@/lib/projects/graph";
 import { localsReferencedIn } from "@/lib/projects/locals";
@@ -51,8 +58,6 @@ import {
   unambiguousSource,
   wiringScore,
 } from "@/lib/projects/wiring";
-import { uniqueBlockLabel } from "@/lib/terraform/hcl-edit";
-import { checkValueAgainstType } from "@/lib/terraform/type-check";
 
 export interface ProjectedModule {
   /** Block label, which is how every tool names it. */
@@ -683,33 +688,33 @@ export class GraphProjection {
     }
 
     for (const module of this.modules.values()) {
+      const block = this.interfaceOf(module);
+
       for (const [input, value] of Object.entries(module.values)) {
-        const declared = module.inputs.find((port) => port.name === input);
+        // The shared check, which used to be written out here and again in the MCP
+        // server. It also closes a gap this side had: the type check now runs against
+        // the coerced value, so a bare `production` against a `list(string)` input is
+        // caught here and not only by `edit_module`'s own pre-check.
+        const found = checkArgument(block, input, value);
 
-        if (!declared && module.portsKnown) {
-          const suggestion = closestName(
-            input,
-            module.inputs.map((port) => port.name),
-          );
-          problems.push({
-            kind: "unknown-argument",
-            severity: "blocking",
-            message: `${module.name} has no input called "${input}"${
-              suggestion ? `; did you mean "${suggestion}"?` : ""
-            } Terraform rejects an undeclared argument.`,
-          });
+        problems.push(
+          ...found.map((finding) => ({
+            kind: finding.kind,
+            severity: "blocking" as const,
+            message: finding.message,
+          })),
+        );
+
+        // An argument the module certainly does not declare has a moot value, so a
+        // dangling reference inside it is noise about a line that cannot be committed.
+        if (
+          found.some(
+            (finding) =>
+              finding.kind === "unknown-argument" &&
+              finding.confidence === "certain",
+          )
+        ) {
           continue;
-        }
-
-        const mismatch = declared
-          ? checkValueAgainstType(declared.type, value)
-          : null;
-        if (mismatch) {
-          problems.push({
-            kind: "type-mismatch",
-            severity: "blocking",
-            message: `${module.name}.${input} ${mismatch}`,
-          });
         }
 
         problems.push(
@@ -737,47 +742,43 @@ export class GraphProjection {
     );
   }
 
+  /**
+   * A placed block in the shape the shared interface check takes.
+   *
+   * `portsKnown` becomes `complete` or `unknown` and never `partial`: this side either
+   * resolved the block to a library module and holds its whole interface, or resolved
+   * nothing at all. Partial knowledge is the catalogue snapshot's problem — it keeps forty
+   * of a module's two hundred inputs — and does not arise here.
+   */
+  private interfaceOf(module: ProjectedModule): BlockInterface {
+    return {
+      label: module.name,
+      inputs: module.inputs,
+      outputs: module.outputs,
+      knowledge: module.portsKnown ? "complete" : "unknown",
+    };
+  }
+
   /** References in one expression that point at something that is not there. */
   private checkReferences(where: string, value: string): ProjectionProblem[] {
     const problems: ProjectionProblem[] = [];
 
-    for (const [, name, output] of value.matchAll(
-      /\bmodule\.([A-Za-z_][A-Za-z0-9_-]*)(?:\.([A-Za-z_][A-Za-z0-9_-]*))?/g,
-    )) {
-      if (!name) continue;
-      const producer = this.modules.get(name);
-
-      if (!producer) {
-        const suggestion = closestName(name, this.moduleNames());
-        problems.push({
-          kind: "dangling-module",
-          severity: "blocking",
-          message: `${where} reads module.${name}, which does not exist${
-            suggestion ? `; did you mean "${suggestion}"?` : ""
-          }.`,
-        });
-        continue;
-      }
-
-      if (
-        output &&
-        producer.portsKnown &&
-        !producer.outputs.some((port) => port.name === output)
-      ) {
-        const names = producer.outputs.map((port) => port.name);
-        const suggestion = closestName(output, names);
-        problems.push({
-          kind: "unknown-output",
-          severity: "blocking",
-          // The real names, not only the nearest one. A suggestion is a guess that
-          // often misses — `subnet_ids` is nowhere near `private_subnets` — and a
-          // message that then says nothing leaves the only fix to another guess.
-          message: `${where} reads module.${name}.${output}, but ${name} has no such output${
-            suggestion ? `; did you mean "${suggestion}"?` : ""
-          }. It exposes ${summariseNames(names)}.`,
-        });
-      }
+    // Module references through the shared check; locals below stay here, because a
+    // `locals` block is a concept the MCP server's stack does not have.
+    const blocks = new Map<string, BlockInterface>();
+    for (const [name, module] of this.modules) {
+      blocks.set(name, this.interfaceOf(module));
     }
+
+    problems.push(
+      ...checkModuleReferences(where, value, blocks, {
+        outputsHint: "describe_module lists them",
+      }).map((finding) => ({
+        kind: finding.kind,
+        severity: "blocking" as const,
+        message: finding.message,
+      })),
+    );
 
     for (const name of localsReferencedIn(value)) {
       if (this.locals.has(name)) continue;
@@ -862,13 +863,6 @@ function toGapNode(module: ProjectedModule): GapNode {
   };
 }
 
-/** Names in a sentence, with a pointer to the tool that lists the rest. */
-function summariseNames(names: readonly string[]): string {
-  if (names.length === 0) return "no outputs";
-  if (names.length <= 12) return names.join(", ");
-  return `${names.slice(0, 12).join(", ")} and ${names.length - 12} more (describe_module lists them)`;
-}
-
 function referencesModule(value: string, name: string): boolean {
   return new RegExp(`\\bmodule\\.${escapeForRegExp(name)}\\b`).test(value);
 }
@@ -877,57 +871,8 @@ function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/**
- * The closest of a set of names, when one is close enough to be worth offering.
- *
- * The point of a "did you mean" is that a wrong name costs the turn one call
- * instead of a wrong commit. That only works if the suggestion is usually right,
- * so the threshold is strict: a third of the name may differ, no more. Below that
- * the refusal simply says the name is unknown, which is still actionable.
- */
-export function closestName(
-  wanted: string,
-  candidates: readonly string[],
-): string | null {
-  const needle = wanted.trim().toLowerCase();
-  if (!needle) return null;
-
-  let best: string | null = null;
-  let bestDistance = Number.POSITIVE_INFINITY;
-
-  for (const candidate of candidates) {
-    const distance = editDistance(needle, candidate.toLowerCase());
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = candidate;
-    }
-  }
-
-  const allowed = Math.max(1, Math.floor(needle.length / 3));
-  return best !== null && bestDistance <= allowed ? best : null;
-}
-
-/** Levenshtein, two rows at a time; the inputs here are identifier-sized. */
-function editDistance(a: string, b: string): number {
-  if (a === b) return 0;
-  if (!a.length) return b.length;
-  if (!b.length) return a.length;
-
-  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
-
-  for (let i = 1; i <= a.length; i++) {
-    const current = [i];
-    for (let j = 1; j <= b.length; j++) {
-      const substitution =
-        (previous[j - 1] as number) + (a[i - 1] === b[j - 1] ? 0 : 1);
-      current[j] = Math.min(
-        substitution,
-        (previous[j] as number) + 1,
-        (current[j - 1] as number) + 1,
-      );
-    }
-    previous = current;
-  }
-
-  return previous[b.length] as number;
-}
+// Moved to `@terrablox/terraform/identifier-suggest` when the MCP server needed the same
+// "did you mean" over the same kind of identifier — a package cannot import from an app.
+// Re-exported because this is still where a reader of the projection looks for it, and
+// because `project-agent` already imports it from here.
+export { closestName };

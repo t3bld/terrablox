@@ -6,6 +6,11 @@ import { Input } from "@terrablox/ui/input";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import {
+  type TabDefinition,
+  TabsNav,
+  tabPanelProps,
+} from "@terrablox/ui/tabs-nav";
+import {
   BookMarked,
   Bot,
   ChevronDown,
@@ -14,18 +19,12 @@ import {
   Wallet,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-
 import {
   type HarnessCurationView,
   HarnessEditor,
 } from "@/components/admin/harness-editor";
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
-import {
-  type TabDefinition,
-  TabsNav,
-  tabPanelProps,
-} from "@/components/layout/tabs-nav";
 import { useHashTab } from "@/lib/use-hash-tab";
 
 /**
@@ -46,7 +45,7 @@ const ADMIN_TABS: readonly AdminTab[] = [
 ];
 
 /**
- * What TerraBlox knows because somebody wrote it down.
+ * What Terrablox knows because somebody wrote it down.
  *
  * Reachable at `/admin`, and linked from the user menu for every signed-in user
  * — there is no role check behind it. That is acceptable only because there is

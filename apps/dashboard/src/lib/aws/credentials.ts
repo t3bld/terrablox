@@ -1,15 +1,14 @@
 import "server-only";
 
-import type { AwsConnection, Project } from "@terrablox/database";
-
-import { database } from "@/lib/database";
-
 import {
   AwsConnectionError,
-  type AwsSessionCredentials,
   assumeConnectionSession,
-} from "./connection";
-import { getSsoRoleCredentials } from "./sso";
+} from "@terrablox/aws/connection";
+import type { AwsSessionCredentials } from "@terrablox/aws/session";
+import { getSsoRoleCredentials } from "@terrablox/aws/sso";
+import type { AwsConnection, Project } from "@terrablox/database";
+import { decryptSecret } from "@/lib/crypto/secret-box";
+import { database } from "@/lib/database";
 
 /**
  * One place that answers "can this request talk to the customer's AWS account,
@@ -25,7 +24,7 @@ import { getSsoRoleCredentials } from "./sso";
  * Turns a stored connection into live credentials, whichever way it was made.
  *
  * In `sso` mode the requested access level is advisory: the permission set the
- * user signed in with is the real limit, and TerraBlox cannot narrow it the way
+ * user signed in with is the real limit, and Terrablox cannot narrow it the way
  * it narrows an assumed role.
  */
 export async function sessionForConnection(
@@ -51,7 +50,7 @@ export async function sessionForConnection(
 
   if (
     !connection.ssoRegion ||
-    !connection.ssoAccessToken ||
+    !connection.ssoAccessTokenCiphertext ||
     !connection.ssoRoleName ||
     !connection.accountId
   ) {
@@ -71,9 +70,22 @@ export async function sessionForConnection(
     );
   }
 
+  const accessToken = decryptSecret(connection.ssoAccessTokenCiphertext);
+
+  // Reported as expired rather than as a fault, and deliberately: a token stored
+  // under an older BETTER_AUTH_SECRET is exactly as useful as one that ran out,
+  // and signing in again is the cure the user already knows for that state. The
+  // alternative — an "internal error" — sends them looking for a bug in AWS.
+  if (!accessToken) {
+    throw new AwsConnectionError(
+      "That AWS sign-in can no longer be read. Sign in again to reconnect the account.",
+      "expired",
+    );
+  }
+
   return getSsoRoleCredentials({
     ssoRegion: connection.ssoRegion,
-    accessToken: connection.ssoAccessToken,
+    accessToken,
     accountId: connection.accountId,
     roleName: connection.ssoRoleName,
   });
@@ -117,7 +129,7 @@ export async function resolveProjectAwsSession(
    *
    * In `sso` mode this is ignored, because those credentials come from a
    * permission set rather than from an assumed role — the caller has to be able
-   * to explain an `AccessDenied` that TerraBlox cannot prevent there.
+   * to explain an `AccessDenied` that Terrablox cannot prevent there.
    */
   sessionPolicy?: string,
 ): Promise<ProjectAwsSessionResult> {

@@ -21,7 +21,7 @@ export interface RepositoryDto {
   url: string | null;
   provider: string | null;
   /**
-   * Part of the catalogue TerraBlox ships with: available to every user, owned
+   * Part of the catalogue Terrablox ships with: available to every user, owned
    * by none, and not removable.
    */
   isBuiltin: boolean;

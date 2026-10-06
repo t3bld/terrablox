@@ -22,6 +22,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@terrablox/ui/popover";
 import { AlertCircle, Check, ChevronsUpDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { GithubInstallHint } from "@/components/github-install-hint";
 import type { ProjectDto } from "@/lib/projects/types";
 import { AppRepoPicker, type AppRepoSelection } from "./app-repo-picker";
 
@@ -111,6 +112,9 @@ export function CreateProjectDialog({
   const [appRepo, setAppRepo] = useState<AppRepoSelection | null>(null);
 
   const [owners, setOwners] = useState<RepoOwner[]>([]);
+  const [installUrl, setInstallUrl] = useState<string | null>(null);
+  /** Set while an organisation owner has yet to approve the app. */
+  const [pendingRequestAt, setPendingRequestAt] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -137,14 +141,22 @@ export function CreateProjectDialog({
         if (cancelled) return;
         const list = (body?.owners ?? []) as RepoOwner[];
         setOwners(list);
-        // The personal namespace is the default because it always exists and
-        // needs nobody's permission. It is sent as an empty owner, which is what
-        // makes the API use the personal endpoint.
-        setOwner("");
+        if (typeof body?.installUrl === "string")
+          setInstallUrl(body.installUrl);
+        setPendingRequestAt(
+          typeof body?.pendingRequestAt === "string"
+            ? body.pendingRequestAt
+            : null,
+        );
+        // The personal account is preselected when the app is installed on it,
+        // sent as an empty owner, which is what makes the API use the personal
+        // endpoint. Otherwise the first installation wins — since the move to a
+        // GitHub App there is no guarantee the personal account is among them.
+        setOwner(list.some((o) => o.personal) ? "" : (list[0]?.login ?? ""));
       })
       .catch(() => {
-        // An empty list still creates under the personal account, which is the
-        // default anyway — so there is nothing to report here.
+        // Left to the empty-list hint below. Failing loudly here would block the
+        // dialog over a dropdown.
       });
 
     return () => {
@@ -161,11 +173,21 @@ export function CreateProjectDialog({
     [owners],
   );
 
-  /** The personal namespace is an empty owner, which is what makes the API use
-   *  the personal endpoint — so it is an option here like any other. */
+  /**
+   * The personal namespace is an empty owner, which is what makes the API use the
+   * personal endpoint — so it is an option here like any other.
+   *
+   * Offered only when the app is actually installed on the personal account. It
+   * used to be unconditional, which was right for an OAuth App: the personal
+   * namespace always exists and needed nobody's permission. As a GitHub App it
+   * needs an installation like any other account, and offering it without one
+   * produces a choice that is refused the moment it is used.
+   */
   const ownerOptions = useMemo(
     () => [
-      { value: "", label: personal?.login ?? "Your account", personal: true },
+      ...(personal
+        ? [{ value: "", label: personal.login, personal: true }]
+        : []),
       ...organisations.map((entry) => ({
         value: entry.login,
         label: entry.login,
@@ -256,66 +278,77 @@ export function CreateProjectDialog({
             />
           </div>
 
-          <div className="grid gap-2">
-            <Label htmlFor="repo-owner">Organisation</Label>
-            <Popover onOpenChange={setOwnerPickerOpen} open={ownerPickerOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  aria-expanded={ownerPickerOpen}
-                  className="h-10 w-full justify-between gap-1 font-normal"
-                  disabled={submitting}
-                  id="repo-owner"
-                  role="combobox"
-                  variant="outline"
-                >
-                  {/* No "(your account)" beside it: the login is the user's own,
+          {/* Replaces the owner dropdown rather than sitting beside it: with no
+              installation there is nothing to choose, and a disabled dropdown next
+              to an explanation reads as a bug in the dropdown. */}
+          {ownerOptions.length === 0 && installUrl ? (
+            <GithubInstallHint
+              installUrl={installUrl}
+              pendingRequestAt={pendingRequestAt}
+              what="accounts"
+            />
+          ) : (
+            <div className="grid gap-2">
+              <Label htmlFor="repo-owner">Organisation</Label>
+              <Popover onOpenChange={setOwnerPickerOpen} open={ownerPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    aria-expanded={ownerPickerOpen}
+                    className="h-10 w-full justify-between gap-1 font-normal"
+                    disabled={submitting}
+                    id="repo-owner"
+                    role="combobox"
+                    variant="outline"
+                  >
+                    {/* No "(your account)" beside it: the login is the user's own,
                       and they know which one that is. */}
-                  <span className="min-w-0 truncate">
-                    {selectedOwner?.label ?? "Your account"}
-                  </span>
-                  <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
-                </Button>
-              </PopoverTrigger>
+                    <span className="min-w-0 truncate">
+                      {selectedOwner?.label ?? "Your account"}
+                    </span>
+                    <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
 
-              {/* Matched to the trigger so the list lines up with the field it
+                {/* Matched to the trigger so the list lines up with the field it
                   belongs to, rather than the popover's default 18rem. */}
-              <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
-                <Command>
-                  {searchableOwners ? (
-                    <CommandInput placeholder="Search organisations" />
-                  ) : null}
-                  <CommandList>
-                    <CommandEmpty>No organisation matches.</CommandEmpty>
-                    <CommandGroup>
-                      {ownerOptions.map((option) => (
-                        <CommandItem
-                          key={option.value || "__personal"}
-                          onSelect={() => {
-                            setOwner(option.value);
-                            setOwnerPickerOpen(false);
-                          }}
-                          // cmdk filters and navigates on this, so it carries the
-                          // visible text rather than the empty personal value.
-                          value={option.label}
-                        >
-                          <Check
-                            className={`h-3.5 w-3.5 shrink-0 ${
-                              option.value === owner
-                                ? "opacity-100"
-                                : "opacity-0"
-                            }`}
-                          />
-                          <span className="min-w-0 flex-1 truncate">
-                            {option.label}
-                          </span>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-              </PopoverContent>
-            </Popover>
-          </div>
+                <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+                  <Command>
+                    {searchableOwners ? (
+                      <CommandInput placeholder="Search organisations" />
+                    ) : null}
+                    <CommandList>
+                      <CommandEmpty>No organisation matches.</CommandEmpty>
+                      <CommandGroup>
+                        {ownerOptions.map((option) => (
+                          <CommandItem
+                            key={option.value || "__personal"}
+                            onSelect={() => {
+                              setOwner(option.value);
+                              setOwnerPickerOpen(false);
+                            }}
+                            // cmdk filters and navigates on this, so it carries the
+                            // visible text rather than the empty personal value.
+                            value={option.label}
+                          >
+                            <Check
+                              className={`h-3.5 w-3.5 shrink-0 ${
+                                option.value === owner
+                                  ? "opacity-100"
+                                  : "opacity-0"
+                              }`}
+                            />
+                            <span className="min-w-0 flex-1 truncate">
+                              {option.label}
+                            </span>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+          )}
 
           <label className="flex items-center gap-2 text-sm">
             <input

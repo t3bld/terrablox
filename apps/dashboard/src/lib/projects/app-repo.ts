@@ -1,7 +1,7 @@
 /**
  * The application repository a project builds infrastructure for.
  *
- * Read-only to TerraBlox: nothing is ever committed there, and it is not the
+ * Read-only to Terrablox: nothing is ever committed there, and it is not the
  * project's source of truth — `repoFullName` stays that. It exists so the agent
  * can look at how an application is actually built before proposing what it
  * needs to run, instead of asking someone to describe their own codebase.
@@ -11,7 +11,8 @@
  * agree on what a valid link is.
  */
 
-import { GithubRequestError, getRepository } from "@/lib/github/repo-files";
+import { GithubRequestError } from "@terrablox/git/client";
+import { getRepository } from "@terrablox/git/repositories";
 
 export interface AppRepoLink {
   appRepoFullName: string;

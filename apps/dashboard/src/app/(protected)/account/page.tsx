@@ -5,7 +5,6 @@ import { Avatar, AvatarFallback, AvatarImage } from "@terrablox/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { useEffect } from "react";
-import { InfracostCard } from "@/components/account/infracost-card";
 import { AppSidebar } from "@/components/app-sidebar";
 import { GithubAccountCard } from "@/components/github-account-card";
 import { PageHeader } from "@/components/layout/page-header";
@@ -93,7 +92,6 @@ export default function AccountPage() {
                 not to a person — two projects usually mean two accounts — so the
                 connect flow lives in each project's Deploy and State tabs. */}
             <GithubAccountCard />
-            <InfracostCard />
           </div>
         </main>
       </SidebarInset>

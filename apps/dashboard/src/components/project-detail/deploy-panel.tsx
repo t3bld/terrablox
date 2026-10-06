@@ -9,6 +9,7 @@ import {
   CardTitle,
 } from "@terrablox/ui/card";
 import { Skeleton } from "@terrablox/ui/skeleton";
+import { useToast } from "@terrablox/ui/toast";
 import {
   AlertCircle,
   ArrowLeft,
@@ -25,7 +26,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-
+import { showDeployWizard } from "@/lib/projects/deploy-steps";
 import type {
   DeployRunKind,
   ProjectDeployState,
@@ -54,7 +55,7 @@ interface DeployPanelProps {
  *
  * The pipeline itself lives in the repository as ordinary workflow files, so
  * this panel generates and inspects them rather than hiding them behind a
- * proprietary runner — a project stays deployable without TerraBlox.
+ * proprietary runner — a project stays deployable without Terrablox.
  */
 export function DeployPanel({
   projectId,
@@ -62,16 +63,23 @@ export function DeployPanel({
   onAttachAws,
   awsAccountId,
 }: DeployPanelProps) {
+  const toast = useToast();
   const [state, setState] = useState<ProjectDeployState | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<DeployRunKind | null>(null);
   const [confirmApply, setConfirmApply] = useState(false);
   const [reconfiguring, setReconfiguring] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * Why this panel is empty, when it is.
+   *
+   * Stays on the page rather than going to the snackbar: with no deploy state
+   * there is nothing else to render, so this line is the panel. Outcomes — a run
+   * queued, a run refused — are announced instead.
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setError(null);
+    setLoadError(null);
 
     try {
       const response = await fetch(`/api/projects/${projectId}/deploy`);
@@ -81,7 +89,7 @@ export function DeployPanel({
       const deploy = body.deploy as ProjectDeployState;
       setState(deploy);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load");
+      setLoadError(err instanceof Error ? err.message : "Failed to load");
     } finally {
       setLoading(false);
     }
@@ -90,6 +98,27 @@ export function DeployPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * The wizard finished. Take its state and close it.
+   *
+   * `setReconfiguring(false)` is the point of this handler, and it is the reason the
+   * wizard needed a completion signal at all. `showWizard` below is a disjunction, so
+   * `reconfiguring` outranks a finished setup: somebody who opened the wizard from the
+   * configuration card stayed in it after pressing Finalize, because the flag that put
+   * them there was only ever cleared by the "Back to the configuration" button. The
+   * setup read as complete, the strip showed every step ticked, and the tab still
+   * refused to move — the flag had outlived the thing it was describing.
+   *
+   * The state comes from the finalize response rather than from a fresh `load()`,
+   * which also removes the second round trip and the window where the two reads could
+   * disagree about whether the workflows are there.
+   */
+  const finalized = useCallback((deploy: ProjectDeployState) => {
+    setState(deploy);
+    setReconfiguring(false);
+    setLoadError(null);
+  }, []);
 
   /** Only the run list, so following a job does not re-read the repository. */
   const refreshRuns = useCallback(async () => {
@@ -122,8 +151,6 @@ export function DeployPanel({
     if (running) return;
 
     setRunning(workflow);
-    setError(null);
-    setNotice(null);
 
     try {
       const response = await fetch(`/api/projects/${projectId}/deploy/run`, {
@@ -136,16 +163,18 @@ export function DeployPanel({
       if (!response.ok)
         throw new Error(body?.error ?? "Failed to start the run");
 
-      setNotice(
+      toast.success(
         workflow === "apply"
-          ? "Apply queued. If the production environment requires an approval, GitHub waits for it before touching AWS."
+          ? "Apply queued. It changes AWS as soon as the runner picks it up."
           : "Run queued.",
       );
 
       // GitHub registers the run a moment after accepting the dispatch.
       setTimeout(() => void refreshRuns(), 2500);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to start the run");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to start the run",
+      );
     } finally {
       setRunning(null);
       setConfirmApply(false);
@@ -164,24 +193,21 @@ export function DeployPanel({
 
   const ready = state !== null && state.missing.length === 0;
   const configured = state?.setup.complete ?? false;
-  // A disconnected account reopens the wizard whatever the setup says: the role
-  // and the bucket may still exist, but nothing here can be created or re-read
-  // until the project points at an account again.
-  const showWizard =
-    state !== null && (!configured || reconfiguring || awsAccountId === null);
+  // The three ways the wizard wins are in `showDeployWizard`, with the reason each one
+  // is there. `reconfiguring` outranks a finished setup, which is why `finalized` above
+  // has to clear it.
+  const showWizard = showDeployWizard({
+    configured: state === null ? null : configured,
+    reconfiguring,
+    awsAccountId: awsAccountId ?? null,
+  });
 
   return (
     <div className={WIZARD_COLUMN}>
-      {error ? (
+      {loadError ? (
         <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          {error}
-        </p>
-      ) : null}
-      {notice ? (
-        <p className="flex items-start gap-2 rounded-lg border bg-muted/50 px-3 py-2 text-sm">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-          {notice}
+          {loadError}
         </p>
       ) : null}
 
@@ -202,7 +228,10 @@ export function DeployPanel({
             awsAccountId={awsAccountId}
             onAttach={onAttachAws}
             onChanged={load}
+            onFinalized={finalized}
             projectId={projectId}
+            repoBranch={project?.repoBranch ?? null}
+            repoFullName={project?.repoFullName ?? null}
             state={state}
           />
         </>
@@ -210,175 +239,188 @@ export function DeployPanel({
 
       {!showWizard && state ? (
         <>
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
-                Deployment is configured
-              </CardTitle>
-              <CardDescription>
-                Terraform runs in GitHub Actions, which federates into your AWS
-                account for the length of a job. No credentials are stored, and
-                nothing is triggered by a push — a deployment only happens when
-                you start one here.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[11rem_1fr]">
-                <ConfigRow label="Repository">
-                  {project
-                    ? `${project.repoFullName}@${project.repoBranch}`
-                    : "—"}
-                </ConfigRow>
-                <ConfigRow label="AWS account">
-                  {state.settings.awsAccountId ?? "—"}
-                </ConfigRow>
-                <ConfigRow label="Region">{state.settings.awsRegion}</ConfigRow>
-                <ConfigRow label="Deployment role">
-                  {state.settings.awsRoleArn ?? "—"}
-                </ConfigRow>
-                <ConfigRow label="State bucket">
-                  {state.settings.stateBucket ?? "—"}
-                </ConfigRow>
-                <ConfigRow label="Lock table">
-                  {state.settings.stateLockTable ?? "none"}
-                </ConfigRow>
-                <ConfigRow label="State encryption">
-                  {state.settings.stateKmsKeyArn ?? "not encrypted with KMS"}
-                </ConfigRow>
-                <ConfigRow label="Terraform">
-                  {state.templates.config.terraformVersion}
-                </ConfigRow>
-              </dl>
+          {/* Side by side, and the runnable half first: once the setup is done,
+              the reason to open this tab is to start a run, while the configuration
+              is what you check now and then. 5:3 of eight columns — the run card
+              holds buttons and a sentence, the config card a list of values.
 
-              <ul className="space-y-1.5">
-                {state.workflows.map((workflow) => (
-                  <li
-                    className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
-                    key={workflow.path}
-                  >
-                    <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" />
-                    <span className="truncate font-mono text-xs">
-                      {workflow.path}
-                    </span>
-                    {workflow.managed ? (
-                      <span
-                        className={`ml-auto shrink-0 rounded-full border px-2 py-0.5 font-medium text-[0.65rem] ${
-                          workflow.upToDate
-                            ? "text-emerald-600"
-                            : "text-amber-600"
-                        }`}
-                      >
-                        {workflow.upToDate ? "up to date" : "needs update"}
-                      </span>
-                    ) : (
-                      <span className="ml-auto shrink-0 text-[0.65rem] text-muted-foreground">
-                        your own
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-
-              <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
-                <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
-                <span className="text-muted-foreground">
-                  The deployment role has AdministratorAccess, so anyone who can
-                  push to this repository or start a workflow in it can change
-                  anything in account{" "}
-                  {state.settings.awsAccountId ?? "this account"}.
-                </span>
-              </div>
-
-              <Button
-                onClick={() => setReconfiguring(true)}
-                size="sm"
-                variant="outline"
-              >
-                <Settings2 className="mr-2 h-3.5 w-3.5" />
-                Change the setup
-              </Button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">Run Terraform</CardTitle>
-              <CardDescription>
-                Starts the workflow in GitHub Actions on{" "}
-                <code className="rounded bg-muted px-1">
-                  {project?.repoBranch ?? "main"}
-                </code>
-                . The credentials never leave the runner, and every run leaves a
-                log you can audit.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  disabled={!ready || running !== null}
-                  onClick={() => void startRun("plan")}
-                  variant="outline"
-                >
-                  {running === "plan" ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <PlayCircle className="mr-2 h-4 w-4" />
-                  )}
-                  Plan
-                </Button>
-
-                {confirmApply ? (
-                  <>
-                    <Button
-                      disabled={running !== null}
-                      onClick={() => void startRun("apply")}
-                      variant="destructive"
-                    >
-                      {running === "apply" ? (
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      ) : (
-                        <ShieldAlert className="mr-2 h-4 w-4" />
-                      )}
-                      Apply to {state.settings.awsAccountId ?? "AWS"}
-                    </Button>
-                    <Button
-                      onClick={() => setConfirmApply(false)}
-                      variant="ghost"
-                    >
-                      Cancel
-                    </Button>
-                  </>
-                ) : (
+              One column below `lg`, where two of these would each be too narrow
+              for an ARN. They stack in this same order, which is the same
+              priority read downwards. */}
+          <div className="grid items-start gap-4 lg:grid-cols-8">
+            <Card className="lg:col-span-5">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Run Terraform</CardTitle>
+                <CardDescription>
+                  Starts the workflow in GitHub Actions on{" "}
+                  <code className="rounded bg-muted px-1">
+                    {project?.repoBranch ?? "main"}
+                  </code>
+                  . The credentials never leave the runner, and every run leaves
+                  a log you can audit.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     disabled={!ready || running !== null}
-                    onClick={() => setConfirmApply(true)}
+                    onClick={() => void startRun("plan")}
+                    variant="outline"
                   >
-                    <Rocket className="mr-2 h-4 w-4" />
-                    Apply
+                    {running === "plan" ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <PlayCircle className="mr-2 h-4 w-4" />
+                    )}
+                    Plan
                   </Button>
-                )}
+
+                  {confirmApply ? (
+                    <>
+                      <Button
+                        disabled={running !== null}
+                        onClick={() => void startRun("apply")}
+                        variant="destructive"
+                      >
+                        {running === "apply" ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <ShieldAlert className="mr-2 h-4 w-4" />
+                        )}
+                        Apply to {state.settings.awsAccountId ?? "AWS"}
+                      </Button>
+                      <Button
+                        onClick={() => setConfirmApply(false)}
+                        variant="ghost"
+                      >
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      disabled={!ready || running !== null}
+                      onClick={() => setConfirmApply(true)}
+                    >
+                      <Rocket className="mr-2 h-4 w-4" />
+                      Apply
+                    </Button>
+                  )}
+
+                  <Button
+                    aria-label="Refresh runs"
+                    onClick={() => void refreshRuns()}
+                    size="icon"
+                    variant="ghost"
+                  >
+                    <RefreshCw
+                      className={`h-4 w-4 ${runInFlight ? "animate-spin" : ""}`}
+                    />
+                  </Button>
+                </div>
+
+                <p className="text-muted-foreground text-xs">
+                  Nothing holds an apply once it starts. To require a human
+                  first, add an{" "}
+                  <code className="rounded bg-muted px-1">environment</code> to
+                  the apply workflow and protect it in the repository's
+                  settings.
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card className="lg:col-span-3">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  Config
+                </CardTitle>
+                <CardDescription>
+                  Terraform runs in GitHub Actions, which federates into your
+                  AWS account for the length of a job. No credentials are
+                  stored, and nothing is triggered by a push — a deployment only
+                  happens when you start one here.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* One column: in a third of the row an 11rem label column left
+                  no room for the ARNs beside it. */}
+                <dl className="grid gap-y-2 text-sm">
+                  <ConfigRow label="Repository">
+                    {project
+                      ? `${project.repoFullName}@${project.repoBranch}`
+                      : "—"}
+                  </ConfigRow>
+                  <ConfigRow label="AWS account">
+                    {state.settings.awsAccountId ?? "—"}
+                  </ConfigRow>
+                  <ConfigRow label="Region">
+                    {state.settings.awsRegion}
+                  </ConfigRow>
+                  <ConfigRow label="Deployment role">
+                    {state.settings.awsRoleArn ?? "—"}
+                  </ConfigRow>
+                  <ConfigRow label="State bucket">
+                    {state.settings.stateBucket ?? "—"}
+                  </ConfigRow>
+
+                  <ConfigRow label="State encryption">
+                    {state.settings.stateKmsKeyArn ?? "not encrypted with KMS"}
+                  </ConfigRow>
+                  <ConfigRow label="Terraform">
+                    {state.templates.config.terraformVersion}
+                  </ConfigRow>
+                </dl>
+
+                <ul className="space-y-1.5">
+                  {state.workflows.map((workflow) => (
+                    <li
+                      className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm"
+                      key={workflow.path}
+                    >
+                      <FileCode2 className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate font-mono text-xs">
+                        {workflow.path}
+                      </span>
+                      {workflow.managed ? (
+                        <span
+                          className={`ml-auto shrink-0 rounded-full border px-2 py-0.5 font-medium text-[0.65rem] ${
+                            workflow.upToDate
+                              ? "text-emerald-600"
+                              : "text-amber-600"
+                          }`}
+                        >
+                          {workflow.upToDate ? "up to date" : "needs update"}
+                        </span>
+                      ) : (
+                        <span className="ml-auto shrink-0 text-[0.65rem] text-muted-foreground">
+                          your own
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+
+                <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+                  <span className="text-muted-foreground">
+                    The deployment role has AdministratorAccess, so anyone who
+                    can push to this repository or start a workflow in it can
+                    change anything in account{" "}
+                    {state.settings.awsAccountId ?? "this account"}.
+                  </span>
+                </div>
 
                 <Button
-                  aria-label="Refresh runs"
-                  onClick={() => void refreshRuns()}
-                  size="icon"
-                  variant="ghost"
+                  onClick={() => setReconfiguring(true)}
+                  size="sm"
+                  variant="outline"
                 >
-                  <RefreshCw
-                    className={`h-4 w-4 ${runInFlight ? "animate-spin" : ""}`}
-                  />
+                  <Settings2 className="mr-2 h-3.5 w-3.5" />
+                  Change the setup
                 </Button>
-              </div>
-
-              <p className="text-muted-foreground text-xs">
-                Apply runs in the{" "}
-                <code className="rounded bg-muted px-1">production</code>{" "}
-                environment, so GitHub can hold it for an approval before
-                anything changes in AWS.
-              </p>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </div>
 
           <Card>
             <CardHeader className="pb-3">

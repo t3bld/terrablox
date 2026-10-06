@@ -1,0 +1,407 @@
+/*
+ * The website's stylesheet.
+ *
+ * Tokens, the Tailwind directives and the shared base rules all live in
+ * @terrablox/ui/styles.css. A colour or radius redefined here would make this
+ * site drift from the product it is advertising, which is the failure mode the
+ * shared package exists to prevent.
+ *
+ * What is added below is motion, and it is deliberately all CSS. The page is a
+ * static export with no client components, so a scroll library would be the first
+ * JavaScript on it — and a reveal-on-scroll built with an observer has a failure
+ * mode a marketing page cannot afford: elements hidden by CSS and shown by script
+ * are invisible for good if the script does not run. Scroll-driven CSS animations
+ * cannot fail that way. Where the browser does not support them the content is
+ * simply there, which is the correct fallback rather than a degraded one.
+ *
+ * Written as plain rules rather than inside `@layer utilities`. The `@tailwind`
+ * directives are in the imported package, so this file has no layer of that name to
+ * add to — and it does not need one: Tailwind only ever purges utilities it
+ * generated, so hand-written classes are not at risk either way.
+ */
+
+@import "@terrablox/ui/styles.css";
+
+/*
+ * Fades a section up as it scrolls in.
+ *
+ * Gated twice on purpose. `@supports` keeps browsers without scroll-driven
+ * animations — Firefox, at the time of writing — showing a plain, complete page.
+ * The motion query keeps it off for anyone who asked their system for less
+ * movement, for whom a page that animates on every scroll is not decoration.
+ */
+@supports (animation-timeline: view()) {
+  @media (prefers-reduced-motion: no-preference) {
+    .reveal {
+      animation: reveal-up linear both;
+      animation-timeline: view();
+      /* Finished well before the element is centred, so reading never waits on
+         the animation. */
+      animation-range: entry 4% cover 20%;
+    }
+  }
+}
+
+/*
+ * Staggers children of a revealed group.
+ *
+ * One simultaneous fade across a grid reads as a flicker; a short sequence reads as
+ * intent. Applied to the child, so it delays whichever animation that child runs.
+ */
+.stagger > *:nth-child(2) {
+  animation-delay: 60ms;
+}
+.stagger > *:nth-child(3) {
+  animation-delay: 120ms;
+}
+.stagger > *:nth-child(4) {
+  animation-delay: 180ms;
+}
+.stagger > *:nth-child(5) {
+  animation-delay: 240ms;
+}
+.stagger > *:nth-child(6) {
+  animation-delay: 300ms;
+}
+
+/*
+ * The grid behind the hero.
+ *
+ * Two gradients rather than an image: it scales to any viewport, costs no request,
+ * and the mask is what keeps it from turning the page into graph paper — it fades
+ * out before the text starts.
+ */
+.grid-backdrop {
+  background-image:
+    linear-gradient(to right, hsl(var(--border)) 1px, transparent 1px),
+    linear-gradient(to bottom, hsl(var(--border)) 1px, transparent 1px);
+  background-size: 3.5rem 3.5rem;
+  mask-image: radial-gradient(
+    ellipse 70% 60% at 50% 0%,
+    #000 20%,
+    transparent 75%
+  );
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* A slow sheen across the headline's accent words. */
+  .sheen {
+    background-size: 200% auto;
+    animation: sheen 6s linear infinite;
+  }
+}
+
+/*
+ * The harness diagram: connectors that show which way the signal travels.
+ *
+ * One element per connector, not two. The line is the element's background *colour*
+ * and the moving signal is a gradient in its background *image*, which paints over
+ * the colour — so a track is a 1px div and the motion costs no extra DOM and no
+ * pseudo-element. `background-position` is the only thing that animates.
+ *
+ * Every rule below is additive: without the motion query, or in a browser that
+ * ignores it, what remains is a plain grey connector line. The diagram is legible
+ * either way, which is the same bargain the reveal animations above make — the
+ * drawing carries the meaning and the movement only points at it.
+ *
+ * `--flow-duration` and `--flow-delay` are set per element by the component, so the
+ * connectors leading into the harness can fire in sequence rather than in unison.
+ */
+.flow {
+  background-color: hsl(var(--border));
+  background-repeat: no-repeat;
+}
+
+/* Downward, for the tracks between the tiers. */
+.flow-y {
+  background-image: linear-gradient(
+    to bottom,
+    transparent,
+    hsl(var(--primary)),
+    transparent
+  );
+  background-size: 100% 40%;
+  background-position: 0 -40%;
+}
+
+/* Rightward, for the connectors between the steps of the loop. */
+.flow-x {
+  background-image: linear-gradient(
+    to right,
+    transparent,
+    hsl(var(--primary)),
+    transparent
+  );
+  background-size: 40% 100%;
+  background-position: -40% 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .flow-y,
+  .flow-x {
+    animation: var(--flow-duration, 2.8s) linear infinite;
+    animation-delay: var(--flow-delay, 0s);
+  }
+
+  .flow-y {
+    animation-name: flow-y;
+  }
+
+  .flow-x {
+    animation-name: flow-x;
+  }
+}
+
+/*
+ * The refusal leg, running against the traffic.
+ *
+ * `animation-direction` rather than a second keyframe, and it has to sit after the
+ * shorthand above: `animation:` resets direction to `normal`, so a rule declaring
+ * this first would be overwritten by it.
+ */
+.flow-reverse {
+  animation-direction: reverse;
+}
+
+/*
+ * The four steps of the loop, lighting in turn.
+ *
+ * The component gives each step a delay one quarter of the cycle apart, so what
+ * moves is attention rather than a decoration on every box at once. It is the one
+ * claim in the drawing that motion makes better than a caption could: the reader
+ * sees that these four repeat, and that the check is one of the four rather than a
+ * gate the turn passes once.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .loop-step {
+    animation: loop-step var(--loop-duration, 6.4s) ease-in-out infinite;
+    animation-delay: var(--flow-delay, 0s);
+  }
+}
+
+@keyframes reveal-up {
+  from {
+    opacity: 0;
+    transform: translateY(1.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Off one end of the track to off the other, so nothing pops in or out mid-line. */
+@keyframes flow-y {
+  to {
+    background-position: 0 140%;
+  }
+}
+
+@keyframes flow-x {
+  to {
+    background-position: 140% 0;
+  }
+}
+
+/*
+ * Idle, lit, idle — inside a quarter of the cycle, so the four steps never overlap.
+ *
+ * Colours rather than opacity: the card sits on a tinted panel, so fading the whole
+ * box would take its text with it.
+ */
+@keyframes loop-step {
+  0%,
+  30%,
+  100% {
+    border-color: hsl(var(--border));
+    background-color: hsl(var(--background));
+    box-shadow: none;
+  }
+  7%,
+  23% {
+    border-color: hsl(var(--primary) / 0.5);
+    background-color: hsl(var(--primary) / 0.06);
+    box-shadow: 0 0 0 3px hsl(var(--primary) / 0.07);
+  }
+}
+
+@keyframes sheen {
+  to {
+    background-position: 200% center;
+  }
+}
+
+/*
+ * Documentation prose.
+ *
+ * Hand-written against the shared tokens rather than pulled in as a typography
+ * plugin. The plugin's defaults are a design of their own — its own scale, its own
+ * greys, its own link treatment — and every one of them would then have to be
+ * overridden back to the tokens this site already uses. Sixty lines of CSS that
+ * reference `--border` and `--muted` directly is both less code and the only version
+ * that stays in step when a token changes.
+ *
+ * Scoped to `.docs-prose` because it styles bare elements. Outside this class the
+ * site's components keep owning their own appearance.
+ */
+
+.docs-prose {
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+
+.docs-prose > * + * {
+  margin-top: 1rem;
+}
+
+/* Headings carry their own top margin, which is larger than the paragraph rhythm:
+   the gap above a section is what makes it read as a new one. */
+.docs-prose h2,
+.docs-prose h3,
+.docs-prose h4 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  scroll-margin-top: 5rem; /* Clears the sticky header when an anchor is followed. */
+}
+
+.docs-prose > h2 {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid hsl(var(--border));
+  font-size: 1.25rem;
+}
+
+.docs-prose > h3 {
+  margin-top: 2rem;
+  font-size: 1.05rem;
+}
+
+.docs-prose > h4 {
+  margin-top: 1.5rem;
+  font-size: 0.9375rem;
+}
+
+/* The heading is wrapped in a link to itself. It should look like a heading until
+   it is hovered, at which point it should look like something to click. */
+.docs-prose .heading-anchor {
+  color: inherit;
+  text-decoration: none;
+}
+
+.docs-prose .heading-anchor:hover {
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--muted-foreground));
+  text-underline-offset: 0.25rem;
+}
+
+.docs-prose a:not(.heading-anchor) {
+  color: hsl(var(--foreground));
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--border));
+  text-underline-offset: 0.2rem;
+  transition: text-decoration-color 150ms;
+}
+
+.docs-prose a:not(.heading-anchor):hover {
+  text-decoration-color: hsl(var(--foreground));
+}
+
+.docs-prose ul,
+.docs-prose ol {
+  padding-left: 1.25rem;
+}
+
+.docs-prose ul {
+  list-style: disc;
+}
+
+.docs-prose ol {
+  list-style: decimal;
+}
+
+.docs-prose li + li {
+  margin-top: 0.375rem;
+}
+
+/* A nested list belongs to the item above it, so it sits closer than a sibling. */
+.docs-prose li > ul,
+.docs-prose li > ol {
+  margin-top: 0.375rem;
+}
+
+.docs-prose strong {
+  font-weight: 600;
+}
+
+/* Inline code, distinguished by weight and background rather than by colour: a
+   coloured span inside a sentence competes with the links. */
+.docs-prose :not(pre) > code {
+  padding: 0.125rem 0.3rem;
+  border-radius: 0.25rem;
+  background: hsl(var(--muted));
+  font-size: 0.875em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.docs-prose pre {
+  overflow-x: auto;
+  padding: 1rem;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+  background: hsl(var(--muted) / 0.4) !important;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+/*
+ * Shiki emits both themes as custom properties and no colour of its own, so the
+ * theme is chosen here. Without this the code blocks would be unstyled rather than
+ * wrong, which is why `defaultColor: false` is safe to set.
+ */
+.docs-prose pre span {
+  color: var(--shiki-light);
+}
+
+.dark .docs-prose pre span {
+  color: var(--shiki-dark);
+}
+
+.docs-prose blockquote {
+  padding-left: 1rem;
+  border-left: 2px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+}
+
+.docs-prose table {
+  display: block;
+  overflow-x: auto;
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.docs-prose th {
+  text-align: left;
+  font-weight: 600;
+}
+
+.docs-prose th,
+.docs-prose td {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid hsl(var(--border));
+  vertical-align: top;
+}
+
+.docs-prose thead {
+  background: hsl(var(--muted) / 0.5);
+}
+
+.docs-prose hr {
+  margin-top: 2rem;
+  border-color: hsl(var(--border));
+}
+
+.docs-prose img {
+  border-radius: 0.5rem;
+  border: 1px solid hsl(var(--border));
+}

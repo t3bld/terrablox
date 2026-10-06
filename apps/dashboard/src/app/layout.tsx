@@ -3,14 +3,14 @@ import { Inter } from "next/font/google";
 import "../styles/globals.css";
 // React Flow ships its own stylesheet; without it the graph renders unstyled.
 import "@terrablox/graph/styles.css";
-import { NavigationProgress } from "@/components/layout/navigation-progress";
+import { NavigationProgress } from "@terrablox/ui/navigation-progress";
 import { Providers } from "./providers";
 
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Dashboard - TerraBlox",
-  description: "TerraBlox Dashboard",
+  title: "Dashboard - Terrablox",
+  description: "Terrablox Dashboard",
 };
 
 export default function RootLayout({

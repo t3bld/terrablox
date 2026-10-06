@@ -1,5 +1,6 @@
 "use client";
 
+import { REASONING_EFFORTS } from "@terrablox/agent-harness/runtime-options";
 import { Button } from "@terrablox/ui/button";
 import {
   DropdownMenu,
@@ -12,8 +13,6 @@ import {
 } from "@terrablox/ui/dropdown-menu";
 import { ChevronDown, Cpu, Gauge } from "lucide-react";
 import { useEffect, useState } from "react";
-
-import { REASONING_EFFORTS } from "@/lib/agent/runtime-options";
 
 interface ModelOption {
   id: string;

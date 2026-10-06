@@ -1,6 +1,7 @@
+import { AGENT_KNOWLEDGE } from "@terrablox/agent-harness/knowledge";
+import { PROJECT_AGENT_TOOLS } from "@terrablox/agent-harness/tool-catalogue";
 import { NextResponse } from "next/server";
-
-import { AGENT_KNOWLEDGE } from "@/lib/agent/knowledge";
+import { z } from "zod";
 import {
   AgentSettingsError,
   getAgentSettings,
@@ -10,7 +11,8 @@ import {
   setAgentDisabledTools,
   setAgentRuntime,
 } from "@/lib/agent/settings-service";
-import { PROJECT_AGENT_TOOLS } from "@/lib/agent/tool-catalogue";
+import { parseJsonBody } from "@/lib/api/guard";
+import { routeError } from "@/lib/api/route-error";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 
 /**
@@ -52,16 +54,20 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { instructions?: unknown };
-
+  // `instructions` goes into the agent's system prompt, so the cap matters for the
+  // same reason the chat message cap does: it is persisted and then spent on a model.
+  // The service enforces its own limit too; this is what stops an unbounded body being
+  // buffered before that limit applies.
+  let instructions: string;
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Expected JSON." }, { status: 400 });
+    const body = await parseJsonBody(
+      request,
+      z.object({ instructions: z.string().max(20_000).optional().default("") }),
+    );
+    instructions = body.instructions;
+  } catch (error) {
+    return routeError("agent.settings", error);
   }
-
-  const instructions =
-    typeof body.instructions === "string" ? body.instructions : "";
 
   try {
     await saveAgentSettings(userId, { instructions });
@@ -113,10 +119,16 @@ export async function PATCH(request: Request) {
     allowDestructive?: unknown;
   };
 
+  // The numeric budgets are each clamped to their own min/max by `setAgentRuntime`,
+  // and the id lists are checked against the known catalogues, so the shape check here
+  // exists for the body-size cap rather than to re-state those rules.
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Expected JSON." }, { status: 400 });
+    body = await parseJsonBody(
+      request,
+      z.record(z.string().max(100), z.unknown()),
+    );
+  } catch (error) {
+    return routeError("agent.settings", error);
   }
 
   const strings = (value: unknown) =>

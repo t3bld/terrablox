@@ -24,11 +24,12 @@ coverage
 
 # Secrets and local config.
 #
-# The ** prefixes are not stylistic. A bare `.env` matches the repo root and
-# nothing else, which quietly let apps/dashboard/.env - GitHub client secret,
-# session secret and all - into the build context, and packages/database/.env all
-# the way into the finished image. Nothing in the build reads these files: the
-# .env.example files are documentation and the real values arrive as runtime
+# The ** prefixes are not stylistic, even now that configuration lives in a single
+# root .env. A bare `.env` matches the repo root and nothing else, which once let
+# a per-app env file - GitHub client secret, session secret and all - into the
+# build context. Keeping the recursive form means a stray copy anywhere in the
+# tree cannot leak in either. Nothing in the build reads these files: the
+# .env.example is documentation and the real values arrive as runtime
 # environment variables.
 **/.env
 **/.env.*

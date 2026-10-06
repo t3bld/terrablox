@@ -1,51 +1,75 @@
 import { NextResponse } from "next/server";
-
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import { z } from "zod";
+import {
+  parseJsonBody,
+  requireUserId,
+  requireUserWithLimit,
+} from "@/lib/api/guard";
+import { RATE_LIMITS } from "@/lib/api/rate-limit";
+import { routeError } from "@/lib/api/route-error";
+import * as schema from "@/lib/api/schemas";
+import { audit } from "@/lib/audit/log";
 import {
   createConnection,
   listConnections,
 } from "@/lib/aws/connection-service";
-import { awsRouteError } from "@/lib/aws/route-error";
 
 export async function GET() {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  try {
+    const userId = await requireUserId({ action: "aws.connections.list" });
+    return NextResponse.json(await listConnections(userId));
+  } catch (error) {
+    return routeError("aws.connections.list", error);
   }
-
-  return NextResponse.json(await listConnections(userId));
 }
 
+/**
+ * A new AWS connection.
+ *
+ * `roleArn` was only checked for being a string, which meant an arbitrary value
+ * reached `sts:AssumeRole` and the failure came back as an AWS error rather than as a
+ * field problem. The ARN pattern is the same one the deploy route uses, from
+ * `lib/api/schemas`, so the two cannot drift.
+ *
+ * `region` keeps its default rather than being required: the client only sends one
+ * when the user picked something other than the obvious.
+ */
+const createBody = z.object({
+  label: schema.displayText(120).optional().default(""),
+  roleArn: schema.roleArn,
+  region: schema.region.optional().default("eu-central-1"),
+});
+
 export async function POST(req: Request) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  let body: unknown;
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
-  }
+    const userId = await requireUserWithLimit(
+      "aws.connections.write",
+      RATE_LIMITS.infrastructure,
+    );
 
-  const input = body as Partial<
-    Record<"label" | "roleArn" | "region", unknown>
-  >;
+    const body = await parseJsonBody(req, createBody);
 
-  if (typeof input.roleArn !== "string") {
-    return NextResponse.json({ error: "roleArn is required" }, { status: 400 });
-  }
-
-  try {
     const connection = await createConnection(userId, {
-      label: typeof input.label === "string" ? input.label : "",
-      roleArn: input.roleArn,
-      region: typeof input.region === "string" ? input.region : "eu-central-1",
+      label: body.label,
+      roleArn: body.roleArn,
+      region: body.region,
+    });
+
+    // A credential record being created is worth a row: it is the moment this
+    // installation gains the ability to act in an AWS account.
+    await audit({
+      action: "aws.connection.created",
+      userId,
+      subject: connection.id,
+      detail: { roleArn: body.roleArn, region: body.region },
     });
 
     return NextResponse.json({ connection }, { status: 201 });
   } catch (error) {
-    return awsRouteError(error);
+    // `routeError` rather than `awsRouteError`: it already reports an
+    // `AwsConnectionError` with its own message and a 400, and it is the only one of
+    // the two that understands the `ApiError`s this route now throws for a failed
+    // validation or a spent rate limit.
+    return routeError("aws.connections.write", error);
   }
 }

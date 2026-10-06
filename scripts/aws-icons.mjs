@@ -21,7 +21,9 @@ import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 
 const dest = "apps/dashboard/public/aws-icons";
-const manifest = "apps/dashboard/src/lib/terraform/aws-icon-manifest.ts";
+// The manifest lives with the resolver that reads it, in @terrablox/terraform; the
+// icons it names live in the app, which is what serves them.
+const manifest = "packages/terraform/src/aws-icon-manifest.ts";
 
 /** `AmazonSageMaker` -> `sage-maker`, matching what the resolver expects. */
 const kebab = (name) =>

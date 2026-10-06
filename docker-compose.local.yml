@@ -1,18 +1,67 @@
+# Terrablox - the development database, and nothing else.
+#
+# `pnpm dev` runs the dashboard on the host, so the only thing it needs from Docker is
+# Postgres. That is the whole difference between this file and docker-compose.yml: that
+# one is the full self-hosted stack - database, migration job and dashboard on an
+# internal network with no published database port - and is what somebody deploying
+# Terrablox runs. This one is a database on localhost for somebody editing it.
+#
+#   pnpm db:up      start it
+#   pnpm db:down    stop it
+#   pnpm db:studio  browse it
+#
+# Not the default filename, so every compose call has to pass it explicitly and nobody
+# brings up the production stack by typing `docker compose up` in the wrong directory.
+#
+# Referenced by package.json (db:up, db:down) and by scripts/quickstart.sh, which brings
+# up the `postgres` service by name - so neither the service name nor this filename can
+# be changed without changing those.
+
 services:
   postgres:
-    image: postgres:17-alpine
+    # Digest-pinned like the production file, and pinned to the digest the existing
+    # local container already runs, so bringing this up does not quietly move a
+    # developer's database engine to a new patch release.
+    # Refresh with: docker buildx imagetools inspect postgres:17-alpine
+    image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     container_name: terrablox-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: terrablox
-      POSTGRES_PASSWORD: terrablox
-      POSTGRES_DB: terrablox
+      POSTGRES_USER: ${POSTGRES_USER:-terrablox}
+      # Defaulted rather than required, which is the one place this file deliberately
+      # disagrees with docker-compose.yml. That one uses `:?` and refuses to start
+      # without a real secret, because it publishes a dashboard somebody can reach. This
+      # database listens on 127.0.0.1 only and holds a developer's scratch data, so
+      # demanding a generated password before `pnpm dev` works would be ceremony.
+      #
+      # Whatever this resolves to has to match the password in DATABASE_URL, and it can
+      # only be changed by deleting the volume: Postgres initialises its credentials on
+      # first start and ignores this variable on every start after that.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-terrablox}
+      POSTGRES_DB: ${POSTGRES_DB:-terrablox}
     ports:
-      - "5433:5432"
+      # 5433, not 5432, and bound to the loopback interface. The offset is so this does
+      # not collide with a Postgres somebody already runs natively on the default port -
+      # and DATABASE_URL in .env.example points here. The explicit 127.0.0.1 is what
+      # keeps it off the machine's other interfaces: `5433:5432` alone would publish the
+      # database to anything that can reach this host.
+      - "127.0.0.1:5433:5432"
     volumes:
+      # Compose prefixes this with the project name, so the real volume is
+      # `terrablox_terrablox-pgdata` — which is the one an existing local database is
+      # already using. Renaming it here would leave that data behind and silently start
+      # an empty database.
       - terrablox-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U terrablox -d terrablox"]
+      # Named user and database, not just `pg_isready`: during initialisation Postgres
+      # accepts connections on a temporary internal database before the real one exists,
+      # so the bare check reports ready a moment too early and the first migration
+      # arrives at a database that is not there yet.
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-terrablox} -d ${POSTGRES_DB:-terrablox}",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10

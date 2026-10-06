@@ -1,10 +1,12 @@
+import { GithubRequestError } from "@terrablox/git/client";
 import { NextResponse } from "next/server";
-
+import { z } from "zod";
+import { parseJsonBody } from "@/lib/api/guard";
+import { routeError } from "@/lib/api/route-error";
 import {
   getCurrentUserId,
   getProviderTokenForRequest,
 } from "@/lib/auth/server-helpers";
-import { GithubRequestError } from "@/lib/github/repo-files";
 import { isValidLocalName } from "@/lib/projects/locals";
 import { describeRepoFailure } from "@/lib/projects/repo-failure";
 import {
@@ -51,6 +53,31 @@ export async function GET(
     );
   }
 }
+
+/**
+ * Bounds, not shape — `parseMutation` below owns the shape.
+ *
+ * The point is the length caps. `value` becomes the right-hand side of a Terraform
+ * local or a module argument and is committed to the repository, and `name` becomes an
+ * identifier in that file; neither had a maximum, so a single request could commit a
+ * multi-megabyte expression. `passthrough` because each action carries a different set
+ * of keys and the switch is what decides which.
+ */
+const graphBody = z
+  .object({
+    action: z.string().max(60),
+    name: z.string().max(300).optional(),
+    newName: z.string().max(300).optional(),
+    value: z.string().max(20_000).optional(),
+    moduleId: z.string().max(200).optional(),
+    source: z.string().max(300).optional(),
+    sourceOutput: z.string().max(300).optional(),
+    target: z.string().max(300).optional(),
+    targetInput: z.string().max(300).optional(),
+    input: z.string().max(300).optional(),
+    local: z.string().max(300).optional(),
+  })
+  .passthrough();
 
 function parseMutation(body: unknown): ProjectGraphMutation | null {
   if (typeof body !== "object" || body === null) return null;
@@ -194,7 +221,19 @@ export async function POST(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const mutation = parseMutation(await req.json().catch(() => null));
+  // `parseMutation` above is the real validator — a discriminated switch with a
+  // rejecting default — and it stays that way because it is the only place that knows
+  // the mutation shapes. What this adds is the body-size cap and the per-field length
+  // caps below, neither of which existed: an `add-local` value is committed into the
+  // repository's Terraform, and nothing bounded it.
+  let raw: unknown;
+  try {
+    raw = await parseJsonBody(req, graphBody);
+  } catch (e) {
+    return routeError("project.graph", e);
+  }
+
+  const mutation = parseMutation(raw);
   if (!mutation) {
     return NextResponse.json(
       { error: "Unsupported or incomplete graph change" },

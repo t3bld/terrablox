@@ -1,14 +1,16 @@
+import { AGENT_KNOWLEDGE } from "@terrablox/agent-harness/knowledge";
+import { PROJECT_AGENT_TOOLS } from "@terrablox/agent-harness/tool-catalogue";
 import { NextResponse } from "next/server";
-
+import { z } from "zod";
 import {
   type AgentOverrides,
   getEffectiveAgentSettings,
   parseOverrides,
   saveAgentOverrides,
 } from "@/lib/agent/effective-settings";
-import { AGENT_KNOWLEDGE } from "@/lib/agent/knowledge";
 import { getAgentSettings } from "@/lib/agent/settings-service";
-import { PROJECT_AGENT_TOOLS } from "@/lib/agent/tool-catalogue";
+import { parseJsonBody } from "@/lib/api/guard";
+import { routeError } from "@/lib/api/route-error";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 
@@ -76,12 +78,16 @@ export async function PUT(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // `parseOverrides` and `saveAgentOverrides` own the field rules — they are shared
+  // with the project-create snapshot — so the schema here is shape and size only.
   let body: AgentOverrides;
-
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Expected JSON." }, { status: 400 });
+    body = (await parseJsonBody(
+      request,
+      z.record(z.string().max(100), z.unknown()),
+    )) as AgentOverrides;
+  } catch (error) {
+    return routeError("agent.project-settings", error);
   }
 
   try {

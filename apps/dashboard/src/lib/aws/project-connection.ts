@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Project } from "@terrablox/database";
 
+import { decryptSecret } from "@/lib/crypto/secret-box";
 import { database } from "@/lib/database";
 
 /**
@@ -36,7 +37,7 @@ export type ProjectAwsState =
       credentialMode: string;
       /**
        * When the sign-in runs out, ISO. Null in `assume-role` mode, where there
-       * is no session to keep alive — TerraBlox assumes the role per request.
+       * is no session to keep alive — Terrablox assumes the role per request.
        */
       expiresAt: string | null;
     };
@@ -68,12 +69,23 @@ export async function readProjectAwsState(
 
   // Only `sso` mode has a session that runs out. An assumed role is re-assumed
   // per request, so there is nothing to expire.
-  if (
-    connection.credentialMode === "sso" &&
-    connection.ssoExpiresAt &&
-    connection.ssoExpiresAt.getTime() <= Date.now()
-  ) {
-    return { connected: false, reason: "expired", ...shared };
+  if (connection.credentialMode === "sso") {
+    const ranOut =
+      connection.ssoExpiresAt !== null &&
+      connection.ssoExpiresAt.getTime() <= Date.now();
+
+    // A token we cannot read back is as spent as one that ran out, and the same
+    // sign-in fixes both. Checked here rather than left to the first real call so
+    // the tab offers the button instead of reporting a healthy connection and
+    // then failing — the state a rotated BETTER_AUTH_SECRET leaves behind.
+    // Still no network: this decrypts a column, it does not talk to AWS.
+    const unreadable =
+      !connection.ssoAccessTokenCiphertext ||
+      decryptSecret(connection.ssoAccessTokenCiphertext) === null;
+
+    if (ranOut || unreadable) {
+      return { connected: false, reason: "expired", ...shared };
+    }
   }
 
   return { connected: true, reason: "ok", ...shared };

@@ -1,13 +1,16 @@
 import "server-only";
 
-import { prisma } from "@terrablox/database";
-import { HARNESS_ELEMENTS, HARNESS_PLANES } from "./harness-model";
-import { AGENT_KNOWLEDGE } from "./knowledge";
+import {
+  HARNESS_ELEMENTS,
+  HARNESS_PLANES,
+} from "@terrablox/agent-harness/harness-model";
+import { AGENT_KNOWLEDGE } from "@terrablox/agent-harness/knowledge";
 import {
   DEFAULT_OPERATING_RULES,
   renderOperatingRule,
-} from "./runtime-options";
-import { PROJECT_AGENT_TOOLS } from "./tool-catalogue";
+} from "@terrablox/agent-harness/runtime-options";
+import { PROJECT_AGENT_TOOLS } from "@terrablox/agent-harness/tool-catalogue";
+import { prisma } from "@/lib/database";
 
 /**
  * The harness texts a person can edit without a deploy.
@@ -33,10 +36,14 @@ import { PROJECT_AGENT_TOOLS } from "./tool-catalogue";
  * The defaults stay in the source. An empty row therefore behaves exactly like
  * the code, and clearing an override is a working undo — which is the property
  * that makes this safe to hand to somebody at 6pm.
+ *
+ * Every function here takes a `userId` and scopes to it. This used to be a single
+ * row keyed `default`, which made the wording an installation-wide setting that
+ * any signed-in account could rewrite — and since {@link getHarnessCuration} feeds
+ * the operating rules into the agent's system prompt, that was a way to put text
+ * into other people's agent runs. The app has no role model and no tenant entity,
+ * so per user is the only scope a where-clause can enforce.
  */
-
-/** Fixed key: there is one curation, and it is upsertable without a lookup. */
-const ROW_ID = "default";
 
 export interface CuratedOperation {
   name: string;
@@ -268,10 +275,12 @@ export function mergeHarnessCuration(
  * working when this table is unreachable, and the defaults are by definition a
  * usable answer.
  */
-export async function getHarnessCuration(): Promise<HarnessCuration> {
+export async function getHarnessCuration(
+  userId: string,
+): Promise<HarnessCuration> {
   try {
     const row = await prisma.harnessCuration.findUnique({
-      where: { id: ROW_ID },
+      where: { userId },
     });
 
     return mergeHarnessCuration(
@@ -284,9 +293,11 @@ export async function getHarnessCuration(): Promise<HarnessCuration> {
 }
 
 /** The raw overrides, for the editor to show what is actually stored. */
-export async function getHarnessOverrides(): Promise<HarnessOverrides> {
+export async function getHarnessOverrides(
+  userId: string,
+): Promise<HarnessOverrides> {
   const row = await prisma.harnessCuration.findUnique({
-    where: { id: ROW_ID },
+    where: { userId },
   });
   return parseHarnessOverrides(row?.overrides);
 }
@@ -297,6 +308,10 @@ export async function getHarnessOverrides(): Promise<HarnessOverrides> {
  * A replace rather than a patch, because the editor holds the full set and
  * "reset this field" has to be expressible — with a patch, removing an override
  * would need its own verb.
+ *
+ * `userId` is the primary key, so this can only ever write the caller's own row.
+ * That is the whole authorization story for this endpoint: there is nothing to
+ * check beyond being signed in, because the key is the identity.
  */
 export async function saveHarnessOverrides(
   userId: string,
@@ -308,9 +323,9 @@ export async function saveHarnessOverrides(
   const overrides = JSON.parse(JSON.stringify(clean));
 
   const row = await prisma.harnessCuration.upsert({
-    where: { id: ROW_ID },
-    create: { id: ROW_ID, overrides, updatedBy: userId },
-    update: { overrides, updatedBy: userId },
+    where: { userId },
+    create: { userId, overrides },
+    update: { overrides },
   });
 
   return mergeHarnessCuration(clean, row.updatedAt);

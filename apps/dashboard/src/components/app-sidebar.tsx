@@ -32,6 +32,7 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  Plug,
   User2,
 } from "lucide-react";
 import Link from "next/link";
@@ -100,7 +101,7 @@ export function AppSidebar() {
                       <span className="font-bold text-lg">T</span>
                     </div>
                     <div className="grid flex-1 text-left text-sm leading-tight">
-                      <span className="truncate font-semibold">TerraBlox</span>
+                      <span className="truncate font-semibold">Terrablox</span>
                     </div>
                   </Link>
                 </SidebarMenuButton>
@@ -196,6 +197,15 @@ export function AppSidebar() {
                   <Link href="/agent" className="cursor-pointer">
                     <Bot className="mr-2 h-4 w-4" />
                     Agent
+                  </Link>
+                </DropdownMenuItem>
+                {/* Next to Agent rather than under Account: both are about what an
+                    agent may do to this account's projects, one for ours and one for
+                    whichever agent the person runs in their editor. */}
+                <DropdownMenuItem asChild>
+                  <Link href="/mcp" className="cursor-pointer">
+                    <Plug className="mr-2 h-4 w-4" />
+                    MCP
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>

@@ -3,11 +3,19 @@ generator client {
   previewFeatures = ["fullTextSearch", "multiSchema"]
 }
 
+// One connection string, not two. `directUrl` used to be declared here for
+// pooler setups, but Prisma treats every env() in this block as required: it made
+// DIRECT_URL a variable everyone had to set to the exact same value as
+// DATABASE_URL, and the Docker entrypoint had to copy one into the other to stop
+// the CLI from refusing to start.
+//
+// If you do put a pooler (pgBouncer, Accelerate) in front of Postgres, add
+// `directUrl = env("DIRECT_URL")` back and point it at the direct connection —
+// `prisma migrate` needs one.
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
-  schemas   = ["public"]
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public"]
 }
 
 // =============================================================================
@@ -23,15 +31,116 @@ model User {
   createdAt     DateTime @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
+  /// When this person asked an organisation owner to approve the GitHub App.
+  ///
+  /// Recorded because GitHub will not tell us. A member without admin rights on an
+  /// organisation cannot install the app, so GitHub files a request for an owner to
+  /// approve and returns `setup_action=request` — and a *pending* request is not an
+  /// installation, so it appears in no API this app can reach. Listing installation
+  /// requests needs app-level authentication with the app's private key, which a
+  /// self-hosted instance deliberately does not hold.
+  ///
+  /// Without this the pending state was indistinguishable from "never asked": every
+  /// repository picker said "Terrablox is not installed on GitHub yet", the person
+  /// requested it again, and the loop only ended when an owner happened to approve.
+  ///
+  /// Cleared as soon as an installation is actually observed, which is what makes this
+  /// self-healing rather than a flag that needs its own housekeeping — approval,
+  /// rejection and a request that was abandoned all end the same way: an installation
+  /// appears, or the person asks again and this is overwritten.
+  githubInstallRequestedAt DateTime? @map("github_install_requested_at") @db.Timestamptz(6)
+
   sessions        Session[]
   accounts        Account[]
   awsConnections  AwsConnection[]
   awsSsoLogins    AwsSsoLogin[]
   agentSettings   AgentSettings?
   agentMcpServers AgentMcpServer[]
-  infracost       InfracostSettings?
+  apiTokens       ApiToken[]
+  harnessCuration HarnessCuration?
+  auditEvents     AuditEvent[]
 
   @@map("user")
+  @@schema("public")
+}
+
+/// A personal token that lets something other than a browser act as this user.
+///
+/// Every operation in this app is authenticated by a session cookie, which is the
+/// right default and rules out the one client that now needs in: an MCP host. A
+/// coding agent in somebody's editor cannot hold a cookie, and the `sameSite`
+/// protection that makes cookies safe is exactly what stops it.
+///
+/// So this is the second identity, and it is deliberately narrower than a session.
+/// A session is issued by GitHub's OAuth flow and carries whatever the person can
+/// do; a token is issued by the person, named by them, scoped, expirable, and
+/// individually revocable — which matters because it will end up in a plain-text
+/// config file on a laptop, and those get committed, synced and shared.
+///
+/// Hashed, not encrypted. `SecretBox` exists for MCP auth headers and is the wrong
+/// tool here: those are credentials for somebody else's system and have to be
+/// replayed, so they must be recoverable. This one is only ever compared against,
+/// so the plaintext is shown once at creation and then nowhere — a database dump
+/// reveals no usable token, and there is no key whose loss would matter.
+model ApiToken {
+  id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// What the person calls it, e.g. "VS Code on the laptop".
+  ///
+  /// The only way to tell two tokens apart when deciding which to revoke, since the
+  /// secret itself is unreadable after creation.
+  name String @db.Text
+
+  /// SHA-256 of the token, hex.
+  ///
+  /// Unhashed lookup is the point: a plain hash rather than bcrypt or argon2,
+  /// because this is a 256-bit random string and not a password. There is no
+  /// dictionary to attack and no user-chosen entropy to stretch, so a slow KDF would
+  /// only add latency to every request — and a fast hash keeps the lookup a single
+  /// indexed equality instead of a scan over every row.
+  tokenHash String @unique @map("token_hash") @db.Text
+
+  /// The first characters of the token, shown so a person can recognise it.
+  ///
+  /// Not a secret: the useful part is unrecoverable, and without this the settings
+  /// screen can only offer a name somebody chose months ago.
+  tokenPrefix String @map("token_prefix") @db.Text
+
+  /// What this token may do, coarse: "read" or "write".
+  ///
+  /// Two values rather than a permission per operation. The distinction that matters
+  /// is whether a leak can change somebody's infrastructure, and a scope per tool
+  /// would be a lot of surface for a difference nobody reasons about. "write"
+  /// implies "read".
+  scopes String[] @default(["read"])
+
+  /// When it stops working, or null for a token that never expires.
+  ///
+  /// Nullable rather than required so the honest case is representable: a token for a
+  /// long-lived workstation setup that nobody will remember to rotate is better named
+  /// as such than given a fake expiry the person will extend without thinking.
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+
+  /// When it was last accepted, to the minute.
+  ///
+  /// Coarse on purpose: this is here so somebody can find the token they stopped
+  /// using and revoke it, not to trace activity — that is what the audit trail is
+  /// for. Writing it per request would also mean a write on every read path.
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(6)
+
+  /// Set instead of deleting the row, so a revoked token cannot be recreated by
+  /// chance and so the audit trail keeps something to point at.
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Names are unique per person, so "which one is that?" has an answer.
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("api_tokens")
   @@schema("public")
 }
 
@@ -129,7 +238,7 @@ model Project {
 
   /// The application this infrastructure is being built for, as `owner/name`.
   ///
-  /// Optional and read-only to us: TerraBlox never writes to it. Infrastructure
+  /// Optional and read-only to us: Terrablox never writes to it. Infrastructure
   /// that fits an application has to be derived from how that application is
   /// actually built — its runtime, its ports, its data stores — and that is in
   /// its repository rather than in anything the user would think to type into a
@@ -333,12 +442,16 @@ model ProjectDecision {
 
 /// A connected AWS account, used for reading only.
 ///
-/// No credentials are kept. TerraBlox assumes a role the customer created in
-/// their own account and gets a short-lived session for the length of one
-/// request. The external ID is the secret that makes that safe: without it,
-/// anyone who learned the role ARN could ask TerraBlox to assume it on their
+/// In `assume-role` mode no credentials are kept at all. Terrablox assumes a role
+/// the customer created in their own account and gets a short-lived session for
+/// the length of one request. The external ID is what makes that safe: without
+/// it, anyone who learned the role ARN could ask Terrablox to assume it on their
 /// behalf, which is the confused-deputy problem AWS documents for exactly this
-/// kind of integration.
+/// kind of integration. It is deliberately *not* encrypted — the user is shown it
+/// so they can write it into a trust policy themselves, and on its own it grants
+/// nothing: only this app's AWS principal can present it.
+///
+/// In `sso` mode there is a credential, and it is encrypted. See below.
 model AwsConnection {
   id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId String @map("user_id") @db.Uuid
@@ -349,12 +462,12 @@ model AwsConnection {
   accountId  String? @map("account_id") @db.Text
   roleArn    String  @map("role_arn") @db.Text
   region     String  @default("eu-central-1") @db.Text
-  /// Generated by TerraBlox, must appear in the role's trust policy.
+  /// Generated by Terrablox, must appear in the role's trust policy.
   externalId String  @map("external_id") @db.Text
 
   /// How credentials are obtained: `assume-role` or `sso`.
   ///
-  /// Assuming a role needs TerraBlox to have an AWS identity of its own to be
+  /// Assuming a role needs Terrablox to have an AWS identity of its own to be
   /// named in the trust policy, which a self-hosted instance usually has not.
   /// Those instances keep the IAM Identity Center session instead and exchange
   /// it for role credentials per request, exactly as the AWS CLI does — no app
@@ -363,11 +476,24 @@ model AwsConnection {
 
   /// Set only in `sso` mode. The token is short-lived by design; it is the
   /// reason this mode asks the user to sign in again every few hours.
-  ssoStartUrl    String?   @map("sso_start_url") @db.Text
-  ssoRegion      String?   @map("sso_region") @db.Text
-  ssoRoleName    String?   @map("sso_role_name") @db.Text
-  ssoAccessToken String?   @map("sso_access_token") @db.Text
-  ssoExpiresAt   DateTime? @map("sso_expires_at") @db.Timestamptz(6)
+  ssoStartUrl String? @map("sso_start_url") @db.Text
+  ssoRegion   String? @map("sso_region") @db.Text
+  ssoRoleName String? @map("sso_role_name") @db.Text
+
+  /// The IAM Identity Center access token, AES-256-GCM encrypted.
+  ///
+  /// A bearer credential for every AWS account this person can reach: whoever
+  /// holds it can issue role credentials in any of them until it expires. Short
+  /// lived is not the same as harmless — a database dump taken inside those hours
+  /// would be enough to act as the user in their own accounts — so it is
+  /// encrypted at rest like the MCP headers, and for the same reason.
+  ///
+  /// Undecryptable is treated as expired rather than as an error: a row written
+  /// under an older BETTER_AUTH_SECRET is unusable, and signing in again is the
+  /// cure the user already knows for that state.
+  ssoAccessTokenCiphertext String? @map("sso_access_token_ciphertext") @db.Text
+
+  ssoExpiresAt DateTime? @map("sso_expires_at") @db.Timestamptz(6)
 
   /// Null until the role could actually be assumed. A connection is only
   /// trusted for reads once this is set.
@@ -395,6 +521,10 @@ model AwsConnection {
 /// and the client secret are what redeem the login: anyone holding them could
 /// claim the session the user is about to approve. The row is deleted as soon
 /// as the connection is set up, so the SSO token is never a long-lived secret.
+///
+/// Every value here that can be redeemed is encrypted at rest as well. Deleting
+/// the row promptly bounds who can reach it in the future; encryption bounds what
+/// a copy of the database is worth, and those are different exposures.
 model AwsSsoLogin {
   id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId String @map("user_id") @db.Uuid
@@ -404,16 +534,33 @@ model AwsSsoLogin {
   /// Region the Identity Center instance lives in, not the target region.
   ssoRegion String @map("sso_region") @db.Text
 
-  clientId     String @map("client_id") @db.Text
-  clientSecret String @map("client_secret") @db.Text
-  deviceCode   String @map("device_code") @db.Text
-  /// Seconds AWS asks us to wait between polls.
-  interval     Int    @default(5)
+  /// Not a secret: a public client registration id, which is why it is the one
+  /// field of this row stored as it is.
+  clientId String @map("client_id") @db.Text
 
-  /// Set once the user approves in the browser.
-  accessToken String?  @map("access_token") @db.Text
-  expiresAt   DateTime @map("expires_at") @db.Timestamptz(6)
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// The two halves of the redemption, AES-256-GCM encrypted.
+  ///
+  /// Together they are the login: `CreateToken` takes the client secret and the
+  /// device code and returns the access token, so anyone holding both can claim
+  /// the session the moment the user approves it in their browser. The row is
+  /// deleted within fifteen minutes either way, but "short lived" is a property
+  /// of the window and not of the value, and a dump taken inside it should not be
+  /// enough to hijack an approval.
+  clientSecretCiphertext String @map("client_secret_ciphertext") @db.Text
+  deviceCodeCiphertext   String @map("device_code_ciphertext") @db.Text
+
+  /// Seconds AWS asks us to wait between polls.
+  interval Int @default(5)
+
+  /// Set once the user approves in the browser, AES-256-GCM encrypted.
+  ///
+  /// The same token that later moves to the connection row, so it is protected
+  /// the same way here — it is at its most valuable in exactly this window,
+  /// before anything has narrowed what it may do.
+  accessTokenCiphertext String? @map("access_token_ciphertext") @db.Text
+
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -444,7 +591,7 @@ model ProjectChatMessage {
 
 /// A repository a module was imported from.
 ///
-/// `userId` is NULL for the catalogue TerraBlox ships with. Those rows belong to
+/// `userId` is NULL for the catalogue Terrablox ships with. Those rows belong to
 /// the installation rather than to a person: every user sees them, nobody owns
 /// them, and no user can edit or delete them. Read paths therefore have to match
 /// `userId = <me> OR userId IS NULL`, while write and delete paths keep matching
@@ -492,7 +639,7 @@ model TerraformModuleSource {
 
 /// One analysed ref of a repository, or one of its submodule folders.
 ///
-/// `userId` is NULL for the catalogue TerraBlox ships with; see
+/// `userId` is NULL for the catalogue Terrablox ships with; see
 /// {@link TerraformModuleSource} for what that implies for queries.
 model TerraformModule {
   id                         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -835,45 +982,82 @@ model AgentSettings {
 /// *not* here is deliberate: which operations exist, their JSON schemas, and the
 /// enforcement class of each harness element stay in code, because those are
 /// claims about what the code does rather than preferences about wording.
+/// One person's harness wording overrides.
+///
+/// Keyed by user, and that is the whole point. This used to be a single row with
+/// a fixed id, which made the harness an installation-wide setting that any
+/// signed-in account could rewrite — and because `getHarnessCuration` feeds the
+/// operating rules straight into the agent's system prompt, that was a way to put
+/// text into *other* people's agent runs. There is no role model here and no
+/// tenant entity, so per user is the only scope that is actually enforceable.
+///
+/// An absent row means "the code defaults", exactly as an empty override object
+/// does, so a new user needs nothing created for them.
 model HarnessCuration {
-  /// Always `default`. A fixed key rather than a sequence, so the row is
-  /// upsertable without a lookup and there can only ever be one.
-  id        String   @id @default("default")
+  userId    String   @id @map("user_id") @db.Uuid
   overrides Json     @default("{}") @db.JsonB
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
-  /// Who last saved, kept for provenance rather than for access control.
-  updatedBy String?  @map("updated_by") @db.Uuid
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("harness_curation")
   @@schema("public")
 }
 
-/// The user's own Infracost credential.
+/// Security-relevant things that happened, for reading after the fact.
 ///
-/// Deliberately per user and never a single shared key: pricing runs against
-/// that person's Infracost account, so one central key would put every user's
-/// estimates on one quota and one invoice, and would make TerraBlox the party
-/// responsible for a credential it has no business owning.
-model InfracostSettings {
-  userId String @id @map("user_id") @db.Uuid
+/// Separate from `ProjectOperation`, which records what the agent did to a graph:
+/// that is product history, shown in the UI and scoped to a project. This is the
+/// answer to "who used which credential, and when", which nothing else here could
+/// answer — an app holding OAuth tokens with `repo` + `workflow` and encrypted AWS
+/// credentials needs that question to be answerable.
+///
+/// Append-only by convention: nothing in the application updates or deletes a row.
+/// `userId` is nullable and set null on delete, so removing an account does not
+/// erase the trail of what that account did — the rows outlive the user, which is
+/// the property that makes them worth keeping at all.
+///
+/// Deliberately not a foreign-keyed enum: `action` is a string so a new event type
+/// is one call site rather than a migration, and an unrecognised value in an old
+/// row still reads.
+model AuditEvent {
+  id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
 
-  /// Encrypted with secret-box. Never sent to the browser; the UI only ever
-  /// learns whether a key exists and the last few characters of it.
-  apiKey String @map("api_key") @db.Text
+  /// Null for events with no authenticated actor, e.g. a rejected request.
+  userId String? @map("user_id") @db.Uuid
+
+  /// Dotted and coarse, e.g. `auth.denied`, `aws.credentials.issued`,
+  /// `deploy.run.started`, `harness.updated`.
+  action String @db.Text
+
+  /// What it happened to, when that is a single row: a project or connection id.
+  subject String? @db.Text
+
+  /// Whether the attempt succeeded. A denial is the more interesting row.
+  outcome String @default("ok") @db.Text
+
+  /// Request context. Only present when the app is behind a proxy it trusts.
+  ip        String? @db.Text
+  userAgent String? @map("user_agent") @db.Text
+
+  /// Anything else worth keeping, e.g. `{"reason":"not-owner"}`. Never a secret:
+  /// this table is read by people who are not necessarily the actor.
+  detail Json @default("{}") @db.JsonB
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  @@map("infracost_settings")
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("audit_events")
   @@schema("public")
 }
 
 /// A remote MCP server the agent may call on this user's behalf.
 ///
 /// Remote only. A local (stdio) server would be a command executed on the
-/// TerraBlox host, which is remote code execution for anyone with an account,
+/// Terrablox host, which is remote code execution for anyone with an account,
 /// so that transport is deliberately not modelled at all rather than modelled
 /// and disabled.
 model AgentMcpServer {

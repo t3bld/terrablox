@@ -42,15 +42,38 @@ export async function getUserGithubToken(): Promise<string | null> {
   const userId = await getCurrentUserId();
   if (!userId) return null;
 
+  return githubTokenForUser(userId);
+}
+
+/**
+ * The same token, for a caller that has a user id but no request to read.
+ *
+ * This is what makes a non-browser client possible at all. Every mutating operation
+ * here commits Terraform, which needs the person's GitHub token, and the only path to
+ * that token used to go through `headers()` — i.e. through a session cookie. An MCP
+ * host has no cookie, so without this there would be nothing for it to do.
+ *
+ * `getAccessToken` accepts `userId` in its body and resolves the linked account
+ * directly, refresh included. Verified against a real account: it returns a `ghu_`
+ * user-to-server token with no headers passed at all.
+ *
+ * The caller is responsible for having established *which* user this is. Handed the
+ * wrong id, this hands back the wrong person's credentials — which is why it takes a
+ * bare string and lives next to the function that authenticates.
+ */
+export async function githubTokenForUser(
+  userId: string,
+): Promise<string | null> {
+  if (!isGithubConfigured) return null;
+
   try {
     const { accessToken } = await auth.api.getAccessToken({
-      body: { providerId: "github" },
-      headers: headers(),
+      body: { providerId: "github", userId },
     });
 
     return accessToken ?? null;
   } catch {
-    // Not signed in, or no GitHub account linked to this user.
+    // No GitHub account linked to this user, or the refresh was refused.
     return null;
   }
 }

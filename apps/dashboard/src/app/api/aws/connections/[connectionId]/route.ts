@@ -1,21 +1,36 @@
 import { NextResponse } from "next/server";
 
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import { requireUserWithLimit } from "@/lib/api/guard";
+import { RATE_LIMITS } from "@/lib/api/rate-limit";
+import { notFound, routeError } from "@/lib/api/route-error";
+import { audit } from "@/lib/audit/log";
 import { deleteConnection } from "@/lib/aws/connection-service";
 
 export async function DELETE(
   _req: Request,
   { params }: { params: { connectionId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  try {
+    const userId = await requireUserWithLimit(
+      "aws.connections.write",
+      RATE_LIMITS.infrastructure,
+    );
 
-  const removed = await deleteConnection(userId, params.connectionId);
-  if (!removed) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+    // Scoped to the caller inside the service: `where: { id, userId }`, so another
+    // user's connection id matches nothing rather than being deleted.
+    const removed = await deleteConnection(userId, params.connectionId);
+    if (!removed) return notFound();
 
-  return NextResponse.json({ ok: true });
+    // Losing the ability to reach an account is worth a row for the same reason
+    // gaining it is: it explains a later "no connected account" without guesswork.
+    await audit({
+      action: "aws.connection.deleted",
+      userId,
+      subject: params.connectionId,
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return routeError("aws.connections.write", error);
+  }
 }

@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 #
-# TerraBlox quick start.
+# Terrablox quick start.
 #
 # Brings a fresh clone to a running dev environment:
-#   prerequisites -> env files -> dependencies -> database -> migrations -> dev server
+#   prerequisites -> .env -> dependencies -> database -> migrations -> dev server
 #
-# Safe to re-run: existing .env files and data are never overwritten.
+# Safe to re-run: an existing .env and existing data are never overwritten.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-APP_ENV="apps/dashboard/.env"
-APP_ENV_EXAMPLE="apps/dashboard/.env.example"
-# The Prisma CLI resolves env vars relative to the schema, so it needs its own
-# file. It holds only the connection string - no secrets are duplicated.
-DB_ENV="packages/database/.env"
-DB_ENV_EXAMPLE="packages/database/.env.example"
+# One env file for the whole repo. Next reads it via apps/dashboard/next.config.mjs,
+# the Prisma CLI finds it because `pnpm db:*` run from here, and docker compose
+# reads it natively.
+ENV_FILE=".env"
+ENV_EXAMPLE=".env.example"
+# Where configuration used to live, one file per consumer. Migrated on sight.
+LEGACY_ENV_FILES="apps/dashboard/.env packages/database/.env"
 DB_SERVICE="postgres"
 # Not the default filename, so every compose call must pass it explicitly.
 COMPOSE_FILE="docker-compose.local.yml"
@@ -44,7 +45,7 @@ die()   { printf '\n%serror:%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
 
 usage() {
 	cat <<EOF
-${BOLD}TerraBlox quick start${RESET}
+${BOLD}Terrablox quick start${RESET}
 
 Usage: pnpm quickstart [options]
        ./scripts/quickstart.sh [options]
@@ -53,7 +54,7 @@ Options:
   -n, --no-dev   Set everything up but do not start the dev server.
   -h, --help     Show this help.
 
-Checks prerequisites, creates the .env files (generating a BETTER_AUTH_SECRET),
+Checks prerequisites, creates the root .env (generating a BETTER_AUTH_SECRET),
 installs dependencies, starts PostgreSQL in Docker, applies migrations and
 finally runs \`pnpm dev\`.
 EOF
@@ -103,10 +104,9 @@ ok "docker daemon is running"
 
 # --- 2. env files -----------------------------------------------------------
 
-step "Preparing environment files"
+step "Preparing the environment file"
 
-[ -f "$APP_ENV_EXAMPLE" ] || die "$APP_ENV_EXAMPLE is missing."
-[ -f "$DB_ENV_EXAMPLE" ] || die "$DB_ENV_EXAMPLE is missing."
+[ -f "$ENV_EXAMPLE" ] || die "$ENV_EXAMPLE is missing."
 
 # Reads the raw value of KEY from an env file, stripping surrounding quotes.
 read_env_var() {
@@ -147,29 +147,49 @@ ensure_env_file() {
 	ok "created $target"
 }
 
-ensure_env_file "$APP_ENV_EXAMPLE" "$APP_ENV"
-ensure_env_file "$DB_ENV_EXAMPLE" "$DB_ENV"
+ensure_env_file "$ENV_EXAMPLE" "$ENV_FILE"
 
-# The session secret lives only in the dashboard env; nothing else reads it.
-if [ -z "$(read_env_var "$APP_ENV" BETTER_AUTH_SECRET)" ]; then
-	write_env_var "$APP_ENV" BETTER_AUTH_SECRET \
+# Configuration used to be split across apps/dashboard/.env and
+# packages/database/.env, with DATABASE_URL duplicated between them and only a
+# warning to keep the two in sync. Anyone updating from that layout gets their
+# values lifted into the root file rather than a fresh template and a puzzle.
+for legacy in $LEGACY_ENV_FILES; do
+	[ -f "$legacy" ] || continue
+
+	carried=0
+	for key in BETTER_AUTH_SECRET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
+		BETTER_AUTH_URL NEXT_PUBLIC_APP_URL DATABASE_URL TERRABLOX_BUILTIN_MODULES; do
+		legacy_value="$(read_env_var "$legacy" "$key")"
+		[ -n "$legacy_value" ] || continue
+		# The root file wins where it already has a value; this only fills gaps.
+		[ -z "$(read_env_var "$ENV_FILE" "$key")" ] || continue
+		write_env_var "$ENV_FILE" "$key" "$legacy_value"
+		carried=$((carried + 1))
+	done
+
+	[ "$carried" -eq 0 ] || ok "carried $carried value(s) from $legacy into $ENV_FILE"
+	warn "$legacy is no longer read - delete it once you have checked $ENV_FILE"
+done
+
+if [ -z "$(read_env_var "$ENV_FILE" BETTER_AUTH_SECRET)" ]; then
+	write_env_var "$ENV_FILE" BETTER_AUTH_SECRET \
 		"$(node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))')"
-	ok "generated BETTER_AUTH_SECRET in $APP_ENV"
+	ok "generated BETTER_AUTH_SECRET in $ENV_FILE"
 else
 	muted "BETTER_AUTH_SECRET already set, left unchanged"
-fi
-
-if [ "$(read_env_var "$APP_ENV" DATABASE_URL)" != "$(read_env_var "$DB_ENV" DATABASE_URL)" ]; then
-	warn "DATABASE_URL differs between $APP_ENV and $DB_ENV"
-	info "the app and the Prisma CLI would talk to different databases"
 fi
 
 # --- 2b. GitHub sign-in -----------------------------------------------------
 
 # Not optional, and this used to say it was. Email and password sign-in was
-# removed, so GitHub OAuth is now the only way in: without these two values the
-# script finishes happily and the login page cannot do anything. Asking here is
-# the difference between a five-minute setup and a puzzle.
+# removed, so signing in through GitHub is the only way in: without these values
+# the script finishes happily and the login page cannot do anything. Asking here
+# is the difference between a five-minute setup and a puzzle.
+#
+# A GitHub *App*, not an OAuth App. Both hand out a client id and secret, so both
+# would satisfy the check below, but only a GitHub App can be granted individual
+# repositories — and the repository listing now asks the installation endpoints,
+# which an OAuth token cannot use. docs/quickstart.md has the registration steps.
 
 # Asks for one env var and writes it, leaving an existing value alone.
 # prompt_env_var FILE KEY LABEL [secret]
@@ -205,25 +225,26 @@ prompt_env_var() {
 }
 
 github_ready() {
-	[ -n "$(read_env_var "$APP_ENV" GITHUB_CLIENT_ID)" ] &&
-		[ -n "$(read_env_var "$APP_ENV" GITHUB_CLIENT_SECRET)" ]
+	[ -n "$(read_env_var "$ENV_FILE" GITHUB_CLIENT_ID)" ] &&
+		[ -n "$(read_env_var "$ENV_FILE" GITHUB_CLIENT_SECRET)" ]
 }
 
 if github_ready; then
 	ok "GitHub sign-in is configured"
 else
 	step "Configuring GitHub sign-in (required)"
-	info "Client ID and client secret of a GitHub OAuth app are needed."
+	info "Client ID and client secret of a GitHub App are needed."
+	muted "register one: https://github.com/settings/apps/new - see docs/quickstart.md"
 	printf '\n'
 
-	prompt_env_var "$APP_ENV" GITHUB_CLIENT_ID "Client ID:      " || true
-	prompt_env_var "$APP_ENV" GITHUB_CLIENT_SECRET "Client secret:  " secret || true
+	prompt_env_var "$ENV_FILE" GITHUB_CLIENT_ID "Client ID:      " || true
+	prompt_env_var "$ENV_FILE" GITHUB_CLIENT_SECRET "Client secret:  " secret || true
 
 	if github_ready; then
 		ok "GitHub sign-in is configured"
 	else
 		warn "GitHub sign-in is NOT configured - nobody can sign in yet"
-		info "add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to $APP_ENV, then restart the dev server"
+		info "add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to $ENV_FILE, then restart the dev server"
 	fi
 fi
 
@@ -278,12 +299,12 @@ ok "schema is up to date"
 
 # --- 5b. built-in module catalogue ------------------------------------------
 
-# TerraBlox ships with ~50 standard AWS modules (terraform-aws-modules forks).
+# Terrablox ships with ~50 standard AWS modules (terraform-aws-modules forks).
 # They need a GitHub token (no scopes required for public repos) and a few
 # minutes to import. The user gets to decide.
 step "Built-in module catalogue"
 
-builtin_flag="$(read_env_var "$APP_ENV" TERRABLOX_BUILTIN_MODULES)"
+builtin_flag="$(read_env_var "$ENV_FILE" TERRABLOX_BUILTIN_MODULES)"
 
 if [ "$builtin_flag" = "false" ] || [ "$builtin_flag" = "0" ]; then
 	muted "TERRABLOX_BUILTIN_MODULES is false - skipping"
@@ -307,7 +328,7 @@ elif [ ! -t 0 ]; then
 else
 	# Interactive terminal: ask the user.
 	printf '\n'
-	printf '    %sImport TerraBlox best practice terraform modules catalogue? [Y/n]%s ' "$BOLD" "$RESET"
+	printf '    %sImport Terrablox best practice terraform modules catalogue? [Y/n]%s ' "$BOLD" "$RESET"
 	read -r answer </dev/tty || answer=""
 	case "$answer" in
 		[nN]|[nN][oO])
@@ -343,7 +364,7 @@ step "Configuration"
 
 summarise_var() {
 	local key="$1" need="$2" note="$3" value
-	value="$(read_env_var "$APP_ENV" "$key")"
+	value="$(read_env_var "$ENV_FILE" "$key")"
 
 	if [ -n "$value" ]; then
 		ok "$key"
@@ -362,7 +383,7 @@ summarise_var GITHUB_CLIENT_ID required "nobody can sign in"
 summarise_var GITHUB_CLIENT_SECRET required "nobody can sign in"
 
 printf '\n'
-muted "Edit $APP_ENV and restart the dev server to change any of these."
+muted "Edit $ENV_FILE and restart the dev server to change any of these."
 
 # --- 6. dev server ----------------------------------------------------------
 

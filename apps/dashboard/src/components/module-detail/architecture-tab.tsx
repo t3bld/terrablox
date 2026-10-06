@@ -4,6 +4,10 @@ import {
   ArchitectureDiagram,
   type ArchitectureDiagramNode,
 } from "@terrablox/graph";
+import type { ArchitectureModuleCall } from "@terrablox/terraform/architecture-graph";
+import { buildArchitecture } from "@terrablox/terraform/architecture-graph";
+import { layoutArchitecture } from "@terrablox/terraform/architecture-layout";
+import { parseModuleSourceRef } from "@terrablox/terraform/module-link";
 import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
 import { Skeleton } from "@terrablox/ui/skeleton";
@@ -24,69 +28,27 @@ import {
   parseGraphLayout,
   pruneGraphLayout,
 } from "@/lib/graph-layout";
-import type {
-  ArchitectureModuleCall,
-  NestedModuleData,
-} from "@/lib/terraform/architecture-graph";
 import {
-  buildArchitecture,
-  resourceAddress,
-} from "@/lib/terraform/architecture-graph";
-import { layoutArchitecture } from "@/lib/terraform/architecture-layout";
-import { parseModuleSourceRef } from "@/lib/terraform/module-link";
+  boxDetail,
+  labelFor,
+  moduleHrefs,
+  type NestedResponse,
+  neighboursOf,
+  nestedModuleData,
+  repositoryUrl,
+  resolveAddress as resolveDiagramAddress,
+  toModuleCalls,
+} from "@/lib/module-library/architecture-view";
+import type {
+  ModuleDependencyDto,
+  ModuleReferenceDto,
+  ModuleResourceDto,
+} from "@/lib/module-library/types";
 import {
   ConnectionList,
   DetailRow,
   GraphDetailPanel,
 } from "./graph-detail-panel";
-import type {
-  ModuleDependencyDto,
-  ModuleReferenceDto,
-  ModuleResourceDto,
-} from "./types";
-
-/**
- * The subset of a resource the architecture endpoint returns. Narrower than
- * `ModuleResourceDto` on purpose: claiming the full shape would let a reader of
- * this file use `id`, which the endpoint does not send.
- */
-type NestedResource = Pick<
-  ModuleResourceDto,
-  | "kind"
-  | "resourceType"
-  | "resourceName"
-  | "providerName"
-  | "providerUrl"
-  | "sourceFile"
-  | "conditionalOn"
-  | "resourceUrl"
-  | "resourceDescription"
->;
-
-interface NestedModule {
-  id: string;
-  name: string;
-  versionTag: string | null;
-  resources: NestedResource[];
-  references: ModuleReferenceDto[];
-  /** Output names and expressions, so a nested call can be placed in a subnet. */
-  outputs?: { name: string; valueExpression: string | null }[];
-  moduleCalls: {
-    name: string;
-    source: string | null;
-    sourceKind: string | null;
-    linkedModule: {
-      moduleId: string;
-      exactVersion: boolean;
-      requestedRef: string | null;
-    } | null;
-  }[];
-}
-
-interface NestedResponse {
-  rootId: string;
-  modules: Record<string, NestedModule>;
-}
 
 /**
  * Opening the first level automatically is right for a wrapper that draws
@@ -131,47 +93,6 @@ const KIND_LABELS: Record<string, string> = {
   service: "Service",
 };
 
-/**
- * Terraform source addresses include a forwarding prefix, subdirectory and
- * ref; the repository itself is the useful destination for a reader.
- */
-function repositoryUrl(source: string | null | undefined): string | null {
-  const withoutForwarder = source?.trim().replace(/^[a-z][a-z0-9+.-]*::/i, "");
-  if (!withoutForwarder?.startsWith("http")) return null;
-
-  const withoutQuery = withoutForwarder.split("?", 1)[0] ?? "";
-  const schemeEnd = withoutQuery.indexOf("://") + 3;
-  const subdirectory = withoutQuery.indexOf("//", schemeEnd);
-
-  return subdirectory === -1
-    ? withoutQuery
-    : withoutQuery.slice(0, subdirectory);
-}
-
-/**
- * Where a box on the diagram came from: which module declared it, and under
- * what address inside that module.
- *
- * Nested boxes carry their call path in front of every address, so
- * `module.vpc/aws_subnet.private` is a subnet belonging to whatever
- * `module "vpc"` resolves to — not to the module being viewed. Splitting that
- * apart is what lets the panel show the same detail for a box three levels
- * down as for one the module declares itself.
- */
-interface ResolvedAddress {
-  /** The address as Terraform would write it, without the call path. */
-  local: string;
-  /** Name of the module that declares it, when that is not the one on screen. */
-  fromModule?: string;
-  /** Link to that module, when it was imported. */
-  fromModuleId?: string;
-  resource?: NestedResource;
-  /** For a `module "x"` box, the source the call points at. */
-  moduleSource?: string;
-  /** How to read that source; without it a registry address parses wrongly. */
-  moduleSourceKind?: string | null;
-}
-
 export function ArchitectureTab({
   moduleId,
   resources,
@@ -213,49 +134,13 @@ export function ArchitectureTab({
     };
   }, [moduleId]);
 
-  const moduleCalls = useMemo<ArchitectureModuleCall[]>(
-    () =>
-      (dependencies ?? [])
-        .filter((d) => d.source)
-        .map((d) => ({
-          name: d.name,
-          source: d.source as string,
-          sourceKind: d.sourceKind,
-          moduleId: d.linkedModule?.moduleId,
-          requestedRef:
-            d.linkedModule && !d.linkedModule.exactVersion
-              ? d.linkedModule.requestedRef
-              : null,
-        })),
+  const moduleCalls = useMemo(
+    () => toModuleCalls(dependencies),
     [dependencies],
   );
 
   const moduleFor = useCallback(
-    (call: ArchitectureModuleCall): NestedModuleData | null => {
-      const target = call.moduleId ? nested?.modules[call.moduleId] : null;
-      if (!target) return null;
-
-      return {
-        id: target.id,
-        name: target.name,
-        versionTag: target.versionTag,
-        resources: target.resources,
-        references: target.references,
-        outputs: target.outputs,
-        moduleCalls: target.moduleCalls
-          .filter((c) => c.source)
-          .map((c) => ({
-            name: c.name,
-            source: c.source as string,
-            sourceKind: c.sourceKind,
-            moduleId: c.linkedModule?.moduleId,
-            requestedRef:
-              c.linkedModule && !c.linkedModule.exactVersion
-                ? c.linkedModule.requestedRef
-                : null,
-          })),
-      };
-    },
+    (call: ArchitectureModuleCall) => nestedModuleData(call, nested),
     [nested],
   );
 
@@ -317,164 +202,26 @@ export function ArchitectureTab({
     if (selectedId && !nodesById.has(selectedId)) setSelectedId(null);
   }, [selectedId, nodesById]);
 
-  /**
-   * Splits a diagram address into the module that declares it and the address
-   * inside that module, then finds the resource behind it.
-   *
-   * The call path is walked rather than guessed: the same repository reached
-   * through two different calls is two boxes, and only the chain of names says
-   * which one a given address belongs to.
-   */
   const resolveAddress = useCallback(
-    (prefixed: string): ResolvedAddress => {
-      const segments = prefixed.split("/");
-      const local = segments.pop() ?? prefixed;
-
-      let currentId = nested?.rootId;
-      let currentName: string | undefined;
-
-      for (const segment of segments) {
-        const call = currentId
-          ? nested?.modules[currentId]?.moduleCalls.find(
-              (candidate) => `module.${candidate.name}` === segment,
-            )
-          : undefined;
-
-        // An unresolvable chain still yields the local address, which is more
-        // useful than refusing to say anything about the box.
-        if (!call?.linkedModule) return { local };
-
-        currentId = call.linkedModule.moduleId;
-        currentName = nested?.modules[currentId]?.name;
-      }
-
-      const isRoot = segments.length === 0;
-      const pool: NestedResource[] | undefined = isRoot
-        ? resources
-        : currentId
-          ? nested?.modules[currentId]?.resources
-          : undefined;
-
-      const declaring = isRoot ? undefined : currentId;
-      const calls = local.startsWith("module.")
-        ? isRoot
-          ? (dependencies ?? []).map((d) => ({
-              name: d.name,
-              source: d.source,
-              sourceKind: d.sourceKind,
-            }))
-          : declaring
-            ? nested?.modules[declaring]?.moduleCalls
-            : undefined
-        : undefined;
-
-      const call = calls?.find((entry) => `module.${entry.name}` === local);
-
-      return {
-        local,
-        fromModule: isRoot ? undefined : currentName,
-        fromModuleId: declaring,
-        resource: pool?.find(
-          (candidate) => resourceAddress(candidate) === local,
-        ),
-        moduleSource: call?.source ?? undefined,
-        moduleSourceKind: call?.sourceKind ?? undefined,
-      };
-    },
+    (prefixed: string) =>
+      resolveDiagramAddress(prefixed, { nested, resources, dependencies }),
     [nested, resources, dependencies],
   );
 
-  /** A box's name as the reader sees it on the canvas, for the neighbour lists. */
-  const labelFor = useCallback(
-    (id: string) => {
-      const node = nodesById.get(id);
-      if (!node) return id;
-      return node.sublabel ? `${node.label} · ${node.sublabel}` : node.label;
-    },
+  const labelOf = useCallback(
+    (id: string) => labelFor(nodesById, id),
     [nodesById],
   );
 
-  /**
-   * Neighbours of the selected box, read from the edges actually drawn. Unlike
-   * the Connections view there is no filter to look past here: a connection
-   * missing from this list is missing because it lives inside a module that is
-   * still collapsed, and the panel says so rather than listing boxes that are
-   * nowhere on screen.
-   */
-  const connections = useMemo(() => {
-    if (!selectedId) return { feeds: [], fedBy: [] };
+  const connections = useMemo(
+    () => neighboursOf(graph.edges, selectedId, labelOf),
+    [selectedId, graph.edges, labelOf],
+  );
 
-    const build = (
-      matches: (edge: (typeof graph.edges)[number]) => boolean,
-    ) => {
-      const seen = new Map<
-        string,
-        { address: string; label: string; note?: string }
-      >();
-
-      for (const edge of graph.edges) {
-        if (!matches(edge)) continue;
-        const other = edge.source === selectedId ? edge.target : edge.source;
-        if (seen.has(other)) continue;
-
-        seen.set(other, {
-          address: other,
-          label: labelFor(other),
-          // Routed connections would otherwise look invented: nothing in the
-          // Terraform says CloudFront points at a load balancer, an
-          // `aws_cloudfront_vpc_origin` between them does.
-          note: edge.via?.length
-            ? `via ${edge.via.map((address) => address.split("/").pop()).join(" → ")}`
-            : undefined,
-        });
-      }
-
-      return [...seen.values()].sort((a, b) =>
-        a.label.localeCompare(b.label, "en", { numeric: true }),
-      );
-    };
-
-    return {
-      feeds: build((edge) => edge.source === selectedId),
-      fedBy: build((edge) => edge.target === selectedId),
-    };
-  }, [selectedId, graph.edges, labelFor]);
-
-  /**
-   * What the panel has to show about the selected box, split by what it is.
-   *
-   * A box is not always one resource: an HTTP API is five Terraform blocks
-   * drawn as one tile, and a wrapper's own resources are folded into the module
-   * call they configure. The tile shows only a "×5", which tells the reader
-   * that something was folded but not what — this is where they find out.
-   */
-  const detail = useMemo(() => {
-    if (!selected) return null;
-
-    const all = selected.addresses.map(resolveAddress);
-
-    // A module call's first address is the call itself; anything after it was
-    // folded in from the caller.
-    const call = selected.isModuleCall ? all[0] : undefined;
-    const rest = selected.isModuleCall ? all.slice(1) : all;
-
-    return {
-      call,
-      resources: rest,
-      /** Set only when the box stands for exactly one resource. */
-      only: !call && rest.length === 1 ? rest[0] : undefined,
-      declaredBy: call?.fromModule ?? rest[0]?.fromModule,
-      /**
-       * The undrawn resources serving this box. Resolved through the same call
-       * path as the addresses above, so a role inside a nested module reports
-       * the file it is actually declared in.
-       */
-      supporting: (selected.attachments ?? []).map((attachment) => ({
-        ...attachment,
-        entries: attachment.addresses.map(resolveAddress),
-      })),
-    };
-  }, [selected, resolveAddress]);
+  const detail = useMemo(
+    () => boxDetail(selected, resolveAddress),
+    [selected, resolveAddress],
+  );
 
   /**
    * The GitHub URL for one of this module's files, or null.
@@ -498,20 +245,10 @@ export function ArchitectureTab({
     });
   }, []);
 
-  // Only module calls that resolved to an imported module become links, so a
-  // tile never promises a page that does not exist.
-  const hrefByAddress = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const dependency of dependencies ?? []) {
-      if (dependency.linkedModule) {
-        map.set(
-          `module.${dependency.name}`,
-          `/modules/${dependency.linkedModule.moduleId}#architecture`,
-        );
-      }
-    }
-    return map;
-  }, [dependencies]);
+  const hrefByAddress = useMemo(
+    () => moduleHrefs(dependencies),
+    [dependencies],
+  );
 
   const nodes = useMemo<ArchitectureDiagramNode[]>(
     () =>

@@ -4,6 +4,7 @@ import { Skeleton } from "@terrablox/ui/skeleton";
 import { AlertCircle, FileText, Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { resolveMarkdownUrl } from "@/lib/markdown/safe-url";
 
 interface ReadmeTabProps {
   markdown: string | null;
@@ -23,24 +24,6 @@ function EmptyState(props: {
       <div className="text-sm text-muted-foreground">{props.children}</div>
     </div>
   );
-}
-
-/**
- * Relative image and link targets in a README are resolved against the repo,
- * not against this app, so they have to be rewritten to survive rendering.
- */
-function resolveUrl(src: string, base: string | null | undefined) {
-  if (!base) return src;
-  if (/^(https?:|data:|#|mailto:)/i.test(src)) return src;
-
-  try {
-    return new URL(
-      src.replace(/^\.\//, ""),
-      `${base.replace(/\/$/, "")}/`,
-    ).toString();
-  } catch {
-    return src;
-  }
 }
 
 function markdownForPreview(markdown: string): string {
@@ -118,10 +101,14 @@ export function ReadmeTab({
       >
         <ReactMarkdown
           components={{
+            // A README comes from a repository somebody else wrote, so both of
+            // these run the target through a scheme allowlist. An unsafe URL yields
+            // no `href`/`src` rather than a broken one: the text still renders, the
+            // link just does nothing.
             a: ({ href, children, ...rest }) => (
               <a
                 {...rest}
-                href={resolveUrl(href ?? "", imageBaseUrl)}
+                href={resolveMarkdownUrl(href ?? "", imageBaseUrl, "link")}
                 rel="noreferrer noopener"
                 target="_blank"
               >
@@ -134,9 +121,10 @@ export function ReadmeTab({
                 {...rest}
                 alt={alt ?? ""}
                 loading="lazy"
-                src={resolveUrl(
+                src={resolveMarkdownUrl(
                   typeof src === "string" ? src : "",
                   imageBaseUrl,
+                  "image",
                 )}
               />
             ),

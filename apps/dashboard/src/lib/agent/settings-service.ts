@@ -1,11 +1,7 @@
 import "server-only";
 
 import type { MCPServerConfig } from "@github/copilot-sdk";
-import { prisma } from "@terrablox/database";
-
-import { decryptSecret, encryptSecret } from "@/lib/crypto/secret-box";
-import { isKnownKnowledge } from "./knowledge";
-import { listMcpTools, McpClientError, type McpToolInfo } from "./mcp-client";
+import { isKnownKnowledge } from "@terrablox/agent-harness/knowledge";
 import {
   APP_REPO_FILE_CHARS_MAX,
   APP_REPO_FILE_CHARS_MIN,
@@ -25,8 +21,12 @@ import {
   TOOL_CALL_BUDGET_MIN,
   TURN_TIMEOUT_MAX_SECONDS,
   TURN_TIMEOUT_MIN_SECONDS,
-} from "./runtime-options";
-import { isKnownTool } from "./tool-catalogue";
+} from "@terrablox/agent-harness/runtime-options";
+import { isKnownTool } from "@terrablox/agent-harness/tool-catalogue";
+import { decryptSecret, encryptSecret } from "@/lib/crypto/secret-box";
+import { prisma } from "@/lib/database";
+import { assertPublicUrl, UnsafeUrlError } from "@/lib/net/public-url";
+import { listMcpTools, McpClientError, type McpToolInfo } from "./mcp-client";
 
 /**
  * Per-user agent settings: what to tell the agent, and what it may reach.
@@ -47,7 +47,7 @@ export {
   type ReasoningEffortValue,
   TURN_TIMEOUT_MAX_SECONDS,
   TURN_TIMEOUT_MIN_SECONDS,
-} from "./runtime-options";
+} from "@terrablox/agent-harness/runtime-options";
 
 export class AgentSettingsError extends Error {}
 
@@ -641,6 +641,27 @@ export async function mcpServersForSession(
   const config: Record<string, MCPServerConfig> = {};
 
   for (const server of servers) {
+    // Re-validated on the way out, not only on the way in.
+    //
+    // This is the path that actually hands a URL to the runtime, and it used to read
+    // `server.url` straight from the row. Two reasons that was wrong: a row written
+    // before the address rules were tightened would keep working forever, and a
+    // direct database edit would never be checked at all. `syncMcpServerTools`
+    // already re-validated for exactly this reason; this call site was the gap.
+    //
+    // A row that no longer passes is skipped rather than raising: one bad server must
+    // not take down a turn that had three good ones. The user sees it as a server
+    // whose tools are missing, which is the same signal as one that is unreachable.
+    let url: string;
+    try {
+      url = assertSafeUrl(server.url);
+    } catch {
+      console.warn(
+        `[agent] skipping MCP server ${server.name}: stored URL is no longer allowed`,
+      );
+      continue;
+    }
+
     const headers = readHeaders(server.headersCiphertext);
     if (server.headersCiphertext && !headers) continue;
 
@@ -657,7 +678,7 @@ export async function mcpServersForSession(
 
     config[server.name] = {
       type: server.transport === "sse" ? "sse" : "http",
-      url: server.url,
+      url,
       ...(headers ? { headers } : {}),
       // Only when we know the catalogue. Undefined means "everything the server
       // offers", which is the honest answer for a server we have never managed to
@@ -673,49 +694,26 @@ export async function mcpServersForSession(
 /**
  * Rejects anything that is not a plain https endpoint on the public internet.
  *
- * The runtime makes these requests from inside our network, so a URL pointing
- * at localhost or a link-local address turns the agent into a proxy for
- * reaching things the user could not reach themselves — the server-side request
- * forgery problem. Hostnames still resolve at request time, so this is a first
- * line of defence rather than the only one; deployments should also egress
- * through a network that cannot route to internal ranges.
+ * The address rules live in `lib/net/public-url`, which decodes numeric IPv4 forms
+ * and expands IPv6 rather than pattern-matching the hostname text — the version that
+ * used to live here missed `https://2130706433/`, `[fd00::1]` and bare
+ * `https://vault`. This wrapper exists only to translate the rejection into an
+ * `AgentSettingsError`, so the settings routes keep reporting a 400 with a message
+ * the user can act on.
+ *
+ * Hostnames still resolve at request time, so this remains a first line of defence
+ * rather than the only one; deployments should also egress through a network that
+ * cannot route to internal ranges.
  */
 function assertSafeUrl(value: string): string {
-  let url: URL;
-
   try {
-    url = new URL(value);
-  } catch {
-    throw new AgentSettingsError("That is not a valid URL.");
+    return assertPublicUrl(value, { allowedProtocols: ["https:"] });
+  } catch (error) {
+    if (error instanceof UnsafeUrlError) {
+      throw new AgentSettingsError(error.message);
+    }
+    throw error;
   }
-
-  if (url.protocol !== "https:") {
-    throw new AgentSettingsError(
-      "The URL must use https, since auth headers travel with every request.",
-    );
-  }
-
-  const host = url.hostname.toLowerCase();
-
-  const isBlocked =
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host.endsWith(".internal") ||
-    host === "metadata.google.internal" ||
-    /^\[?::1\]?$/.test(host) ||
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host);
-
-  if (isBlocked) {
-    throw new AgentSettingsError(
-      "That address is inside the server's own network, which is not allowed.",
-    );
-  }
-
-  return url.toString();
 }
 
 function assertHeaders(

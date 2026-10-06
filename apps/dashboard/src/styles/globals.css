@@ -1,98 +1,10 @@
-@import "@terrablox/ui/styles.css";
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-@layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
-    --radius: 0.5rem;
-  }
-
-  .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 3.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
-  }
-}
-
-.scrollbar-none {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.scrollbar-none::-webkit-scrollbar {
-  display: none;
-}
-
-@layer base {
-  html {
-    scrollbar-gutter: stable;
-  }
-
-  * {
-    @apply border-border;
-  }
-  body {
-    @apply bg-background text-foreground;
-  }
-}
-
 /*
- * Keeps the page still while a dropdown, popover or dialog is open.
+ * The dashboard's stylesheet, which is deliberately almost empty.
  *
- * Radix locks the document through react-remove-scroll-bar, which measures the
- * scrollbar it is about to hide and pads the body by that width to compensate.
- * The `scrollbar-gutter: stable` above has already reserved exactly that space
- * and never gives it up, so the compensation lands on top of a gap that never
- * closed — and the whole page shifts sideways every time a menu opens.
- *
- * Zeroing it leaves the gutter doing its job: the scrollbar stays visible and
- * simply stops responding while the menu is open, which is what the layout
- * wants and what a reader expects.
- *
- * Outside `@layer base` and qualified with `html` on purpose. The library writes
- * its padding with `!important` from a style element injected into the head at
- * runtime, so this has to win on specificity rather than on order.
+ * Tokens, the Tailwind directives and the cross-app base rules all live in
+ * @terrablox/ui/styles.css. This file exists for rules that are true of this app
+ * and no other; there are currently none, and a token redefined here would fork
+ * the design from every other app in the repo.
  */
-html body[data-scroll-locked] {
-  padding-right: 0 !important;
-  padding-left: 0 !important;
-  margin-right: 0 !important;
-  margin-left: 0 !important;
-}
+
+@import "@terrablox/ui/styles.css";

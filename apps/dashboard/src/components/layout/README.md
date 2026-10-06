@@ -1,8 +1,22 @@
 # Layout primitives
 
-Every screen in the app shell is assembled from the components in this folder.
-They exist so that pages cannot drift apart visually: the header height, the
-sidebar toggle, the breadcrumb trail and the tab styling are decided once, here.
+Every screen in the app shell is assembled from the components in this folder and
+from `@terrablox/ui`. They exist so that pages cannot drift apart visually: the
+header height, the sidebar toggle, the breadcrumb trail and the tab styling are
+decided once.
+
+Two homes, and the split is deliberate:
+
+- **`@terrablox/ui`** holds what any app could use — `TabsNav`, `WizardSteps`,
+  `NavigationProgress`, `InfoHint`, `ComingLater`. Every app in the repo shares
+  them, so a change to one lands everywhere at once.
+- **This folder** holds what only an app with a sidebar and breadcrumbs needs:
+  `PageHeader` and `PageSkeleton`. A marketing page has no use for either, so
+  promoting them would put a component with one consumer in the shared library.
+
+When adding a primitive, ask whether a second app would render it unchanged. If
+yes it belongs in the package; if it only makes sense inside this shell, it
+belongs here.
 
 ## Rules
 
@@ -16,12 +30,14 @@ sidebar toggle, the breadcrumb trail and the tab styling are decided once, here.
    does the second half.
 4. **Actions belong in `actions`**, right-aligned. Secondary information goes
    into `meta`, not into the title.
-5. **Never hand-roll a tab strip.** Use `TabsNav` for the buttons and spread
-   `tabPanelProps(idPrefix, value)` on every panel — that is what wires up
-   `role="tablist"`, arrow-key navigation and `aria-labelledby`.
-6. **New variant needed? Add it here, not in the page.** If a screen needs
-   something the primitive cannot do, extend the primitive so every other screen
-   inherits the improvement.
+5. **Never hand-roll a tab strip.** Use `TabsNav` from `@terrablox/ui/tabs-nav`
+   for the buttons and spread `tabPanelProps(idPrefix, value)` on every panel —
+   that is what wires up `role="tablist"`, arrow-key navigation and
+   `aria-labelledby`.
+6. **New variant needed? Add it to the primitive, not to the page.** If a screen
+   needs something the primitive cannot do, extend the primitive so every other
+   screen inherits the improvement. For the shared ones that means editing
+   `packages/ui` — which is the point, not an obstacle.
 7. **Use design tokens** (`text-muted-foreground`, `border`, `bg-primary/5`,
    `@terrablox/ui` components), never raw hex colours or one-off pixel values.
 
@@ -57,6 +73,9 @@ Rules:
 ## Usage
 
 ```tsx
+import { TabsNav, tabPanelProps } from "@terrablox/ui/tabs-nav";
+import { PageHeader } from "@/components/layout/page-header";
+
 <SidebarProvider>
   <AppSidebar />
   <SidebarInset>

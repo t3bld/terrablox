@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
-import { findOwnedProject } from "@/lib/projects/service";
 import {
   clampArchitectureDepth,
   loadModuleArchitectures,
-} from "@/lib/terraform/module-architecture-service";
+} from "@/lib/module-library/architecture-service";
+import { findOwnedProject } from "@/lib/projects/service";
 
 /**
  * Supplies the contents of the modules a project's canvas calls, so the canvas

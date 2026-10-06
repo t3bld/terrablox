@@ -25,17 +25,17 @@
  */
 
 import {
+  type CostClass,
+  resolveCostDriver,
+} from "@terrablox/terraform/aws-cost-drivers";
+import { inferOutputType } from "@terrablox/terraform/output-type";
+import {
   type ModuleOutputDto,
   type ModuleVariableDto,
   parseOutputs,
   parseVariables,
-} from "@/components/module-detail/types";
+} from "@/lib/module-library/types";
 import { type LibraryModule, libraryModuleName } from "@/lib/projects/graph";
-import {
-  type CostClass,
-  resolveCostDriver,
-} from "@/lib/terraform/aws-cost-drivers";
-import { inferOutputType } from "@/lib/terraform/output-type";
 
 /** An input or an output, with everything needed to decide about it. */
 export interface AgentPort {

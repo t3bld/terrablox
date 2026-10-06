@@ -1,11 +1,7 @@
-import { githubProvider } from "@terrablox/git-import/github";
+import { githubProvider } from "@terrablox/git/github-provider";
 import { NextResponse } from "next/server";
-
+import { requireQueryParam, resolveRepoRequest } from "@/lib/api/git-request";
 import { routeError } from "@/lib/api/route-error";
-import {
-  requireQueryParam,
-  resolveRepoRequest,
-} from "@/lib/git-provider/request";
 
 export async function GET(
   req: Request,

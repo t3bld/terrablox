@@ -2,6 +2,7 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { safeLinkHref } from "@/lib/markdown/safe-url";
 
 /**
  * An agent reply, rendered as the markdown it is.
@@ -45,9 +46,16 @@ export function AgentMarkdown({ children }: { children: string }) {
     >
       <ReactMarkdown
         components={{
-          // Anything the agent links to is outside this app.
+          // Anything the agent links to is outside this app — and the agent's output
+          // is shaped by repository content it read, so a link target here is not
+          // more trustworthy than a README's. Same scheme allowlist.
           a: ({ href, children: label, ...rest }) => (
-            <a {...rest} href={href} rel="noreferrer noopener" target="_blank">
+            <a
+              {...rest}
+              href={safeLinkHref(href)}
+              rel="noreferrer noopener"
+              target="_blank"
+            >
               {label}
             </a>
           ),

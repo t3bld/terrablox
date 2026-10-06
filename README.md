@@ -1,18 +1,14 @@
 <p align="center">
-	<h1 align="center"><b>TerraBlox</b></h1>
+	<h1 align="center"><b>Terrablox</b></h1>
 <p align="center">
-    Open Source AI Terraform Assistant and Infrastructure Designer
+    Cloud migrations at lightspeed, on an opinionated agent harness
     <br />
     <br />
     <a href="https://terrablox.de">Website</a>
     ·
     <a href="https://github.com/t3bld/terrablox/issues">Issues</a>
     ·
-   <a href="https://github.com/t3bld/terrablox/tree/main/docs">Documentation</a>
-    ·
-    <a href="https://github.com/t3bld/terrablox?tab=AGPL-3.0-1-ov-file">License</a>
-    ·
-    <a href="https://github.com/t3bld/terrablox">Contribute</a>
+   <a href="https://terrablox.de/docs">Documentation</a>
   </p>
 </p>
 
@@ -26,7 +22,7 @@
 
 ## ⚙️ Tech Stack
 
-TerraBlox is designed to be **self-hosted** —  no required managed services.
+Terrablox is designed to be **self-hosted** —  no required managed services.
 
 - [TypeScript](https://www.typescriptlang.org/) – Language
 - [Turborepo](https://turborepo.com/) & [pnpm](https://pnpm.io/)  – Monorepo
@@ -47,4 +43,3 @@ pnpm quickstart
 ```
 
 That single command bootstraps the entire application. Afterwards you can access the dashboard via http://localhost:3001
- 

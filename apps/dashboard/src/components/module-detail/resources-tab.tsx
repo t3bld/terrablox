@@ -1,13 +1,13 @@
 "use client";
 
-import { Badge } from "@terrablox/ui/badge";
-import { useMemo, useState } from "react";
-
-import { serviceOfResource } from "@/lib/terraform/aws-services";
+import { serviceOfResource } from "@terrablox/terraform/aws-services";
 import {
   isConventionalResourceName,
   sortResourceNames,
-} from "@/lib/terraform/resource-label";
+} from "@terrablox/terraform/resource-label";
+import { Badge } from "@terrablox/ui/badge";
+import { useMemo, useState } from "react";
+import type { ModuleResourceDto } from "@/lib/module-library/types";
 import {
   EmptyMessage,
   FieldList,
@@ -15,7 +15,6 @@ import {
   ResourceNames,
   SearchField,
 } from "./field-primitives";
-import type { ModuleResourceDto } from "./types";
 
 interface ResourcesTabProps {
   resources: ModuleResourceDto[];

@@ -2,14 +2,14 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { canonicalRepoUrl } from "@/lib/modules/import-from-git";
-import { visibleToUser } from "@/lib/modules/ownership";
+import { canonicalRepoUrl } from "@/lib/module-library/import-from-git";
+import { visibleToUser } from "@/lib/module-library/ownership";
 
 /**
  * Lookup existing imports for a repo+ref+folder combination.
  * Used by the import dialog to disable steps that are already in the DB.
  *
- * Sees the catalogue TerraBlox ships with, for the reason given in
+ * Sees the catalogue Terrablox ships with, for the reason given in
  * `imported-versions`: a shipped ref that looked absent would be re-imported into
  * a duplicate source row.
  */

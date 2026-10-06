@@ -1,33 +1,31 @@
+import { dispatchWorkflow, listWorkflowRuns } from "@terrablox/git/actions";
+import { GithubRequestError } from "@terrablox/git/client";
 import { NextResponse } from "next/server";
-
+import { z } from "zod";
 import {
-  getCurrentUserId,
-  getProviderTokenForRequest,
-} from "@/lib/auth/server-helpers";
-import {
-  dispatchWorkflow,
-  GithubRequestError,
-  listWorkflowRuns,
-} from "@/lib/github/repo-files";
+  parseJsonBody,
+  requireUserId,
+  requireUserWithLimit,
+} from "@/lib/api/guard";
+import { RATE_LIMITS } from "@/lib/api/rate-limit";
+import { routeError } from "@/lib/api/route-error";
+import { audit } from "@/lib/audit/log";
+import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { missingDeploySettings } from "@/lib/projects/deploy";
 import { findOwnedProject } from "@/lib/projects/service";
 import type { DeployRunKind } from "@/lib/projects/types";
 import { findTemplate } from "@/lib/projects/workflow-templates";
-
-function parseKind(value: unknown): DeployRunKind | null {
-  return value === "plan" || value === "apply" || value === "cost"
-    ? value
-    : null;
-}
 
 /** Just the runs, so the UI can follow a job without re-reading the repository. */
 export async function GET(
   req: Request,
   { params }: { params: { projectId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let userId: string;
+  try {
+    userId = await requireUserId({ action: "deploy.run.list" });
+  } catch (e) {
+    return routeError("deploy.run.list", e);
   }
 
   const project = await findOwnedProject(userId, params.projectId);
@@ -57,7 +55,7 @@ export async function GET(
 /**
  * Starts a Terraform run.
  *
- * TerraBlox holds no AWS credentials, so it cannot call AWS itself. It starts
+ * Terrablox holds no AWS credentials, so it cannot call AWS itself. It starts
  * the workflow that can, and that workflow federates into the account for the
  * length of the job. The practical effect is the same — Terraform runs from a
  * button — but the credentials stay where they can be audited and revoked, and
@@ -67,26 +65,40 @@ export async function POST(
   req: Request,
   { params }: { params: { projectId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Rate limited on the infrastructure budget: this starts a GitHub Actions job that
+  // runs `terraform apply` against a customer account with a role holding
+  // AdministratorAccess. It is the most expensive button in the app, in both senses.
+  let userId: string;
+  try {
+    userId = await requireUserWithLimit(
+      "deploy.run",
+      RATE_LIMITS.infrastructure,
+    );
+  } catch (e) {
+    return routeError("deploy.run", e);
   }
 
   const project = await findOwnedProject(userId, params.projectId);
   if (!project) {
+    await audit({
+      action: "deploy.run.started",
+      userId,
+      subject: params.projectId,
+      outcome: "denied",
+      detail: { reason: "not-owner-or-missing" },
+    });
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const body = (await req.json().catch(() => null)) as {
-    workflow?: unknown;
-  } | null;
-
-  const kind = parseKind(body?.workflow);
-  if (!kind) {
-    return NextResponse.json(
-      { error: "workflow must be one of: plan, apply, cost" },
-      { status: 400 },
+  let kind: DeployRunKind;
+  try {
+    const body = await parseJsonBody(
+      req,
+      z.object({ workflow: z.enum(["plan", "apply"]) }),
     );
+    kind = body.workflow;
+  } catch (e) {
+    return routeError("deploy.run", e);
   }
 
   const template = findTemplate(kind);
@@ -104,7 +116,6 @@ export async function POST(
     awsRegion: project.awsRegion,
     awsRoleArn: project.awsRoleArn,
     stateBucket: project.stateBucket,
-    stateLockTable: project.stateLockTable,
     stateKmsKeyArn: project.stateKmsKeyArn,
   });
 
@@ -130,6 +141,21 @@ export async function POST(
       ref: project.repoBranch,
     });
 
+    // Recorded after the dispatch succeeded, so the trail says "a job was started"
+    // rather than "somebody tried". `apply` is the row that matters months later.
+    await audit({
+      action: "deploy.run.started",
+      userId,
+      subject: project.id,
+      detail: {
+        workflow: kind,
+        repo: project.repoFullName,
+        ref: project.repoBranch,
+        awsAccountId: project.awsAccountId,
+        region: project.awsRegion,
+      },
+    });
+
     return NextResponse.json({ started: true, workflow: kind });
   } catch (e) {
     if (e instanceof GithubRequestError && e.status === 404) {
@@ -146,7 +172,7 @@ export async function POST(
       return NextResponse.json(
         {
           error:
-            "Starting workflows needs the 'actions: write' permission on the GitHub app installation.",
+            "GitHub refused to start the workflow. The Terrablox GitHub App needs the Actions permission at read and write, and this repository has to be one the installation was granted.",
         },
         { status: 403 },
       );

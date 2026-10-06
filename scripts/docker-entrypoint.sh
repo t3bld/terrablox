@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# Container entrypoint for the TerraBlox dashboard.
+# Container entrypoint for the Terrablox dashboard.
 #
 # Checks the configuration the app cannot run without, optionally applies
 # migrations, then hands the process over to Next.
@@ -29,21 +29,29 @@ warn() {
 [ -n "${DATABASE_URL:-}" ] ||
 	fail "DATABASE_URL is not set - the app has no database to talk to."
 
-# Sessions are signed with this, and it is also HKDF-derived into the AES-256-GCM
-# key that encrypts stored AWS and Infracost credentials
-# (apps/dashboard/src/lib/crypto/secret-box.ts). Two consequences worth knowing
-# before you rotate it: every session is invalidated, and every secret already in
-# the database becomes undecryptable.
-[ -n "${BETTER_AUTH_SECRET:-}" ] ||
-	fail "BETTER_AUTH_SECRET is not set - sessions cannot be signed and stored secrets cannot be encrypted."
+# The signing secret is required to *serve*, but not to migrate.
+#
+# `prisma migrate deploy` touches the schema and nothing else, so the migration
+# container has no use for a credential that can decrypt every stored secret. It used
+# to be handed one purely because this check ran before the MIGRATE_ONLY branch below
+# — the least-privilege fix is to check it only on the path that needs it.
+if [ "${MIGRATE_ONLY:-false}" != "true" ]; then
+	# Sessions are signed with this, and it is also HKDF-derived into the
+	# AES-256-GCM key that encrypts stored AWS credentials and MCP auth headers
+	# (apps/dashboard/src/lib/crypto/secret-box.ts). Two consequences worth knowing
+	# before you rotate it: every session is invalidated, and every secret already
+	# in the database becomes undecryptable.
+	[ -n "${BETTER_AUTH_SECRET:-}" ] ||
+		fail "BETTER_AUTH_SECRET is not set - sessions cannot be signed and stored secrets cannot be encrypted."
 
-# --- defaulted --------------------------------------------------------------
-
-# schema.prisma declares directUrl, so the Prisma CLI wants DIRECT_URL to exist
-# even when it is the same connection string. Without a pooler they are the same.
-if [ -z "${DIRECT_URL:-}" ]; then
-	DIRECT_URL="$DATABASE_URL"
-	export DIRECT_URL
+	# Length, not just presence. Better Auth accepts anything and falls back to a
+	# constant it ships when the value is empty, so a placeholder like `changeme`
+	# would sign sessions with something an attacker can guess. The app refuses to
+	# boot on this too; catching it here names the variable instead of surfacing a
+	# stack trace.
+	if [ "${#BETTER_AUTH_SECRET}" -lt 32 ]; then
+		fail "BETTER_AUTH_SECRET is ${#BETTER_AUTH_SECRET} characters - too short to be generated. Use: openssl rand -base64 32"
+	fi
 fi
 
 # --- warnings ---------------------------------------------------------------
@@ -51,10 +59,20 @@ fi
 # Unset, the server falls back to http://localhost:3001
 # (apps/dashboard/src/lib/auth/server.ts:15). Behind a load balancer that sends
 # users to a callback URL on the wrong host, and the failure reads like a broken
-# GitHub OAuth app rather than a missing variable.
+# GitHub App rather than a missing variable.
 if [ -z "${BETTER_AUTH_URL:-}" ] && [ -z "${NEXT_PUBLIC_APP_URL:-}" ]; then
 	warn "neither BETTER_AUTH_URL nor NEXT_PUBLIC_APP_URL is set - OAuth callbacks will point at http://localhost:3001."
 fi
+
+# The likelier production mistake than leaving it unset: setting it to the http origin
+# the proxy talks to instead of the https one users reach. Cookies then ship without
+# Secure and OAuth callbacks come back over plaintext, and nothing else says so.
+case "${BETTER_AUTH_URL:-}" in
+http://localhost* | http://127.0.0.1* | "") ;;
+http://*)
+	warn "BETTER_AUTH_URL is ${BETTER_AUTH_URL} - session cookies will be sent without Secure. Use the https origin users reach."
+	;;
+esac
 
 # GitHub is the only sign-in method and the same grant powers the agent, so
 # without these the app runs and nobody can get in. Not fatal: it is a usable

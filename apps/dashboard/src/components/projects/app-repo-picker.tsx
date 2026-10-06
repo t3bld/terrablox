@@ -1,6 +1,6 @@
 "use client";
 
-import type { GitRepo } from "@terrablox/git-import";
+import type { GitRepo } from "@terrablox/git/types";
 import { Button } from "@terrablox/ui/button";
 import {
   Command,
@@ -13,6 +13,8 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@terrablox/ui/popover";
 import { Check, ChevronsUpDown, Loader2, Lock, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+
+import { GithubInstallHint } from "@/components/github-install-hint";
 
 /**
  * The repository holding the application a project builds infrastructure for.
@@ -69,6 +71,14 @@ export function AppRepoPicker({
   const [repos, setRepos] = useState<RepoOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Where to send someone whose list came back empty. Null until the first load
+  // answers, so the hint cannot render before we know whether it applies.
+  const [access, setAccess] = useState<{
+    installed: boolean;
+    installUrl: string;
+    /** Set while an organisation owner has yet to approve the app. */
+    pendingRequestAt: string | null;
+  } | null>(null);
 
   /**
    * Whether the list has been asked for, kept in a ref rather than derived from
@@ -103,6 +113,16 @@ export function AppRepoPicker({
         const body = await res.json().catch(() => null);
         if (!res.ok) {
           throw new Error(body?.error ?? "Could not load repositories.");
+        }
+        if (!cancelled && typeof body?.installUrl === "string") {
+          setAccess({
+            installed: body.installed === true,
+            installUrl: body.installUrl,
+            pendingRequestAt:
+              typeof body.pendingRequestAt === "string"
+                ? body.pendingRequestAt
+                : null,
+          });
         }
         return (body?.repos ?? []) as GitRepo[];
       })
@@ -191,6 +211,17 @@ export function AppRepoPicker({
                 <p className="px-3 py-6 text-center text-sm text-destructive">
                   {error}
                 </p>
+              ) : repos.length === 0 && access ? (
+                // Distinct from "no repository matches" below, which is about the
+                // search box. This is the list itself being empty, and the remedy
+                // is on GitHub rather than in the query.
+                <div className="p-3">
+                  <GithubInstallHint
+                    installUrl={access.installUrl}
+                    installed={access.installed}
+                    pendingRequestAt={access.pendingRequestAt}
+                  />
+                </div>
               ) : (
                 <>
                   <CommandEmpty>No repository matches.</CommandEmpty>

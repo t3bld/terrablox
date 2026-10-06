@@ -5,9 +5,7 @@
   "exports": {
     ".": "./src/index.tsx",
     "./hooks": "./src/hooks/use-auth.tsx",
-    "./types": "./src/types.ts",
-    "./adapters/better-auth": "./src/adapters/better-auth.ts",
-    "./auth-provider": "./src/components/auth-provider.tsx"
+    "./adapters/better-auth": "./src/adapters/better-auth.ts"
   },
   "scripts": {
     "lint": "biome check .",

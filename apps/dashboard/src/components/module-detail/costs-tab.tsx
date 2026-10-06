@@ -1,24 +1,30 @@
 "use client";
 
-import { Badge } from "@terrablox/ui/badge";
-import { cn } from "@terrablox/ui/lib/utils";
-import { Box, ChevronDown } from "lucide-react";
-import { useMemo, useState } from "react";
-import { InfoHint } from "@/components/info-hint";
 import {
   COST_CLASS_HINTS,
   COST_CLASS_LABELS,
   type CostClass,
   type CostDriverEntry,
   resolveCostDriver,
-} from "@/lib/terraform/aws-cost-drivers";
-import { iconOfService, serviceOfResource } from "@/lib/terraform/aws-services";
+} from "@terrablox/terraform/aws-cost-drivers";
+import {
+  iconOfService,
+  serviceOfResource,
+} from "@terrablox/terraform/aws-services";
 import {
   isConventionalResourceName,
   sortResourceNames,
-} from "@/lib/terraform/resource-label";
+} from "@terrablox/terraform/resource-label";
+import { Badge } from "@terrablox/ui/badge";
+import { InfoHint } from "@terrablox/ui/info-hint";
+import { cn } from "@terrablox/ui/lib/utils";
+import { Box, ChevronDown } from "lucide-react";
+import { useMemo, useState } from "react";
+import type {
+  ModuleResourceDto,
+  ModuleVariableDto,
+} from "@/lib/module-library/types";
 import { ResourceNames } from "./field-primitives";
-import type { ModuleResourceDto, ModuleVariableDto } from "./types";
 
 interface CostsTabProps {
   resources: ModuleResourceDto[];

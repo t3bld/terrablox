@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 /**
  * Tells the user that GitHub is gone, everywhere.
  *
- * Nothing in TerraBlox works without it: a project *is* a repository, the module
+ * Nothing in Terrablox works without it: a project *is* a repository, the module
  * library is read from GitHub, and a turn runs on the user's Copilot seat. When
  * the grant is revoked every screen keeps its layout and fails one request at a
  * time — a project that will not open, a library that stays empty, an agent that

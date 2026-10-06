@@ -1,5 +1,6 @@
 "use client";
 
+import { isConventionalResourceName } from "@terrablox/terraform/resource-label";
 import { Badge } from "@terrablox/ui/badge";
 import { Button } from "@terrablox/ui/button";
 import {
@@ -21,8 +22,6 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
-
-import { isConventionalResourceName } from "@/lib/terraform/resource-label";
 
 /**
  * Building blocks shared by the tabs that render long, searchable lists of

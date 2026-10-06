@@ -18,7 +18,7 @@ export interface ProjectDto {
   /**
    * The application this infrastructure is for, as `owner/name`.
    *
-   * Read-only: TerraBlox never commits here. Null means the project was never
+   * Read-only: Terrablox never commits here. Null means the project was never
    * linked to one, which is a working project — the agent asks about the
    * application instead of reading it.
    */
@@ -229,8 +229,17 @@ export interface ProjectMutationResult {
   commit: { sha: string; path: string; message: string } | null;
 }
 
-/** Who made an edit. The canvas and the agent share one code path, not one hand. */
-export type OperationOrigin = "canvas" | "agent";
+/**
+ * Who made an edit. The canvas, the agent and an outside client share one code path,
+ * not one hand.
+ *
+ * `mcp` is an agent in somebody's editor reaching in over the MCP endpoint. Worth
+ * telling apart from `agent`, which is *our* harness: that one had the operating rules,
+ * the budgets and the interface checks around it, and this one had whatever the host it
+ * runs in decided to enforce. The column is plain text, so the distinction lands in
+ * every commit trailer and operation row without a migration.
+ */
+export type OperationOrigin = "canvas" | "agent" | "mcp";
 
 export interface ProjectOperationDto {
   id: string;
@@ -333,7 +342,6 @@ export interface ProjectDeploySettings {
   awsRegion: string;
   awsRoleArn: string | null;
   stateBucket: string | null;
-  stateLockTable: string | null;
   /** The KMS key the state is encrypted with, from the state stack. */
   stateKmsKeyArn: string | null;
 }
@@ -355,10 +363,10 @@ export interface DeployTemplatesDto {
   config: {
     disabled: string[];
     terraformVersion: string;
-    requireApproval: boolean;
-    scheduleRefresh: boolean;
   };
   catalogue: WorkflowTemplateDto[];
+  /** The versions the pipeline can install, newest first, for the picker. */
+  terraformVersions: string[];
 }
 
 /** A CloudFormation stack the setup runs, and how to run it by hand instead. */
@@ -372,7 +380,7 @@ export interface DeployStackDto {
 
 export interface WorkflowFileDto {
   path: string;
-  /** Whether TerraBlox generated this file and still owns its content. */
+  /** Whether Terrablox generated this file and still owns its content. */
   managed: boolean;
   /** Managed files only: false when the repository copy has drifted. */
   upToDate: boolean;
@@ -441,5 +449,5 @@ export interface ProjectDeployState {
   state: DeployStackDto;
 }
 
-/** The workflows TerraBlox can start on the user's behalf. */
-export type DeployRunKind = "plan" | "apply" | "cost";
+/** The workflows Terrablox can start on the user's behalf. */
+export type DeployRunKind = "plan" | "apply";

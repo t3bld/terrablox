@@ -1,20 +1,29 @@
+import { DEFAULT_TURN_TIMEOUT_SECONDS } from "@terrablox/agent-harness/runtime-options";
+import { GithubRequestError } from "@terrablox/git/client";
+import {
+  createRepository,
+  RepoOwnerNotWritableError,
+  verifyOwnerCanHoldNewRepo,
+} from "@terrablox/git/repositories";
 import { NextResponse } from "next/server";
-
+import { z } from "zod";
 import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
 import type { AgentOverrides } from "@/lib/agent/effective-settings";
-import { DEFAULT_TURN_TIMEOUT_SECONDS } from "@/lib/agent/runtime-options";
 import {
   asReasoningEffort,
   getAgentSettings,
 } from "@/lib/agent/settings-service";
 import {
-  getCurrentUserId,
-  getProviderTokenForRequest,
-} from "@/lib/auth/server-helpers";
+  parseJsonBody,
+  requireUserId,
+  requireUserWithLimit,
+} from "@/lib/api/guard";
+import { RATE_LIMITS } from "@/lib/api/rate-limit";
+import { routeError } from "@/lib/api/route-error";
+import * as schema from "@/lib/api/schemas";
+import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { createRepository, GithubRequestError } from "@/lib/github/repo-files";
 import {
-  type AppRepoInput,
   AppRepoInputError,
   appRepoColumns,
   parseAppRepoInput,
@@ -25,11 +34,7 @@ import { normalizeFolder } from "@/lib/projects/service";
 
 export async function GET(_req: Request) {
   try {
-    const userId = await getCurrentUserId();
-
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const userId = await requireUserId({ action: "projects.list" });
 
     const projects = await database.project.findMany({
       where: { userId },
@@ -38,10 +43,9 @@ export async function GET(_req: Request) {
 
     return NextResponse.json({ projects: projects.map(toProjectDto) });
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Failed to load projects" },
-      { status: 500 },
-    );
+    // Through `routeError` rather than echoing `e.message`, which used to hand Prisma
+    // error text to the caller on any failure.
+    return routeError("projects.list", e);
   }
 }
 
@@ -54,14 +58,42 @@ export async function GET(_req: Request) {
  * empty graph with no explanation. A repository we create has exactly one
  * possible answer, so there is no question left to get wrong.
  */
-interface CreateProjectBody {
-  name?: string;
-  repo?: { name?: string; owner?: string | null; private?: boolean };
-  branch?: string | null;
-  terraformEntryFile?: string | null;
+/**
+ * The create-project request.
+ *
+ * `repo.name` and `repo.owner` are the values a GitHub repository is created from, so
+ * they get GitHub's own naming rules rather than a trim. `requireRepoName` below still
+ * runs — it produces the message the wizard shows — but a shape check here is what
+ * stops an unbounded string reaching the API call.
+ *
+ * `appRepo` stays `unknown`: `parseAppRepoInput` owns that shape, and it has to,
+ * because the project-update route and the agent path both call it.
+ */
+const createBody = z.object({
+  name: schema.displayText(200),
+  repo: z.object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .regex(
+        /^[A-Za-z0-9._-]+$/,
+        "A repository name may only contain letters, digits, dots, hyphens and underscores",
+      ),
+    owner: z
+      .string()
+      .trim()
+      .max(100)
+      .regex(/^[A-Za-z0-9-]*$/, "That is not a GitHub owner name")
+      .nullish(),
+    private: z.boolean().optional(),
+  }),
+  branch: schema.gitRef.nullish(),
+  terraformEntryFile: schema.relativeFolder.nullish(),
   /** Optional link to the application this infrastructure is for. */
-  appRepo?: AppRepoInput | null;
-}
+  appRepo: z.unknown().optional(),
+});
 
 /**
  * Copies the user's current agent settings onto the new project.
@@ -105,26 +137,21 @@ function normalizeEntryFile(input: string | null | undefined): string {
  * without one would have nothing to show and nowhere to write changes to.
  */
 export async function POST(req: Request) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  let userId: string;
+  let body: z.infer<typeof createBody>;
+  try {
+    // Creating a project creates a *repository* on GitHub, so this is rate limited on
+    // the infrastructure budget rather than the ordinary write one.
+    userId = await requireUserWithLimit(
+      "project.create",
+      RATE_LIMITS.infrastructure,
+    );
+    body = await parseJsonBody(req, createBody);
+  } catch (error) {
+    return routeError("project.create", error);
   }
 
-  const body = (await req.json().catch(() => null)) as CreateProjectBody | null;
-  const name = body?.name?.trim();
-
-  if (!name) {
-    return NextResponse.json(
-      { error: "Missing project name" },
-      { status: 400 },
-    );
-  }
-  if (!body?.repo) {
-    return NextResponse.json(
-      { error: "A project needs a repository" },
-      { status: 400 },
-    );
-  }
+  const name = body.name;
 
   const token = await getProviderTokenForRequest(req, "github");
   if (!token) {
@@ -150,6 +177,19 @@ export async function POST(req: Request) {
       },
       { status: 400 },
     );
+  }
+
+  // Asked before the repository exists, for the same reason the app-repo link is
+  // verified above: GitHub will create a repository outside the installation's
+  // grant without complaint, and the refusal would then arrive at the first write —
+  // leaving an empty repository behind for a project that was never stored.
+  try {
+    await verifyOwnerCanHoldNewRepo(token, body.repo.owner ?? null);
+  } catch (e) {
+    if (e instanceof RepoOwnerNotWritableError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
+    throw e;
   }
 
   try {

@@ -7,42 +7,45 @@ import { NextResponse } from "next/server";
  */
 export const maxDuration = 300; // seconds — matches SEND_AND_WAIT_TIMEOUT_MS
 
-import { Prisma } from "@terrablox/database";
-import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
-import { getEffectiveAgentSettings } from "@/lib/agent/effective-settings";
-import { getHarnessCuration } from "@/lib/agent/harness-curation";
 import {
   KNOWLEDGE_MODULE_LIBRARY,
   KNOWLEDGE_PROJECT_REPO,
   knowledgeEnabled,
-} from "@/lib/agent/knowledge";
-import { toAgentLibrary } from "@/lib/agent/library-view";
+} from "@terrablox/agent-harness/knowledge";
 import {
-  type AgentAppRepo,
-  type AgentPipelineCheck,
-  runProjectAgent,
-} from "@/lib/agent/project-agent";
-import {
+  AGENT_CANCEL_POLL_MS,
   AGENT_MAX_TOOL_CALLS,
   AGENT_PROGRESS_INTERVAL_MS,
   renderOperatingRule,
-} from "@/lib/agent/runtime-options";
+} from "@terrablox/agent-harness/runtime-options";
+import { Prisma } from "@terrablox/database";
+import { listWorkflowRuns } from "@terrablox/git/actions";
+import { GithubRequestError } from "@terrablox/git/client";
+import { getRepository } from "@terrablox/git/repositories";
+import { z } from "zod";
+import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
+import { getEffectiveAgentSettings } from "@/lib/agent/effective-settings";
+import { getHarnessCuration } from "@/lib/agent/harness-curation";
+import { toAgentLibrary } from "@/lib/agent/library-view";
+import { runProjectAgent, TurnCancelled } from "@/lib/agent/project-agent";
 import {
   mcpServersForSession,
   REASONING_EFFORTS,
   type ReasoningEffortValue,
 } from "@/lib/agent/settings-service";
+import type {
+  AgentAppRepo,
+  AgentPipelineCheck,
+} from "@/lib/agent/turn-context";
+import { parseJsonBody, requireUserWithLimit } from "@/lib/api/guard";
+import { RATE_LIMITS } from "@/lib/api/rate-limit";
+import { routeError } from "@/lib/api/route-error";
 import {
   getCurrentUserId,
   getProviderTokenForRequest,
   getUserGithubToken,
 } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import {
-  GithubRequestError,
-  getRepository,
-  listWorkflowRuns,
-} from "@/lib/github/repo-files";
 import { activeDecisions, recordDecision } from "@/lib/projects/decisions";
 import { toChatMessageDto } from "@/lib/projects/serialize";
 import {
@@ -67,6 +70,15 @@ import type { AgentStep, ProjectGraph } from "@/lib/projects/types";
  * `AGENT_HISTORY_BUDGET_CHARS`.
  */
 const HISTORY_LIMIT = 200;
+
+/**
+ * The longest message a person may send.
+ *
+ * Generous — an eight-thousand-character prompt is a page and a half of prose — and
+ * finite, which is the property that was missing. The value is persisted and then
+ * spent on the model, so an unbounded string is both a storage and a billing problem.
+ */
+const MAX_MESSAGE_CHARS = 8000;
 
 /** Newest first from the database, then flipped back into reading order. */
 const HISTORY_QUERY = {
@@ -230,9 +242,15 @@ export async function POST(
   req: Request,
   { params }: { params: { projectId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // The agent budget, not the ordinary write budget. Each turn forks a ~190 MB
+  // Copilot CLI child and may hold the request for five minutes, so without a
+  // ceiling one account can exhaust the host's memory — the container has no
+  // resource limit that would stop it before the OOM killer does.
+  let userId: string;
+  try {
+    userId = await requireUserWithLimit("agent.turn", RATE_LIMITS.agentTurn);
+  } catch (e) {
+    return routeError("chat", e);
   }
 
   const project = await findOwnedProject(userId, params.projectId);
@@ -240,15 +258,37 @@ export async function POST(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const body = (await req.json().catch(() => null)) as {
-    message?: string;
+  // The message is capped because it is persisted and then spent on the model: there
+  // was no limit at all, so a multi-megabyte message became a multi-megabyte row and a
+  // prompt the user pays for. `model` and `reasoningEffort` stay `unknown` — the
+  // helpers below check them against the entitled catalogue, which is a stronger check
+  // than a shape.
+  let body: {
+    message: string;
     model?: unknown;
     reasoningEffort?: unknown;
-  } | null;
-  const message = body?.message?.trim();
-  if (!message) {
-    return NextResponse.json({ error: "Message is empty" }, { status: 400 });
+  };
+  try {
+    body = await parseJsonBody(
+      req,
+      z.object({
+        message: z
+          .string()
+          .trim()
+          .min(1, "Message is empty")
+          .max(
+            MAX_MESSAGE_CHARS,
+            `A message may be at most ${MAX_MESSAGE_CHARS} characters.`,
+          ),
+        model: z.unknown().optional(),
+        reasoningEffort: z.unknown().optional(),
+      }),
+    );
+  } catch (e) {
+    return routeError("chat", e);
   }
+
+  const message = body.message;
 
   const token = await getProviderTokenForRequest(req, project.provider);
   if (!token) {
@@ -310,6 +350,31 @@ export async function POST(
       });
   };
 
+  /**
+   * Watches for someone asking this turn to stop.
+   *
+   * The signal is `agentRunning` going false while we are still running, because we
+   * are the only writer that sets it true and we do not clear it until the finally
+   * below. That makes a stop a single-column write from any process, which matters:
+   * the request that presses Stop is not this request, and on more than one instance
+   * it is not even this process, so an in-memory flag could not be reached.
+   *
+   * Deliberately not a new column. A second flag would have to be kept consistent
+   * with this one, and the two could then disagree about whether a turn is running.
+   */
+  const cancellation = new AbortController();
+  const stopWatch = setInterval(() => {
+    void database.project
+      .findUnique({
+        where: { id: project.id },
+        select: { agentRunning: true },
+      })
+      .then((row) => {
+        if (row && !row.agentRunning) cancellation.abort();
+      })
+      .catch(() => {});
+  }, AGENT_CANCEL_POLL_MS);
+
   try {
     const [
       graph,
@@ -329,7 +394,7 @@ export async function POST(
         .then((rows) => rows.reverse()),
       getEffectiveAgentSettings(userId, project.id),
       mcpServersForSession(userId),
-      getHarnessCuration(),
+      getHarnessCuration(userId),
       readLastCheck(token, project.repoFullName, project.repoBranch),
       resolveAppRepo(token, project),
       activeDecisions(project.id),
@@ -399,6 +464,7 @@ export async function POST(
         ]),
       ),
       onStep: publishProgress,
+      signal: cancellation.signal,
       // The whole module rather than a three-field summary. The ports were always
       // loaded here and thrown away one line before the prompt, which left the
       // agent able to place a module and unable to wire it. The prompt still only
@@ -554,6 +620,34 @@ export async function POST(
       changed: commits.length > 0,
     });
   } catch (e) {
+    /**
+     * A stop is an outcome, not an error, so it gets its own message and a 200.
+     *
+     * Nothing is committed, and that is not a compromise — the tools queue edits
+     * and the loop above is the only thing that applies them, so a turn that never
+     * reaches it has not touched the repository. Said out loud in the transcript,
+     * because "stopped" without that sentence leaves the reader wondering what got
+     * half-built.
+     */
+    if (e instanceof TurnCancelled) {
+      const stopped = await database.projectChatMessage.create({
+        data: {
+          projectId: project.id,
+          role: "system",
+          content:
+            "Stopped. Nothing was committed — the agent's edits are only written to the repository once a turn finishes.",
+          metadata: { stopped: true },
+        },
+      });
+
+      // No `graph`: nothing was committed, so the canvas on screen is still
+      // correct and refreshing it would only make it flicker.
+      return NextResponse.json({
+        messages: [userMessage, stopped].map(toChatMessageDto),
+        changed: false,
+      });
+    }
+
     const reason =
       e instanceof Error ? e.message : "The agent could not complete the turn";
 
@@ -581,6 +675,7 @@ export async function POST(
       { status },
     );
   } finally {
+    clearInterval(stopWatch);
     // The trail is cleared with the flag: from here on the steps live on the
     // assistant message, and leaving a copy here would make the next turn open
     // with the previous one's progress still on screen.

@@ -1,0 +1,38 @@
+{
+  "name": "@terrablox/terraform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reads, evaluates and edits Terraform configurations. No database, no framework, no network.",
+  "exports": {
+    "./architecture-graph": "./src/architecture-graph.ts",
+    "./architecture-layout": "./src/architecture-layout.ts",
+    "./aws-architecture": "./src/aws-architecture.ts",
+    "./aws-cost-drivers": "./src/aws-cost-drivers.ts",
+    "./aws-icon-manifest": "./src/aws-icon-manifest.ts",
+    "./aws-services": "./src/aws-services.ts",
+    "./delete-scope": "./src/delete-scope.ts",
+    "./evaluate": "./src/evaluate.ts",
+    "./hcl-edit": "./src/hcl-edit.ts",
+    "./identifier-suggest": "./src/identifier-suggest.ts",
+    "./module-interface": "./src/module-interface.ts",
+    "./module-link": "./src/module-link.ts",
+    "./output-type": "./src/output-type.ts",
+    "./references": "./src/references.ts",
+    "./registry": "./src/registry.ts",
+    "./resource-label": "./src/resource-label.ts",
+    "./type-check": "./src/type-check.ts",
+    "./types": "./src/types.ts",
+    "./versions": "./src/versions.ts"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@terrablox/tsconfig": "workspace:*",
+    "typescript": "^5.3.3",
+    "vitest": "^4.1.11"
+  }
+}

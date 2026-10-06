@@ -137,28 +137,20 @@ export function AuthProvider({
   );
 
   const signInWithOAuth = useCallback(
-    async (
-      provider: OAuthProvider,
-      options?: { redirectTo?: string; scopes?: string[] },
-    ) => {
+    async (provider: OAuthProvider, options?: { redirectTo?: string }) => {
       await adapter.signInWithOAuth({
         provider,
         redirectTo: options?.redirectTo,
-        scopes: options?.scopes,
       });
     },
     [adapter],
   );
 
   const linkOAuth = useCallback(
-    async (
-      provider: OAuthProvider,
-      options?: { redirectTo?: string; scopes?: string[] },
-    ) => {
+    async (provider: OAuthProvider, options?: { redirectTo?: string }) => {
       await adapter.linkOAuth({
         provider,
         redirectTo: options?.redirectTo,
-        scopes: options?.scopes,
       });
     },
     [adapter],

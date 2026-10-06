@@ -1,0 +1,9 @@
+{
+  "extends": "@terrablox/tsconfig/base.json",
+  "compilerOptions": {
+    "lib": ["es2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "include": ["src", "build.mjs"],
+  "exclude": ["node_modules", "dist"]
+}

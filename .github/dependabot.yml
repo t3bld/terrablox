@@ -1,0 +1,93 @@
+version: 2
+
+# Dependency updates, which nothing was doing.
+#
+# The lockfile is committed and every install is `--frozen-lockfile`, so the resolved
+# versions only move when somebody moves them — which is the right default and also
+# the reason nothing was moving. `next` in particular sat on a `^14.1.0` range while
+# the 14.x line stopped receiving fixes for several advisories that are only patched
+# in 15.x.
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    # pnpm workspaces: Dependabot reads the root lockfile and opens one PR per group
+    # below, rather than one per package, which is the difference between a reviewable
+    # queue and forty open PRs.
+    versioning-strategy: increase
+    open-pull-requests-limit: 8
+    groups:
+      # Security fixes on their own, ungrouped by ecosystem position, so they are not
+      # waiting behind a major-version bump somebody is nervous about.
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+      # Everything else, split so a failing group is diagnosable. A single "all
+      # dependencies" PR that fails tells you nothing about which bump broke it.
+      next:
+        applies-to: version-updates
+        patterns:
+          - "next"
+          - "@next/*"
+          - "eslint-config-next"
+      react:
+        applies-to: version-updates
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      aws-sdk:
+        applies-to: version-updates
+        patterns:
+          - "@aws-sdk/*"
+      prisma:
+        applies-to: version-updates
+        patterns:
+          - "prisma"
+          - "@prisma/*"
+      tooling:
+        applies-to: version-updates
+        patterns:
+          - "typescript"
+          - "turbo"
+          - "@turbo/*"
+          - "@biomejs/*"
+          - "vitest"
+          - "tailwindcss"
+          - "postcss"
+          - "autoprefixer"
+      remaining:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "next"
+          - "@next/*"
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+          - "@aws-sdk/*"
+          - "prisma"
+          - "@prisma/*"
+          - "typescript"
+          - "turbo"
+          - "@turbo/*"
+          - "@biomejs/*"
+          - "vitest"
+          - "tailwindcss"
+          - "postcss"
+          - "autoprefixer"
+
+  # The workflows themselves. Actions are SHA-pinned, which is the safe choice and
+  # also means a pin never moves without something like this to move it.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 4

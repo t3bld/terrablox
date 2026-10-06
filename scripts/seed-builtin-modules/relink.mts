@@ -27,7 +27,7 @@
  */
 
 import { prisma } from "@/lib/database";
-import { BUILTIN_USER_ID } from "@/lib/modules/ownership";
+import { BUILTIN_USER_ID } from "@/lib/module-library/ownership";
 
 /**
  * Individual repositories that were renamed, old name to new name.

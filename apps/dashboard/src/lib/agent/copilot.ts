@@ -10,7 +10,7 @@ import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 /**
  * Copilot as the model behind the project agent.
  *
- * TerraBlox holds no model API key. Each turn runs on the signed-in user's own
+ * Terrablox holds no model API key. Each turn runs on the signed-in user's own
  * Copilot subscription, using the GitHub token they already granted us, so
  * usage is billed and rate-limited per user and their organisation's Copilot
  * policies apply unchanged.
@@ -170,7 +170,7 @@ export function discardCopilotClient(error: unknown): void {
  * Turns a Copilot failure into something the user can act on.
  *
  * The common case by far is a user without a Copilot seat, which is a fact
- * about their account and not a bug in TerraBlox.
+ * about their account and not a bug in Terrablox.
  */
 export function describeCopilotError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);

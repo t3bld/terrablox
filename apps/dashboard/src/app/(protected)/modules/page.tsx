@@ -11,9 +11,9 @@ import {
 import { Input } from "@terrablox/ui/input";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
+import { TagsInput } from "@terrablox/ui/tags-input";
 import { Filter, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
 import {
@@ -23,7 +23,6 @@ import {
 import { ModuleImportActions } from "@/components/module-import-actions";
 import { RepositoryCard } from "@/components/module-overview/repository-card";
 import type { RepositoryDto } from "@/components/module-overview/types";
-import { TagsInput } from "@/components/tags-input";
 
 function normalizeTag(input: string) {
   return input.trim().replace(/\s+/g, "-").toLowerCase();

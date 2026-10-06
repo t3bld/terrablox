@@ -6,9 +6,16 @@ import {
   type ProjectCanvasEdge,
   type ProjectCanvasNode,
 } from "@terrablox/graph";
+import { ComingLater } from "@terrablox/ui/coming-later";
 import { Dialog, DialogContent, DialogTitle } from "@terrablox/ui/dialog";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
+import {
+  type TabDefinition,
+  TabsNav,
+  tabPanelProps,
+} from "@terrablox/ui/tabs-nav";
+import { useToast } from "@terrablox/ui/toast";
 import {
   AlertCircle,
   ExternalLink,
@@ -24,21 +31,13 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
-import {
-  type TabDefinition,
-  TabsNav,
-  tabPanelProps,
-} from "@/components/layout/tabs-nav";
 import { ProjectActionsMenu } from "@/components/project-actions/project-actions-menu";
 import { AwsProjectStrip } from "@/components/project-detail/aws-project-strip";
 import { ChatPanel } from "@/components/project-detail/chat-panel";
-import { CostPanel } from "@/components/project-detail/cost-panel";
 import { DeployPanel } from "@/components/project-detail/deploy-panel";
 import { DeploySetupWizard } from "@/components/project-detail/deploy-setup-wizard";
-import { IntegrationGate } from "@/components/project-detail/integration-gate";
 import { LocalInspector } from "@/components/project-detail/local-inspector";
 import { LogPanel } from "@/components/project-detail/log-panel";
 import { ModuleInspector } from "@/components/project-detail/module-inspector";
@@ -46,7 +45,6 @@ import { ModuleLibrary } from "@/components/project-detail/module-library";
 import { ProjectArchitectureView } from "@/components/project-detail/project-architecture-view";
 import { StatePanel } from "@/components/project-detail/state-panel";
 import { useProjectAws } from "@/lib/aws/use-project-aws";
-import { useIntegrationStatus } from "@/lib/integrations/use-integration-status";
 import { canvasNodeId } from "@/lib/projects/locals";
 import type {
   ProjectDto,
@@ -102,8 +100,15 @@ const GRAPH_LEVELS: {
   },
 ];
 
-const INFRACOST_REASON =
-  "Connect Infracost in Account settings to use this tab";
+/**
+ * The tab stays, the feature does not exist yet.
+ *
+ * Costs used to be priced through Infracost with each user's own key. That
+ * integration is gone for now, and the tab is kept locked rather than removed so
+ * the gap is visible: a tab that disappears reads as a feature that was never
+ * there, which is the one thing that is not true here.
+ */
+const COSTS_REASON = "Cost estimates are not available yet";
 
 export default function ProjectDetailPage({
   params,
@@ -112,6 +117,7 @@ export default function ProjectDetailPage({
 }) {
   const { projectId } = params;
   const router = useRouter();
+  const toast = useToast();
 
   const [tab, setTabState] = useState<ProjectTab>(DEFAULT_TAB);
 
@@ -161,7 +167,14 @@ export default function ProjectDetailPage({
   const [graph, setGraph] = useState<ProjectGraph | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * Why this page has no project, when it has none.
+   *
+   * A standing condition, so it stays on the page. Failed edits used to share
+   * this variable and are announced in the snackbar instead — they leave the page
+   * intact, and a banner for them competed with the one below that does not.
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   /**
    * Kept apart from `error`, which is for actions that failed and can be retried.
@@ -190,11 +203,6 @@ export default function ProjectDetailPage({
   /** The module library, collapsed the same way the agent panel is. */
   const [libraryOpen, setLibraryOpen] = useState(true);
   const [graphLevel, setGraphLevel] = useState<GraphLevel>("detail");
-  const {
-    status: integrations,
-    loading: integrationsLoading,
-    refresh: refreshIntegrations,
-  } = useIntegrationStatus();
 
   // Read once for the whole page: the strip under the tabs shows it everywhere,
   // and the Deploy and State gates act on the same answer.
@@ -213,11 +221,10 @@ export default function ProjectDetailPage({
    */
   const awsAccountId = aws?.connected ? aws.accountId : null;
 
-  const infracostReady = integrations?.infracost.connected ?? false;
-
   // Deploy and State are never locked: connecting AWS now happens inside them,
-  // so a lock would hide the only place the connection can be made. Costs still
-  // locks, because an Infracost key is set up on the account page.
+  // so a lock would hide the only place the connection can be made. Costs is
+  // locked unconditionally — there is nothing to connect, the feature is simply
+  // not built yet.
   const tabs = useMemo<TabDefinition<ProjectTab>[]>(
     () => [
       { value: "code", label: "Code", icon: Workflow },
@@ -227,15 +234,15 @@ export default function ProjectDetailPage({
         value: "costs",
         label: "Costs",
         icon: Wallet,
-        locked: !integrationsLoading && !infracostReady,
-        lockedReason: INFRACOST_REASON,
+        locked: true,
+        lockedReason: COSTS_REASON,
       },
       // Last, because it is read after the fact. It replaces the History tab
       // that was hidden here: the same operations, under the decision that
       // produced them and the reason it was made.
-      { value: "log", label: "Log", icon: ScrollText },
+      { value: "log", label: "Logs", icon: ScrollText },
     ],
-    [infracostReady, integrationsLoading],
+    [],
   );
 
   /**
@@ -279,7 +286,7 @@ export default function ProjectDetailPage({
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(
+          setLoadError(
             err instanceof Error ? err.message : "Failed to load project",
           );
         }
@@ -327,7 +334,6 @@ export default function ProjectDetailPage({
       options?: { optimisticLabel?: string },
     ) => {
       setBusy(true);
-      setError(null);
 
       const placeholderId =
         mutation.action === "add-module" && options?.optimisticLabel
@@ -384,7 +390,7 @@ export default function ProjectDetailPage({
           );
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Change failed");
+        toast.error(err instanceof Error ? err.message : "Change failed");
       } finally {
         setBusy(false);
         // Dropped on both paths: on success the committed graph now contains the
@@ -397,7 +403,7 @@ export default function ProjectDetailPage({
         }
       }
     },
-    [projectId, graph],
+    [projectId, graph, toast],
   );
 
   const savePositions = useCallback(
@@ -575,7 +581,7 @@ export default function ProjectDetailPage({
 
         {/* Above the retryable errors, and in a warning tone rather than a
             destructive one: nothing failed just now, the repository is simply not
-            there. The page below it still works — the Log is in the database, and
+            there. The page below it still works — the Logs are in the database, and
             the header can delete the project. */}
         {repoError ? (
           <p className="flex items-start gap-2 border-b bg-amber-500/10 px-4 py-2 text-amber-700 text-sm dark:text-amber-400">
@@ -584,10 +590,10 @@ export default function ProjectDetailPage({
           </p>
         ) : null}
 
-        {error ? (
+        {loadError ? (
           <p className="flex items-start gap-2 border-b bg-destructive/5 px-4 py-2 text-sm text-destructive">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            {error}
+            {loadError}
           </p>
         ) : null}
 
@@ -637,22 +643,15 @@ export default function ProjectDetailPage({
             {...tabPanelProps("project", "costs")}
             className="min-h-0 flex-1 overflow-y-auto"
           >
-            {integrationsLoading ? (
-              <Skeleton className="m-6 h-64" />
-            ) : infracostReady ? (
-              <CostPanel projectId={projectId} />
-            ) : (
-              <IntegrationGate
-                blocked={[
-                  "The monthly estimate for what this project would run",
-                  "Per-module and per-resource pricing",
-                  "Re-pricing the plan after a change",
-                ]}
-                explanation="Estimates are priced through Infracost with your own API key. TerraBlox keeps no shared key, so nothing can be priced until you add one."
-                onRecheck={() => void refreshIntegrations()}
-                provider="Infracost"
-              />
-            )}
+            <ComingLater
+              explanation="Pricing a project needs a real plan to price, and the estimator that produced one has been taken out again. Until it is back, the module library is where cost drivers are visible."
+              feature="Cost estimates"
+              planned={[
+                "The monthly estimate for what this project would run",
+                "Per-module and per-resource pricing",
+                "Re-pricing after a change, so the effect of an edit is visible before it ships",
+              ]}
+            />
           </div>
         ) : tab === "log" ? (
           // No scroll here: the panel splits into a list and a detail column that

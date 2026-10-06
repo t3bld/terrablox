@@ -20,6 +20,7 @@ import {
   PanelRightClose,
   Send,
   Settings2,
+  Square,
   User,
   Wrench,
 } from "lucide-react";
@@ -98,6 +99,15 @@ export function ChatPanel({
   const [copilotPlan, setCopilotPlan] = useState<CopilotPlan | null>(null);
   /** The running turn's trail, refreshed by the status poll. */
   const [liveSteps, setLiveSteps] = useState<AgentStep[]>([]);
+  /**
+   * Stop has been pressed and the turn has not ended yet.
+   *
+   * Its own flag rather than reusing `sending`, because the gap between the two is
+   * the thing the user needs to see: the request to stop returns at once, while the
+   * turn takes up to a second to notice and however long the runtime needs to wind
+   * down. Without it the button goes back to looking unpressed.
+   */
+  const [stopping, setStopping] = useState(false);
 
   /**
    * Percent of the metered budget still available, or null when there is no
@@ -157,6 +167,7 @@ export function ChatPanel({
             setMessages(msgBody.messages ?? []);
           }
           setSending(false);
+          setStopping(false);
         } catch {
           // Swallowed: polling is best-effort.
         }
@@ -305,6 +316,29 @@ export function ChatPanel({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  /**
+   * Asks the server to stop the running turn.
+   *
+   * Only the request is made here. The turn ends on the server, so the panel finds
+   * out the way it finds out about everything else: this tab through the awaited
+   * POST returning, another tab through the status poll. Ending the spinner here
+   * would claim a stop that has not happened yet.
+   */
+  async function stop() {
+    if (!sending || stopping) return;
+
+    setStopping(true);
+    try {
+      const response = await fetch(`/api/projects/${projectId}/chat/stop`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error("Could not stop the turn");
+    } catch (err) {
+      setStopping(false);
+      setError(err instanceof Error ? err.message : "Could not stop the turn");
+    }
+  }
+
   async function send() {
     const message = input.trim();
     if (!message || sending) return;
@@ -366,6 +400,7 @@ export function ChatPanel({
       );
     } finally {
       setSending(false);
+      setStopping(false);
       stopPolling();
       setLiveSteps([]);
     }
@@ -436,7 +471,7 @@ export function ChatPanel({
             <ChatBubble key={message.id} message={message} />
           ))
         )}
-        {sending ? <LiveSteps steps={liveSteps} /> : null}
+        {sending ? <LiveSteps steps={liveSteps} stopping={stopping} /> : null}
         <div ref={bottomRef} />
       </div>
 
@@ -464,14 +499,35 @@ export function ChatPanel({
             placeholder="Describe what to build"
             className="min-h-10 min-w-0 flex-1 resize-none border-0 bg-transparent px-2 py-2 text-sm leading-5 ring-0 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-0"
           />
-          <Button
-            size="icon"
-            className="shrink-0"
-            onClick={() => void send()}
-            disabled={sending || input.trim().length === 0}
-          >
-            <Send className="h-4 w-4" />
-          </Button>
+          {/* One button, two jobs. While a turn runs, Send has nothing to do —
+              it was disabled, sitting where the only useful action now is. */}
+          {sending ? (
+            <Button
+              aria-label="Stop the agent"
+              className="shrink-0"
+              disabled={stopping}
+              onClick={() => void stop()}
+              size="icon"
+              title="Stop the agent"
+              variant="outline"
+            >
+              {stopping ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Square className="h-3.5 w-3.5" />
+              )}
+            </Button>
+          ) : (
+            <Button
+              aria-label="Send"
+              className="shrink-0"
+              disabled={input.trim().length === 0}
+              onClick={() => void send()}
+              size="icon"
+            >
+              <Send className="h-4 w-4" />
+            </Button>
+          )}
         </div>
         <div className="flex items-center gap-1.5">
           <ChatModelPicker
@@ -529,8 +585,19 @@ function ChatBubble({ message }: { message: ProjectChatMessageDto }) {
   const [showSteps, setShowSteps] = useState(false);
 
   if (message.role === "system") {
+    // A turn the user stopped is the one system message that is not a failure, so
+    // it is not painted like one. Red here would report their own decision back to
+    // them as something that went wrong.
+    const stopped = message.metadata.stopped === true;
+
     return (
-      <p className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+      <p
+        className={`rounded-md border px-3 py-2 text-xs ${
+          stopped
+            ? "text-muted-foreground"
+            : "border-destructive/40 bg-destructive/5 text-destructive"
+        }`}
+      >
         {message.content}
       </p>
     );
@@ -648,7 +715,14 @@ function StepRow({ step }: { step: AgentStep }) {
  * downwards like the transcript it is part of, and older ones scroll away rather
  * than pushing the composer off the screen.
  */
-function LiveSteps({ steps }: { steps: AgentStep[] }) {
+function LiveSteps({
+  steps,
+  stopping = false,
+}: {
+  steps: AgentStep[];
+  /** Stop was pressed; the turn is winding down but has not ended yet. */
+  stopping?: boolean;
+}) {
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -676,7 +750,11 @@ function LiveSteps({ steps }: { steps: AgentStep[] }) {
         }`}
       >
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        {steps.length > 0 ? "Working…" : "The agent is working…"}
+        {stopping
+          ? "Stopping…"
+          : steps.length > 0
+            ? "Working…"
+            : "The agent is working…"}
       </div>
     </div>
   );

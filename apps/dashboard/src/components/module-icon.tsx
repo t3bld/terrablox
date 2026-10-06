@@ -1,10 +1,9 @@
 "use client";
 
+import { AWS_ICON_NAMES } from "@terrablox/terraform/aws-icon-manifest";
 import { Box } from "lucide-react";
 import { useState } from "react";
-
-import { type IconMode, isIconMode } from "@/lib/modules/icon";
-import { AWS_ICON_NAMES } from "@/lib/terraform/aws-icon-manifest";
+import { type IconMode, isIconMode } from "@/lib/module-library/icon";
 
 export interface ModuleIconRef {
   /** Source id, needed to reach the repository's own icon through our proxy. */

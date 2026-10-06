@@ -1,12 +1,17 @@
 import type { Prisma } from "@terrablox/database";
+import { GithubRequestError } from "@terrablox/git/client";
 import { NextResponse } from "next/server";
-
+import { z } from "zod";
 import {
-  getCurrentUserId,
-  getProviderTokenForRequest,
-} from "@/lib/auth/server-helpers";
+  parseJsonBody,
+  requireUserId,
+  requireUserWithLimit,
+} from "@/lib/api/guard";
+import { RATE_LIMITS } from "@/lib/api/rate-limit";
+import { notFound, routeError, unauthorized } from "@/lib/api/route-error";
+import * as schema from "@/lib/api/schemas";
+import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { GithubRequestError } from "@/lib/github/repo-files";
 import { readDeployState } from "@/lib/projects/deploy-service";
 import { findOwnedProject } from "@/lib/projects/service";
 import { resolveTemplateConfig } from "@/lib/projects/workflow-templates";
@@ -15,137 +20,101 @@ export async function GET(
   req: Request,
   { params }: { params: { projectId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const project = await findOwnedProject(userId, params.projectId);
-  if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  }
-
-  const token = await getProviderTokenForRequest(req, project.provider);
-  if (!token) {
-    return NextResponse.json(
-      { error: "GitHub is not connected" },
-      { status: 401 },
-    );
-  }
-
   try {
+    const userId = await requireUserId({ action: "deploy.read" });
+
+    const project = await findOwnedProject(userId, params.projectId);
+    if (!project) return notFound("Project not found");
+
+    const token = await getProviderTokenForRequest(req, project.provider);
+    if (!token) return unauthorized("GitHub is not connected");
+
     return NextResponse.json({ deploy: await readDeployState(token, project) });
   } catch (e) {
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Failed to read deployment" },
-      { status: e instanceof GithubRequestError ? e.status : 500 },
-    );
+    if (e instanceof GithubRequestError) {
+      return NextResponse.json({ error: e.message }, { status: e.status });
+    }
+    return routeError("deploy.read", e);
   }
 }
 
-interface DeployPatchBody {
-  awsAccountId?: string | null;
-  awsRegion?: string;
-  awsRoleArn?: string | null;
-  stateBucket?: string | null;
-  stateLockTable?: string | null;
-  stateKmsKeyArn?: string | null;
-  /** Workflow template configuration, normalised by the catalogue. */
-  templates?: unknown;
-}
-
-const ROLE_ARN_PATTERN = /^arn:aws[a-z-]*:iam::\d{12}:role\/.+$/;
-const ACCOUNT_ID_PATTERN = /^\d{12}$/;
-const REGION_PATTERN = /^[a-z]{2}(-[a-z]+)+-\d$/;
-
-/** Empty input clears the setting; whitespace-only input is the same thing. */
-function optional(value: string | null | undefined): string | null | undefined {
-  if (value === undefined) return undefined;
-  return value?.trim() ? value.trim() : null;
-}
+/**
+ * The deployment settings a person can change.
+ *
+ * Every field here ends up in a file Terrablox generates and commits, which is why
+ * they are all pattern-constrained rather than merely trimmed:
+ *
+ *   - `stateBucket` and `stateKmsKeyArn` are interpolated into `backend.tf`, inside
+ *     double-quoted HCL strings. Unvalidated, a value containing `"` closed the
+ *     string and appended arbitrary Terraform to a file labelled "Managed by
+ *     Terrablox" — which `terraform init` then read and applied through a role
+ *     holding AdministratorAccess. They were the only two fields on this route
+ *     without a pattern, while the three AWS identifiers beside them had one.
+ *   - `awsRegion`, `awsRoleArn` and `awsAccountId` reach the workflow YAML.
+ *
+ * `.nullable()` on the optional ones because clearing a field is a real operation:
+ * `null` unsets, an absent key leaves the stored value alone. `z.optional()` and
+ * `.nullable()` therefore mean different things here and both are needed.
+ */
+const patchBody = z.object({
+  awsAccountId: schema.accountId.nullable().optional(),
+  awsRegion: schema.region.optional(),
+  awsRoleArn: schema.roleArn.nullable().optional(),
+  stateBucket: schema.bucketName.nullable().optional(),
+  stateKmsKeyArn: schema.kmsKeyArn.nullable().optional(),
+  /** Workflow template configuration, normalised again by the catalogue. */
+  templates: z.unknown().optional(),
+});
 
 export async function PATCH(
   req: Request,
   { params }: { params: { projectId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const project = await findOwnedProject(userId, params.projectId);
-  if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
-  }
-
-  const body = (await req.json().catch(() => null)) as DeployPatchBody | null;
-  if (!body) {
-    return NextResponse.json({ error: "Missing body" }, { status: 400 });
-  }
-
-  const awsAccountId = optional(body.awsAccountId);
-  const awsRoleArn = optional(body.awsRoleArn);
-  const awsRegion = body.awsRegion?.trim();
-
-  // Validated here because a typo only surfaces as a failed deployment
-  // minutes later, in a log the user has to go looking for.
-  if (awsAccountId && !ACCOUNT_ID_PATTERN.test(awsAccountId)) {
-    return NextResponse.json(
-      { error: "An AWS account ID is 12 digits" },
-      { status: 400 },
+  try {
+    const userId = await requireUserWithLimit(
+      "deploy.write",
+      RATE_LIMITS.infrastructure,
     );
-  }
-  if (awsRoleArn && !ROLE_ARN_PATTERN.test(awsRoleArn)) {
-    return NextResponse.json(
-      {
-        error:
-          "Expected an IAM role ARN, e.g. arn:aws:iam::123456789012:role/deploy",
+
+    const project = await findOwnedProject(userId, params.projectId);
+    if (!project) return notFound("Project not found");
+
+    const body = await parseJsonBody(req, patchBody);
+
+    const updated = await database.project.update({
+      where: { id: project.id },
+      data: {
+        ...(body.awsAccountId !== undefined
+          ? { awsAccountId: body.awsAccountId }
+          : {}),
+        ...(body.awsRoleArn !== undefined
+          ? { awsRoleArn: body.awsRoleArn }
+          : {}),
+        ...(body.awsRegion !== undefined ? { awsRegion: body.awsRegion } : {}),
+        ...(body.stateBucket !== undefined
+          ? { stateBucket: body.stateBucket }
+          : {}),
+        ...(body.stateKmsKeyArn !== undefined
+          ? { stateKmsKeyArn: body.stateKmsKeyArn }
+          : {}),
+        // Stored through the catalogue's normaliser rather than as given: this is
+        // a JSON column, and an unknown template id or a bogus version string must
+        // never reach a renderer.
+        ...(body.templates !== undefined
+          ? {
+              deployTemplates: {
+                ...resolveTemplateConfig(body.templates),
+              } satisfies Record<string, unknown> as Prisma.InputJsonObject,
+            }
+          : {}),
       },
-      { status: 400 },
-    );
-  }
-  if (awsRegion !== undefined && !REGION_PATTERN.test(awsRegion)) {
-    return NextResponse.json(
-      { error: "Expected an AWS region, e.g. eu-central-1" },
-      { status: 400 },
-    );
-  }
+    });
 
-  const updated = await database.project.update({
-    where: { id: project.id },
-    data: {
-      ...(awsAccountId !== undefined ? { awsAccountId } : {}),
-      ...(awsRoleArn !== undefined ? { awsRoleArn } : {}),
-      ...(awsRegion !== undefined ? { awsRegion } : {}),
-      ...(optional(body.stateBucket) !== undefined
-        ? { stateBucket: optional(body.stateBucket) }
-        : {}),
-      ...(optional(body.stateLockTable) !== undefined
-        ? { stateLockTable: optional(body.stateLockTable) }
-        : {}),
-      ...(optional(body.stateKmsKeyArn) !== undefined
-        ? { stateKmsKeyArn: optional(body.stateKmsKeyArn) }
-        : {}),
-      // Stored through the catalogue's normaliser rather than as given: this is
-      // a JSON column, and an unknown template id or a bogus version string must
-      // never reach a renderer.
-      ...(body.templates !== undefined
-        ? {
-            deployTemplates: {
-              ...resolveTemplateConfig(body.templates),
-            } satisfies Record<string, unknown> as Prisma.InputJsonObject,
-          }
-        : {}),
-    },
-  });
+    const token = await getProviderTokenForRequest(req, updated.provider);
+    if (!token) return unauthorized("GitHub is not connected");
 
-  const token = await getProviderTokenForRequest(req, updated.provider);
-  if (!token) {
-    return NextResponse.json(
-      { error: "GitHub is not connected" },
-      { status: 401 },
-    );
+    return NextResponse.json({ deploy: await readDeployState(token, updated) });
+  } catch (e) {
+    return routeError("deploy.write", e);
   }
-
-  return NextResponse.json({ deploy: await readDeployState(token, updated) });
 }

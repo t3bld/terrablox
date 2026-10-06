@@ -1,16 +1,12 @@
 import "server-only";
 
-import { database } from "@/lib/database";
-
 import {
   AwsConnectionError,
   generateExternalId,
   isValidRegion,
   renderConnectionTemplate,
-  resolveTerraBloxPrincipal,
-} from "./connection";
-import type { AwsConnectionView } from "./connection-service";
-import { toView } from "./connection-service";
+  resolveTerrabloxPrincipal,
+} from "@terrablox/aws/connection";
 import {
   bootstrapRoleArn,
   createBootstrapStack,
@@ -21,7 +17,11 @@ import {
   pollDeviceToken,
   type SsoAccount,
   startDeviceAuthorization,
-} from "./sso";
+} from "@terrablox/aws/sso";
+import { decryptSecret, encryptSecret } from "@/lib/crypto/secret-box";
+import { database } from "@/lib/database";
+import type { AwsConnectionView } from "./connection-service";
+import { toView } from "./connection-service";
 
 /**
  * The guided path to a connected account: sign in, pick an account, done.
@@ -112,8 +112,10 @@ export async function startSsoLogin(
       // (polling, listing accounts, issuing credentials) reuses it.
       ssoRegion,
       clientId: device.clientId,
-      clientSecret: device.clientSecret,
-      deviceCode: device.deviceCode,
+      // Encrypted together because they are only useful together: `CreateToken`
+      // wants both, so either one alone redeems nothing.
+      clientSecretCiphertext: encryptSecret(device.clientSecret),
+      deviceCodeCiphertext: encryptSecret(device.deviceCode),
       interval: device.intervalSeconds,
       expiresAt: device.expiresAt,
     },
@@ -152,14 +154,34 @@ export async function checkSsoLogin(
     return { state: "expired" };
   }
 
+  const stored = record.accessTokenCiphertext
+    ? decryptSecret(record.accessTokenCiphertext)
+    : null;
+
+  /** Set when this login can never be redeemed, as opposed to not yet. */
+  let unredeemable = false;
+
   const accessToken =
-    record.accessToken ??
+    stored ??
     (await (async () => {
+      const clientSecret = decryptSecret(record.clientSecretCiphertext);
+      const deviceCode = decryptSecret(record.deviceCodeCiphertext);
+
+      // Nothing here can be recovered without these two, so a login whose
+      // secrets no longer decrypt is over. Reported as expired — which is what it
+      // is from the user's side — and the row goes, so the next attempt starts
+      // clean rather than polling a code that can never be redeemed.
+      if (!clientSecret || !deviceCode) {
+        await database.awsSsoLogin.delete({ where: { id: record.id } });
+        unredeemable = true;
+        return null;
+      }
+
       const result = await pollDeviceToken({
         ssoRegion: record.ssoRegion,
         clientId: record.clientId,
-        clientSecret: record.clientSecret,
-        deviceCode: record.deviceCode,
+        clientSecret,
+        deviceCode,
       });
 
       if (result.state !== "ready") return null;
@@ -167,7 +189,7 @@ export async function checkSsoLogin(
       await database.awsSsoLogin.update({
         where: { id: record.id },
         data: {
-          accessToken: result.accessToken,
+          accessTokenCiphertext: encryptSecret(result.accessToken),
           // The device code is spent; from here the token's own life is what
           // decides whether this login is still worth anything.
           expiresAt: result.tokenExpiresAt,
@@ -177,7 +199,12 @@ export async function checkSsoLogin(
       return result.accessToken;
     })());
 
-  if (!accessToken) return { state: "pending" };
+  // Told apart with a flag rather than by re-reading the row: this runs on every
+  // poll, which the browser makes every few seconds, and "still waiting" is by far
+  // the common answer. Expired stops the polling; pending continues it.
+  if (!accessToken) {
+    return unredeemable ? { state: "expired" } : { state: "pending" };
+  }
 
   return {
     state: "ready",
@@ -212,8 +239,20 @@ export async function completeSsoLogin(
 
   if (!record) return null;
 
-  if (!record.accessToken) {
+  if (!record.accessTokenCiphertext) {
     throw new AwsConnectionError("That sign-in is not finished.", "pending");
+  }
+
+  // Decrypted once and passed on from here: the token is needed twice below — to
+  // create the bootstrap stack, and to be re-encrypted onto the connection — and
+  // reading the column twice would mean two chances to forget the null check.
+  const accessToken = decryptSecret(record.accessTokenCiphertext);
+
+  if (!accessToken) {
+    throw new AwsConnectionError(
+      "That sign-in can no longer be read. Start the sign-in again.",
+      "expired",
+    );
   }
 
   if (!/^\d{12}$/.test(input.accountId)) {
@@ -228,7 +267,7 @@ export async function completeSsoLogin(
   }
 
   const label = input.label.trim().slice(0, 120);
-  const principalArn = await resolveTerraBloxPrincipal();
+  const principalArn = await resolveTerrabloxPrincipal();
 
   // With an identity of its own the app can be named in a trust policy, so it
   // creates a role and needs nobody present afterwards. Without one it keeps
@@ -258,7 +297,7 @@ export async function completeSsoLogin(
         ssoStartUrl: record.startUrl,
         ssoRegion: record.ssoRegion,
         ssoRoleName: input.roleName,
-        ssoAccessToken: record.accessToken,
+        ssoAccessTokenCiphertext: encryptSecret(accessToken),
         ssoExpiresAt: record.expiresAt,
         verifiedAt: new Date(),
         lastError: null,
@@ -281,7 +320,7 @@ export async function completeSsoLogin(
   if (principalArn) {
     await createBootstrapStack({
       ssoRegion: record.ssoRegion,
-      accessToken: record.accessToken,
+      accessToken,
       accountId: input.accountId,
       roleName: input.roleName,
       region: input.region,
@@ -307,7 +346,7 @@ export async function completeSsoLogin(
             ssoStartUrl: record.startUrl,
             ssoRegion: record.ssoRegion,
             ssoRoleName: input.roleName,
-            ssoAccessToken: record.accessToken,
+            ssoAccessTokenCiphertext: encryptSecret(accessToken),
             ssoExpiresAt: record.expiresAt,
             // Signing in *was* the proof; there is no trust policy to wait for.
             verifiedAt: new Date(),

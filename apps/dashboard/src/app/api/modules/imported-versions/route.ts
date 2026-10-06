@@ -2,14 +2,14 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { canonicalRepoUrl } from "@/lib/modules/import-from-git";
-import { visibleToUser } from "@/lib/modules/ownership";
+import { canonicalRepoUrl } from "@/lib/module-library/import-from-git";
+import { visibleToUser } from "@/lib/module-library/ownership";
 
 /**
  * Returns which versions (ref/tag names) are already imported for a given repo.
  * Used by the import dialog to disable already-imported refs.
  *
- * Counts the catalogue TerraBlox ships with as imported. Otherwise a shipped
+ * Counts the catalogue Terrablox ships with as imported. Otherwise a shipped
  * repository would offer itself for import, and accepting would write a second
  * source row for the same URL — leaving the modules page with two cards for one
  * repository and no way to tell them apart.

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { visibleToUser } from "@/lib/modules/ownership";
+import { visibleToUser } from "@/lib/module-library/ownership";
 
 export async function GET() {
   const userId = await getCurrentUserId();

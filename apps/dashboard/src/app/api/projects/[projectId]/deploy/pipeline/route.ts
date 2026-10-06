@@ -1,10 +1,10 @@
+import { GithubRequestError } from "@terrablox/git/client";
 import { NextResponse } from "next/server";
-
-import {
-  getCurrentUserId,
-  getProviderTokenForRequest,
-} from "@/lib/auth/server-helpers";
-import { GithubRequestError } from "@/lib/github/repo-files";
+import { requireUserWithLimit } from "@/lib/api/guard";
+import { RATE_LIMITS } from "@/lib/api/rate-limit";
+import { routeError } from "@/lib/api/route-error";
+import { audit } from "@/lib/audit/log";
+import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import {
   readDeployState,
   writeDeployPipeline,
@@ -16,9 +16,17 @@ export async function POST(
   req: Request,
   { params }: { params: { projectId: string } },
 ) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Writes `.github/workflows/**` to the user's repository — files GitHub will
+  // execute, and which need the `workflow` OAuth scope to commit at all. That makes it
+  // an infrastructure-budget action rather than an ordinary write.
+  let userId: string;
+  try {
+    userId = await requireUserWithLimit(
+      "deploy.pipeline",
+      RATE_LIMITS.infrastructure,
+    );
+  } catch (e) {
+    return routeError("deploy.pipeline", e);
   }
 
   const project = await findOwnedProject(userId, params.projectId);
@@ -43,6 +51,23 @@ export async function POST(
 
   try {
     const commit = await writeDeployPipeline(token, project);
+
+    // The commit sha is the whole point of the row: it ties the audit trail to the
+    // exact workflow content that will run, which is the thing a reviewer would want
+    // to look up later.
+    await audit({
+      action: "deploy.pipeline.written",
+      userId,
+      subject: project.id,
+      detail: {
+        repo: project.repoFullName,
+        branch: project.repoBranch,
+        ...(commit && typeof commit === "object" && "sha" in commit
+          ? { sha: (commit as { sha?: unknown }).sha }
+          : {}),
+      },
+    });
+
     return NextResponse.json({
       commit,
       deploy: await readDeployState(token, project),

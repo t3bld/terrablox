@@ -1,16 +1,15 @@
 "use client";
 
+import type { ModuleDependent } from "@terrablox/terraform/module-link";
 import { Badge } from "@terrablox/ui/badge";
 import { useMemo, useState } from "react";
-
-import type { ModuleDependent } from "@/lib/terraform/module-link";
+import type { ModuleDependencyDto } from "@/lib/module-library/types";
 import {
   EmptyMessage,
   FieldList,
   LinkRow,
   SearchField,
 } from "./field-primitives";
-import type { ModuleDependencyDto } from "./types";
 
 interface DependenciesTabProps {
   dependencies: ModuleDependencyDto[];

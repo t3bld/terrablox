@@ -1,12 +1,11 @@
-import { NextResponse } from "next/server";
-
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
-import { resolveProjectAwsSession } from "@/lib/aws/credentials";
-import { awsRouteError } from "@/lib/aws/route-error";
 import {
   createStateBucket,
   inspectStateBackend,
-} from "@/lib/aws/state-backend";
+} from "@terrablox/aws/state-backend";
+import { NextResponse } from "next/server";
+import { awsRouteError } from "@/lib/api/route-error";
+import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import { resolveProjectAwsSession } from "@/lib/aws/credentials";
 import { stateKey } from "@/lib/projects/deploy";
 import { findOwnedProject } from "@/lib/projects/service";
 

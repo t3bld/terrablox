@@ -21,7 +21,7 @@
 import { createInterface } from "node:readline/promises";
 
 import { prisma } from "@/lib/database";
-import { BUILTIN_USER_ID } from "@/lib/modules/ownership";
+import { BUILTIN_USER_ID } from "@/lib/module-library/ownership";
 
 const [sources, modules, userModules] = await Promise.all([
   prisma.terraformModuleSource.count({ where: { userId: BUILTIN_USER_ID } }),

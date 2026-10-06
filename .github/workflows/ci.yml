@@ -1,0 +1,101 @@
+name: CI
+
+# The gate the dashboard did not have.
+#
+# Until now the only workflow in this repository built the marketing site, so nothing
+# checked that the application compiles, lints or passes its tests before a merge. A
+# type error in a route handler reached whoever pulled next.
+on:
+  push:
+    # The default branch is `beta`; there is no `main` in this repository. This said
+    # `main`, which matched nothing — the same silent failure the website workflow
+    # already had and documents. A push to the default branch has to be checked,
+    # otherwise the only gate is a pull request and direct pushes go unverified.
+    branches: [beta]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only. Nothing here needs to write to the repository, and a token that cannot
+# push is one fewer thing to get right in a workflow that runs on pull requests —
+# including pull requests from forks.
+permissions:
+  contents: read
+
+# Supersede an in-flight run when the branch is pushed again. Safe for a checking
+# workflow: the only thing lost is a result about a commit nobody is looking at.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned to a commit SHA rather than a tag. A tag is mutable: the
+      # owner of an action can move `v4` to any commit, which makes every workflow
+      # that trusts it a supply-chain dependency on that account staying uncompromised.
+      # The `# v4.x.x` comment is what keeps the pin legible.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+        with:
+          version: 8.15.0
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The whole workspace, unlike the website job: the point here is to compile the
+      # dashboard, which needs every workspace package present.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `prisma generate` runs as a postinstall in packages/database, but only if that
+      # package was installed from scratch. Run it explicitly so the generated client
+      # exists whether or not the install was a cache hit — without it, type-check
+      # fails on every `database.` call for a reason that looks like broken code.
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Lint
+        run: pnpm check:ci
+
+      - name: Type-check
+        run: pnpm type-check
+
+      - name: Test
+        run: pnpm test
+
+      # Builds the app the way the Dockerfile does, which is the only check that
+      # catches a client/server boundary violation — `import "server-only"` in a
+      # component tree is a build error, not a type error.
+      - name: Build
+        run: pnpm --filter @terrablox/dashboard build
+        env:
+          # The build compiles route handlers, and `lib/auth/server.ts` now refuses to
+          # load without a real secret. A throwaway value is correct here: nothing is
+          # signed or encrypted during a build, and a placeholder would be rejected by
+          # the same length check that protects production.
+          BETTER_AUTH_SECRET: ci-build-only-not-a-real-secret-000000
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+          DIRECT_URL: postgresql://ci:ci@localhost:5432/ci
+
+  # Dependency review on pull requests, so a new advisory is caught at the point
+  # somebody proposes the dependency rather than in a later audit.
+  dependencies:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/dependency-review-action@3b139cfc5fae8b618d3eae3675e383bb1769c019 # v4.5.0
+        with:
+          # High and above fails the check. Moderate and low are reported but do not
+          # block: this repository's transitive tree carries a steady background of
+          # low-severity ReDoS advisories in build-only packages, and a gate that is
+          # always red is a gate nobody reads.
+          fail-on-severity: high
+          comment-summary-in-pr: always

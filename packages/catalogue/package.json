@@ -1,0 +1,21 @@
+{
+  "name": "@terrablox/catalogue",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The shipped module catalogue as a committed snapshot, plus the lookups over it. No database, no network.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./entries": "./src/entries.generated.ts"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.11",
+    "@terrablox/terraform": "workspace:*",
+    "@terrablox/tsconfig": "workspace:*",
+    "typescript": "^5.3.3"
+  }
+}

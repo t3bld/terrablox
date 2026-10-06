@@ -12,7 +12,7 @@
 import {
   ARCHITECTURE_MAP,
   resolveServiceIcon,
-} from "@/lib/terraform/aws-architecture";
+} from "@terrablox/terraform/aws-architecture";
 
 export interface StateResource {
   /** Full Terraform address, e.g. `module.vpc.aws_subnet.private[0]`. */

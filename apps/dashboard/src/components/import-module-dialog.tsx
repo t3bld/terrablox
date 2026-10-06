@@ -6,7 +6,7 @@ import type {
   GitProviderId,
   GitRepo,
   GitTag,
-} from "@terrablox/git-import";
+} from "@terrablox/git/types";
 import { Button } from "@terrablox/ui/button";
 import {
   Dialog,
@@ -17,16 +17,27 @@ import {
 } from "@terrablox/ui/dialog";
 import { Input } from "@terrablox/ui/input";
 import { Label } from "@terrablox/ui/label";
+import { TagsInput } from "@terrablox/ui/tags-input";
 import { Github, Loader2, Search } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { GithubInstallHint } from "@/components/github-install-hint";
 import { IconChoice, type RepoIconState } from "@/components/icon-picker";
-import { TagsInput } from "@/components/tags-input";
 import {
   findRepoIconPath,
   type IconChoiceValue,
   isIconMode,
-} from "@/lib/modules/icon";
+} from "@/lib/module-library/icon";
+import {
+  canContinue,
+  filterRepos,
+  type ImportStep,
+  importedVersionSet,
+  isRefSelected,
+  pruneImportedRefs,
+  type RefChoice,
+  toggleRefChoice,
+} from "@/lib/module-library/import-selection";
 
 interface ImportModuleDialogProps {
   provider: GitProviderId;
@@ -39,10 +50,6 @@ interface ImportModuleDialogProps {
    */
   onImported?: () => void;
 }
-
-type Step = 1 | 2 | 3;
-
-type RefChoice = { type: "branch" | "tag"; name: string };
 
 type ImportedSource = {
   name: string;
@@ -65,7 +72,7 @@ type ImportedModule = {
 
 type ImportedVersionsResponse = {
   repoImported?: boolean;
-  /** The repository is part of the catalogue TerraBlox ships with. */
+  /** The repository is part of the catalogue Terrablox ships with. */
   isBuiltin?: boolean;
   source?: ImportedSource;
   importedVersions?: string[];
@@ -78,8 +85,8 @@ type LookupImportResponse = {
   module?: ImportedModule;
 };
 
-function Stepper({ current }: { current: Step }) {
-  const items: Array<{ step: Step; label: string }> = [
+function Stepper({ current }: { current: ImportStep }) {
+  const items: Array<{ step: ImportStep; label: string }> = [
     { step: 1, label: "Repository" },
     { step: 2, label: "Version" },
     { step: 3, label: "Details" },
@@ -132,12 +139,19 @@ export function ImportModuleDialog({
 }: ImportModuleDialogProps) {
   const { user } = useAuth();
 
-  const [step, setStep] = useState<Step>(1);
+  const [step, setStep] = useState<ImportStep>(1);
 
   // Step 1
   const [repos, setRepos] = useState<GitRepo[]>([]);
   const [reposLoading, setReposLoading] = useState(true);
   const [reposError, setReposError] = useState<string | null>(null);
+  /** Null until the first load answers, so the hint cannot render prematurely. */
+  const [access, setAccess] = useState<{
+    installed: boolean;
+    installUrl: string;
+    /** Set while an organisation owner has yet to approve the app. */
+    pendingRequestAt: string | null;
+  } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedRepo, setSelectedRepo] = useState<GitRepo | null>(null);
 
@@ -157,11 +171,10 @@ export function ImportModuleDialog({
   } | null>(null);
   const [repoImportedLoading, setRepoImportedLoading] = useState(false);
 
-  const importedVersionSet = useMemo(() => {
-    return new Set(
-      (repoImportedInfo?.importedVersions ?? []).map((v) => v.trim()),
-    );
-  }, [repoImportedInfo?.importedVersions]);
+  const importedVersions = useMemo(
+    () => importedVersionSet(repoImportedInfo?.importedVersions),
+    [repoImportedInfo?.importedVersions],
+  );
 
   // Step 2
   // Git tags of the repository. Distinct from the user-defined metadata `tags`
@@ -276,16 +289,24 @@ export function ImportModuleDialog({
         const body = await response.json();
 
         if (!response.ok) {
-          const scopes = body?.scopes ? ` (scopes: ${body.scopes})` : "";
-          setReposError(
-            body?.error
-              ? `${body.error}${scopes}`
-              : "Failed to fetch repositories.",
-          );
+          // The scope note this used to append is gone with the OAuth App: a
+          // GitHub App token has no scopes, so it appended nothing and only made
+          // the message look like it was missing something.
+          setReposError(body?.error ?? "Failed to fetch repositories.");
           return;
         }
 
         setRepos(body.repos ?? []);
+        if (typeof body?.installUrl === "string") {
+          setAccess({
+            installed: body.installed === true,
+            installUrl: body.installUrl,
+            pendingRequestAt:
+              typeof body.pendingRequestAt === "string"
+                ? body.pendingRequestAt
+                : null,
+          });
+        }
       } catch (err) {
         setReposError(
           err instanceof Error ? err.message : "An unknown error occurred.",
@@ -298,11 +319,10 @@ export function ImportModuleDialog({
     fetchRepos();
   }, [open, provider, user]);
 
-  const filteredRepos = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase();
-    if (!q) return repos;
-    return repos.filter((repo) => repo.full_name.toLowerCase().includes(q));
-  }, [repos, searchQuery]);
+  const filteredRepos = useMemo(
+    () => filterRepos(repos, searchQuery),
+    [repos, searchQuery],
+  );
 
   // Step 2: fetch refs when repo selected
   useEffect(() => {
@@ -373,14 +393,14 @@ export function ImportModuleDialog({
           brs.find((b) => b.name === repoToLoad.default_branch) ??
           brs.find((b) => b.name === "main") ??
           brs.find((b) => b.name === "master");
-        if (defaultBranch && !importedVersionSet.has(defaultBranch.name)) {
+        if (defaultBranch && !importedVersions.has(defaultBranch.name)) {
           defaults.push({ type: "branch", name: defaultBranch.name });
         }
 
         // The provider sorts tags newest-first numerically, so the head is the
         // latest version.
         const newestTag = tgs[0];
-        if (newestTag && !importedVersionSet.has(newestTag.name)) {
+        if (newestTag && !importedVersions.has(newestTag.name)) {
           defaults.push({ type: "tag", name: newestTag.name });
         }
 
@@ -400,49 +420,20 @@ export function ImportModuleDialog({
     fetchRefs();
 
     return () => controller.abort();
-  }, [open, provider, selectedRepo, step, importedVersionSet]);
+  }, [open, provider, selectedRepo, step, importedVersions]);
 
-  // The defaults are picked when the refs load, but which versions already exist
-  // arrives from a separate lookup that can land afterwards. Without this, a
-  // pre-selected ref could turn out to be imported already — and its row is then
-  // not clickable, so the user could not take it out of a selection they never
-  // made. Pruning here rather than relaxing the row keeps "already imported means
-  // not selectable" true in one place.
+  // Runs on every arrival of the lookup, because that is what can land after the
+  // defaults were picked. `pruneImportedRefs` returns the same array when it drops
+  // nothing, so the common case does not re-render the ref list.
   useEffect(() => {
-    if (importedVersionSet.size === 0) return;
+    setRefChoices((prev) => pruneImportedRefs(prev, importedVersions));
+  }, [importedVersions]);
 
-    setRefChoices((prev) => {
-      const kept = prev.filter(
-        (choice) => !importedVersionSet.has(choice.name),
-      );
-      return kept.length === prev.length ? prev : kept;
-    });
-  }, [importedVersionSet]);
-
-  const canContinue =
-    (step === 1 && !!selectedRepo) ||
-    (step === 2 && refChoices.length > 0) ||
-    step === 3;
-
-  /** Compares by type and name because the choices are recreated per render. */
-  function isRefSelected(type: RefChoice["type"], name: string) {
-    return refChoices.some(
-      (choice) => choice.type === type && choice.name === name,
-    );
-  }
-
-  function toggleRefChoice(type: RefChoice["type"], name: string) {
-    setRefChoices((prev) =>
-      prev.some((choice) => choice.type === type && choice.name === name)
-        ? prev.filter(
-            (choice) => !(choice.type === type && choice.name === name),
-          )
-        : [...prev, { type, name }],
-    );
-  }
-
-  // We no longer render step meta title/description in the header.
-  // const stepMeta = STEP_META[step];
+  const continueEnabled = canContinue({
+    step,
+    hasRepo: !!selectedRepo,
+    refCount: refChoices.length,
+  });
 
   async function onFinish() {
     // If the exact version is already imported, this dialog is effectively a viewer.
@@ -797,14 +788,23 @@ export function ImportModuleDialog({
                     </button>
                   );
                 })
+              ) : repos.length === 0 && access ? (
+                // The whole list is empty, not just the filtered view: the app was
+                // granted nothing to import from, and that is fixed on GitHub.
+                <div className="p-2">
+                  <GithubInstallHint
+                    installUrl={access.installUrl}
+                    installed={access.installed}
+                    pendingRequestAt={access.pendingRequestAt}
+                  />
+                </div>
               ) : (
                 <div className="flex flex-col items-center justify-center h-full text-center">
                   <p className="text-sm text-muted-foreground">
                     No repositories found.
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Try a different search term, or check organization access in
-                    your GitHub connection.
+                    Try a different search term.
                   </p>
                 </div>
               )}
@@ -817,7 +817,7 @@ export function ImportModuleDialog({
             {repoImportedInfo ? (
               <div className="rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">
                 {repoImportedInfo.isBuiltin
-                  ? "This repository ships with TerraBlox and is already in your module list. Its versions are disabled; pick another ref to add one of your own."
+                  ? "This repository ships with Terrablox and is already in your module list. Its versions are disabled; pick another ref to add one of your own."
                   : "This repository was imported before. Versions already imported are disabled."}
               </div>
             ) : null}
@@ -855,9 +855,9 @@ export function ImportModuleDialog({
                   </div>
                 ) : (
                   gitTags.map((t) => {
-                    const selected = isRefSelected("tag", t.name);
+                    const selected = isRefSelected(refChoices, "tag", t.name);
 
-                    const alreadyImported = importedVersionSet.has(t.name);
+                    const alreadyImported = importedVersions.has(t.name);
 
                     return (
                       <button
@@ -868,7 +868,9 @@ export function ImportModuleDialog({
                         } ${alreadyImported ? "opacity-60 cursor-not-allowed" : ""}`}
                         onClick={() => {
                           if (alreadyImported) return;
-                          toggleRefChoice("tag", t.name);
+                          setRefChoices((prev) =>
+                            toggleRefChoice(prev, "tag", t.name),
+                          );
                         }}
                         aria-pressed={selected}
                         aria-disabled={alreadyImported}
@@ -901,9 +903,13 @@ export function ImportModuleDialog({
                   </div>
                 ) : (
                   branches.map((b) => {
-                    const selected = isRefSelected("branch", b.name);
+                    const selected = isRefSelected(
+                      refChoices,
+                      "branch",
+                      b.name,
+                    );
 
-                    const alreadyImported = importedVersionSet.has(b.name);
+                    const alreadyImported = importedVersions.has(b.name);
 
                     return (
                       <button
@@ -914,7 +920,9 @@ export function ImportModuleDialog({
                         } ${alreadyImported ? "opacity-60 cursor-not-allowed" : ""}`}
                         onClick={() => {
                           if (alreadyImported) return;
-                          toggleRefChoice("branch", b.name);
+                          setRefChoices((prev) =>
+                            toggleRefChoice(prev, "branch", b.name),
+                          );
                         }}
                         aria-pressed={selected}
                         aria-disabled={alreadyImported}
@@ -1024,7 +1032,7 @@ export function ImportModuleDialog({
                   if (step === 2 && refChoices.length > 0) setStep(3);
                 }}
                 disabled={
-                  !canContinue ||
+                  !continueEnabled ||
                   saving ||
                   existingImportLoading ||
                   repoImportedLoading

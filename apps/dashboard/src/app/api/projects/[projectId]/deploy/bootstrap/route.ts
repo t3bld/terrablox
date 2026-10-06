@@ -1,20 +1,26 @@
-import type { Project } from "@terrablox/database";
-import { NextResponse } from "next/server";
-
 import {
-  getCurrentUserId,
-  getProviderTokenForRequest,
-} from "@/lib/auth/server-helpers";
-import {
+  allowStsAudience,
   applyBootstrapStack,
   DEPLOY_ROLE_OUTPUT,
+  deleteBootstrapStack,
   describeBootstrapStack,
-  hasGithubOidcProvider,
-} from "@/lib/aws/bootstrap";
+  readGithubOidcProvider,
+} from "@terrablox/aws/bootstrap";
+import type { Project } from "@terrablox/database";
+import { setRepoVariable } from "@terrablox/git/actions";
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import {
+  parseJsonBody,
+  requireUserId,
+  requireUserWithLimit,
+} from "@/lib/api/guard";
+import { RATE_LIMITS } from "@/lib/api/rate-limit";
+import { awsRouteError, routeError } from "@/lib/api/route-error";
+import { audit } from "@/lib/audit/log";
+import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { resolveProjectAwsSession } from "@/lib/aws/credentials";
-import { awsRouteError } from "@/lib/aws/route-error";
 import { database } from "@/lib/database";
-import { setRepoVariable } from "@/lib/github/actions-config";
 import {
   AWS_REGION_VARIABLE,
   AWS_ROLE_VARIABLE,
@@ -22,10 +28,8 @@ import {
   CREATE_OIDC_PARAMETER,
   DEPLOY_PERMISSIONS_POLICY_ARN,
   defaultKmsAlias,
-  defaultLockTable,
-  defaultStateBucket,
   KMS_KEY_OUTPUT_KEY,
-  LOCK_TABLE_OUTPUT_KEY,
+  newStateBucketName,
   PERMISSIONS_POLICY_PARAMETER,
   renderBootstrapTemplate,
   renderStateTemplate,
@@ -123,18 +127,19 @@ async function ensureDerivedSettings(
   const data: {
     awsAccountId?: string;
     stateBucket?: string;
-    stateLockTable?: string;
     roleStackName?: string;
     stateStackName?: string;
     stateKmsAlias?: string;
   } = {};
 
   if (!project.awsAccountId && account) data.awsAccountId = account;
+
+  // Minted here, and only where there is none: the name carries a random tail, so
+  // calling this twice would name two buckets. `!project.stateBucket` is what makes
+  // it happen once — and what makes a project that was reset get a *new* name
+  // rather than the one whose bucket is still standing in the account.
   if (!project.stateBucket && account) {
-    data.stateBucket = defaultStateBucket(project.name, account);
-  }
-  if (!project.stateLockTable) {
-    data.stateLockTable = defaultLockTable(project.name);
+    data.stateBucket = newStateBucketName(project.name, account);
   }
 
   // The stack names and the alias, pinned on the first apply for the same reason
@@ -161,11 +166,29 @@ async function ensureDerivedSettings(
   return database.project.update({ where: { id: project.id }, data });
 }
 
-/** Reports both stacks. Safe to poll while either is still building. */
-export async function GET(_req: Request, { params }: Params) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+/**
+ * Reports both stacks. Safe to poll while either is still building.
+ *
+ * `?deleting=<stackName>` asks after a stack by name, and is how the wizard waits
+ * out a deletion. It needs it because deleting forgets the stack in the same
+ * breath: once the pointer is gone there is no stored name left to poll, and the
+ * caller is the only one that still knows which stack it just took down.
+ *
+ * Repeatable, and answered with the subset that still exists. Both stacks can be
+ * coming down at once — tearing a project down is exactly that — and a single name
+ * meant the second deletion overwrote the first, which was then never seen to
+ * finish. Reporting which ones remain rather than a bare "still deleting" is what
+ * lets each step decide for itself, instead of both waiting on whichever was last.
+ *
+ * Read-only, and against the caller's own account — the same session that may
+ * create and delete stacks there.
+ */
+export async function GET(req: Request, { params }: Params) {
+  let userId: string;
+  try {
+    userId = await requireUserId({ action: "deploy.bootstrap.read" });
+  } catch (e) {
+    return routeError("deploy.bootstrap.read", e);
   }
 
   const project = await findOwnedProject(userId, params.projectId);
@@ -186,11 +209,63 @@ export async function GET(_req: Request, { params }: Params) {
     });
   }
 
+  // Deduplicated, and capped: the names come from a query string, and describing
+  // one stack per entry is a loop over caller-supplied input.
+  const deletingNames = [
+    ...new Set(
+      new URL(req.url).searchParams
+        .getAll("deleting")
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0),
+    ),
+  ].slice(0, 2);
+
   try {
-    const [role, state] = await Promise.all([
+    const [role, state, ...asked] = await Promise.all([
       describeBootstrapStack(resolved.session, roleStackNameOf(project)),
       describeBootstrapStack(resolved.session, stateStackNameOf(project)),
+      ...deletingNames.map((name) =>
+        describeBootstrapStack(resolved.session, name),
+      ),
     ]);
+
+    // The names that still answer. A stack mid-deletion is `DELETE_IN_PROGRESS`
+    // and describable; once it is gone, `describeBootstrapStack` returns null.
+    const deleting = deletingNames.filter((_, index) => asked[index] !== null);
+
+    /**
+     * Whether the account still has the identity provider the role trusts.
+     *
+     * Checked because the role can be perfectly formed and still unusable. The
+     * provider is account-wide and shared by every project here, so it belongs to
+     * whichever project's stack created it first — and if that stack was deleted,
+     * this role's trust policy goes on naming a principal that is gone. Nothing
+     * about the role, the stack or the stored ARN changes, so the setup reads as
+     * finished and the failure surfaces minutes later inside a workflow, as
+     * `Not authorized to perform sts:AssumeRoleWithWebIdentity` — pointing at the
+     * role, which is the one place the cause is not.
+     *
+     * Only asked once the role stack has succeeded: before that the answer is
+     * either irrelevant or about to change, and this would otherwise be an IAM call
+     * on every poll of a building stack. Null means the session could not tell,
+     * which is reported as unknown rather than as missing — a session that may not
+     * list providers must not make a working setup look broken.
+     */
+    const provider = role?.succeeded
+      ? await readGithubOidcProvider(resolved.session)
+      : null;
+
+    // Three answers, not two, and the middle one is the one that used to be
+    // invisible: no provider at all, one that will not accept the audience the
+    // role asks for, or a working trust. Null still means "could not tell".
+    const oidcProvider =
+      provider === null
+        ? null
+        : provider.arn === null
+          ? "missing"
+          : provider.acceptsSts
+            ? "ready"
+            : "wrong-audience";
 
     const here = resolved.session.accountId;
 
@@ -230,6 +305,10 @@ export async function GET(_req: Request, { params }: Params) {
       connected: true,
       role,
       state,
+      // Null both when nothing was asked about and when the stack has finished
+      // going, which is the same answer to the only question the caller has.
+      deleting,
+      oidcProvider,
       drift: { role: roleDrift, state: stateDrift },
     });
   } catch (error) {
@@ -238,9 +317,16 @@ export async function GET(_req: Request, { params }: Params) {
 }
 
 export async function POST(req: Request, { params }: Params) {
-  const userId = await getCurrentUserId();
-  if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // The infrastructure budget: this submits a CloudFormation stack into a customer's
+  // AWS account, which creates real IAM roles and an encrypted state bucket.
+  let userId: string;
+  try {
+    userId = await requireUserWithLimit(
+      "deploy.bootstrap",
+      RATE_LIMITS.infrastructure,
+    );
+  } catch (e) {
+    return routeError("deploy.bootstrap", e);
   }
 
   const project = await findOwnedProject(userId, params.projectId);
@@ -248,19 +334,28 @@ export async function POST(req: Request, { params }: Params) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const body = (await req.json().catch(() => ({}))) as {
-    action?: unknown;
-    stack?: unknown;
-    createOidcProvider?: unknown;
-  };
+  let body: { action?: unknown; stack?: unknown; createOidcProvider?: unknown };
+  try {
+    // An empty body is meaningful here — it means the default `apply` — so the schema
+    // defaults rather than requires. What it adds over `.catch(() => ({}))` is the
+    // size cap and a rejection for a malformed body instead of silently treating it
+    // as "apply", which is the one action with an effect in AWS.
+    body = await parseJsonBody(
+      req,
+      z
+        .object({
+          action: z.enum(["apply", "adopt", "reset", "delete"]).optional(),
+          stack: z.unknown().optional(),
+          createOidcProvider: z.boolean().optional(),
+        })
+        .default({}),
+    );
+  } catch (e) {
+    return routeError("deploy.bootstrap", e);
+  }
 
   const stack = parseStack(body.stack);
-  const action =
-    body.action === "adopt"
-      ? "adopt"
-      : body.action === "reset"
-        ? "reset"
-        : "apply";
+  const action = body.action ?? "apply";
 
   /**
    * Forgets a bootstrap this project can no longer reach, so a fresh one can be
@@ -296,6 +391,62 @@ export async function POST(req: Request, { params }: Params) {
     return NextResponse.json({ reset: true });
   }
 
+  /**
+   * Deletes one of the two stacks in AWS, then forgets it here.
+   *
+   * The counterpart to `reset` above, and the difference is the whole point: that
+   * one stops pointing at a stack and leaves it standing, this one takes it down.
+   * Both are needed because they answer opposite questions — "this was set up
+   * somewhere I can no longer reach" against "I want this gone".
+   *
+   * Deleting in AWS first, and only clearing the pointers once CloudFormation has
+   * accepted it. A refused delete has to leave the project still pointing at the
+   * stack that is still there, or the wizard would offer to create a second one
+   * beside it.
+   *
+   * The pointers do go immediately, though, rather than waiting for the stack to
+   * finish disappearing. It leaves a gap in which the step reads "not set up" while
+   * a stack is still in `DELETE_IN_PROGRESS`, and a create started inside that gap
+   * is refused by CloudFormation. That is a plain error and it self-corrects on the
+   * next press, which is better than the alternative: keeping the pointers means
+   * the drift check sees a project claiming a stack that no longer answers, and
+   * offers a recovery for a problem the user has just deliberately caused.
+   */
+  if (action === "delete") {
+    const resolved = await resolveProjectAwsSession(userId, project, "write");
+    if (!resolved.ok) {
+      return NextResponse.json({ error: resolved.message }, { status: 400 });
+    }
+
+    const stackName =
+      stack === "state" ? stateStackNameOf(project) : roleStackNameOf(project);
+
+    try {
+      await deleteBootstrapStack(resolved.session, stackName);
+    } catch (error) {
+      return awsRouteError(error);
+    }
+
+    // Only the half that was deleted. The two stacks have separate lifetimes, and
+    // clearing the state pointers because the role went would tell the user their
+    // Terraform state was gone when the bucket is untouched.
+    await database.project.update({
+      where: { id: project.id },
+      data:
+        stack === "state"
+          ? {
+              stateBucket: null,
+              stateLockTable: null,
+              stateKmsKeyArn: null,
+              stateStackName: null,
+              stateKmsAlias: null,
+            }
+          : { awsRoleArn: null, roleStackName: null },
+    });
+
+    return NextResponse.json({ deleted: true, stackName });
+  }
+
   if (action === "apply") {
     const resolved = await resolveProjectAwsSession(userId, project, "write");
     if (!resolved.ok) {
@@ -320,15 +471,41 @@ export async function POST(req: Request, { params }: Params) {
 
       const context = pipelineContext(prepared);
 
-      // An account can hold only one identity provider per URL, so whether to
-      // create it is a fact about the account rather than a question for the
-      // user: asked here, the second project in an account succeeds instead of
-      // failing on that one resource and taking its own stack down with it. The
-      // caller can still force reuse; it cannot force a create that IAM refuses.
-      const reuseOidcProvider =
-        stack === "role" &&
-        (body.createOidcProvider === false ||
-          (await hasGithubOidcProvider(resolved.session)) === true);
+      /**
+       * Whether to leave the identity provider to a stack that already owns it.
+       *
+       * An account can hold only one per URL, so this is a fact about the account
+       * rather than a question for the user: asked here, the second project in an
+       * account succeeds instead of failing on that one resource and taking its own
+       * stack down with it. The caller can still force reuse; it cannot force a
+       * create that IAM refuses.
+       *
+       * Reuse now depends on the provider being *usable*, not merely present. One
+       * registered for a different audience answered "GitHub is trusted here", so
+       * the stack was told not to manage it, and the role came out perfectly formed
+       * and impossible to assume — with the same wrong answer returned on every
+       * retry, so redoing the entire setup changed nothing. Where that is the case
+       * the audience is added first, which is additive and leaves whatever else was
+       * using the provider alone; IAM will not allow a second provider for the URL
+       * and CloudFormation cannot adopt one it did not create, so repairing it in
+       * place is the only fix that exists.
+       */
+      let reuseOidcProvider = false;
+      if (stack === "role") {
+        const provider = await readGithubOidcProvider(resolved.session);
+
+        if (body.createOidcProvider === false) {
+          reuseOidcProvider = true;
+        } else if (provider?.arn) {
+          if (!provider.acceptsSts) {
+            await allowStsAudience(resolved.session, provider.arn);
+          }
+          reuseOidcProvider = true;
+        }
+        // A null read means IAM could not be asked. Creating is the only answer
+        // that works on a fresh account, and a create that collides is refused by
+        // CloudFormation with its own message rather than silently doing nothing.
+      }
 
       const result = await applyBootstrapStack(resolved.session, {
         stackName,
@@ -343,6 +520,23 @@ export async function POST(req: Request, { params }: Params) {
                 [PERMISSIONS_POLICY_PARAMETER]: DEPLOY_PERMISSIONS_POLICY_ARN,
                 [CREATE_OIDC_PARAMETER]: reuseOidcProvider ? "no" : "yes",
               },
+      });
+
+      // A stack submission creates IAM roles and an encrypted state bucket in
+      // somebody's AWS account. Recorded after the call so the row means "submitted",
+      // and with the account and stack named so it can be reconciled against
+      // CloudTrail on the other side.
+      await audit({
+        action: "deploy.bootstrap.submitted",
+        userId,
+        subject: project.id,
+        detail: {
+          stack,
+          stackName,
+          awsAccountId: project.awsAccountId,
+          region: resolved.session.region,
+          reusedOidcProvider: reuseOidcProvider,
+        },
       });
 
       return NextResponse.json({
@@ -379,8 +573,6 @@ export async function POST(req: Request, { params }: Params) {
         data: {
           stateBucket:
             described.outputs[STATE_BUCKET_OUTPUT_KEY] ?? project.stateBucket,
-          stateLockTable:
-            described.outputs[LOCK_TABLE_OUTPUT_KEY] ?? project.stateLockTable,
           stateKmsKeyArn:
             described.outputs[KMS_KEY_OUTPUT_KEY] ?? project.stateKmsKeyArn,
         },
@@ -422,7 +614,6 @@ function settingsOf(project: Project) {
     awsRegion: project.awsRegion,
     awsRoleArn: project.awsRoleArn,
     stateBucket: project.stateBucket,
-    stateLockTable: project.stateLockTable,
     stateKmsKeyArn: project.stateKmsKeyArn,
   };
 }

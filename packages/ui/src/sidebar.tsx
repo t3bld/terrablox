@@ -95,8 +95,16 @@ const SidebarProvider = React.forwardRef<
 
         // CookieStore is not available in Safari yet, and this only persists a
         // UI preference. SameSite=Lax keeps it off cross-site requests.
+        //
+        // `Secure` is added when the page is already on https, and only then:
+        // hard-coding it would make the cookie silently fail to set on a plain-http
+        // development server, so the sidebar would forget its state every navigation.
+        // Nothing here is sensitive — the flag is for consistency, so that no cookie
+        // this app sets travels in clear text on a deployment that is otherwise TLS.
         // biome-ignore lint/suspicious/noDocumentCookie: CookieStore lacks Safari support
-        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}; SameSite=Lax`;
+        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}; SameSite=Lax${
+          window.location.protocol === "https:" ? "; Secure" : ""
+        }`;
       },
       [setOpenProp, open],
     );

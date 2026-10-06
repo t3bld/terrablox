@@ -1,16 +1,12 @@
 import "server-only";
 
 import type { Project } from "@terrablox/database";
-import { parseOutputs, parseVariables } from "@/components/module-detail/types";
-import { database } from "@/lib/database";
 import {
   commitFiles,
   type FileChange,
   listRepoTree,
   readRepoFile,
-} from "@/lib/github/repo-files";
-import { visibleToUser } from "@/lib/modules/ownership";
-import { analyzeTerraformFiles } from "@/lib/terraform/analyze";
+} from "@terrablox/git/files";
 import {
   appendBlock,
   findBlock,
@@ -29,8 +25,12 @@ import {
   setBlockAttribute,
   setLocalsEntry,
   uniqueBlockLabel,
-} from "@/lib/terraform/hcl-edit";
-import { resolveModuleLink } from "@/lib/terraform/module-link";
+} from "@terrablox/terraform/hcl-edit";
+import { resolveModuleLink } from "@terrablox/terraform/module-link";
+import { database } from "@/lib/database";
+import { analyzeTerraformFiles } from "@/lib/module-library/analyze";
+import { visibleToUser } from "@/lib/module-library/ownership";
+import { parseOutputs, parseVariables } from "@/lib/module-library/types";
 
 import {
   buildProjectGraph,
@@ -147,7 +147,7 @@ export async function readProjectFiles(
 /**
  * The modules a project may draw on, in the shape the graph builder expects.
  *
- * The user's own imports plus the catalogue TerraBlox ships with. Both have to be
+ * The user's own imports plus the catalogue Terrablox ships with. Both have to be
  * here rather than only the former: `buildProjectGraph` resolves every `module`
  * block in the repository against this list, and a block whose module is missing
  * becomes a node with no inputs or outputs. A project built on a shipped module
@@ -563,9 +563,9 @@ interface MutationOutcome {
 }
 
 /** Trailer names, in the `Key: value` convention `git interpret-trailers` reads. */
-export const OPERATION_TRAILER = "TerraBlox-Operation";
-export const ORIGIN_TRAILER = "TerraBlox-Origin";
-export const DECISION_TRAILER = "TerraBlox-Decision";
+export const OPERATION_TRAILER = "Terrablox-Operation";
+export const ORIGIN_TRAILER = "Terrablox-Origin";
+export const DECISION_TRAILER = "Terrablox-Decision";
 
 /**
  * The commit message, with the operation attached as trailers.

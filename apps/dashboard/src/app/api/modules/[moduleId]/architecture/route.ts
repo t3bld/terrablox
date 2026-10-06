@@ -4,7 +4,7 @@ import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import {
   clampArchitectureDepth,
   loadModuleArchitectures,
-} from "@/lib/terraform/module-architecture-service";
+} from "@/lib/module-library/architecture-service";
 
 /**
  * Supplies a module together with the modules it calls, so the architecture

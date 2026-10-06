@@ -62,7 +62,10 @@ export interface DecisionInput {
  */
 export async function recordDecision(
   projectId: string,
-  origin: "agent" | "user",
+  // `mcp` alongside the other two, for the same reason `OperationOrigin` carries it: a
+  // decision recorded by an agent in somebody's editor was reasoned about under that
+  // host's rules, not under the harness's, and the log should not blur the two.
+  origin: "agent" | "user" | "mcp",
   input: DecisionInput,
 ): Promise<string> {
   const created = await database.projectDecision.create({

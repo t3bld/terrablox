@@ -1,9 +1,15 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 
+import { parseJsonBody } from "@/lib/api/guard";
+import { routeError } from "@/lib/api/route-error";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { parseGraphLayout } from "@/lib/graph-layout";
-import { visibleToUser } from "@/lib/modules/ownership";
+import { visibleToUser } from "@/lib/module-library/ownership";
+
+/** Shape only; `parseGraphLayout` does the real validation and the node cap. */
+const layoutBody = z.object({ positions: z.unknown() });
 
 /**
  * Confirms the session user may read this module. Never taken from the request:
@@ -89,16 +95,18 @@ export async function PUT(req: Request, context: RouteContext) {
   if (resolved.error) return resolved.error;
   const { userId, moduleId, graph } = resolved;
 
-  let body: unknown;
+  // `parseGraphLayout` already validates the shape and caps the node count, so the
+  // schema here only has to get the body read safely — the size limit in
+  // `parseJsonBody` is what was missing, since `req.json()` buffered whatever it was
+  // given before any of that capping applied.
+  let body: { positions?: unknown };
   try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    body = await parseJsonBody(req, layoutBody);
+  } catch (error) {
+    return routeError("module.layout", error);
   }
 
-  const positions = parseGraphLayout(
-    (body as { positions?: unknown } | null)?.positions,
-  );
+  const positions = parseGraphLayout(body.positions);
 
   // An empty layout means "back to the computed arrangement". Deleting rather
   // than storing `{}` keeps the table free of rows that say nothing.

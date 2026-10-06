@@ -32,13 +32,13 @@ interface DeleteProjectDialogProps {
  * Confirms deleting a project, and says exactly where the line falls.
  *
  * One action, not a choice. Offering "also delete the repository" was tried and
- * dropped: it needs an OAuth scope that would let TerraBlox delete any repository
+ * dropped: it needs an OAuth scope that would let Terrablox delete any repository
  * the user owns, for something done a handful of times, and the result is
  * irreversible on a side we do not own. Somebody who wants the repository gone
  * does it on GitHub, where that confirmation belongs.
  *
  * What the dialog owes the reader instead is the boundary, stated rather than
- * implied: this removes what TerraBlox knows, the code is in Git and stays there.
+ * implied: this removes what Terrablox knows, the code is in Git and stays there.
  * No impact request either — everything a project cascades into belongs to that
  * project alone, so the list below is the whole of it.
  */
@@ -92,14 +92,14 @@ export function DeleteProjectDialog({
           <DialogTitle>Delete project?</DialogTitle>
           <DialogDescription>
             <span className="font-medium text-foreground">{projectName}</span>
-            {" will be removed from TerraBlox. This cannot be undone."}
+            {" will be removed from Terrablox. This cannot be undone."}
           </DialogDescription>
         </DialogHeader>
 
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-destructive text-sm">
           <div className="flex items-center gap-2 font-medium">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            Removed from TerraBlox
+            Removed from Terrablox
           </div>
 
           <ul className="mt-2 space-y-1">
@@ -142,20 +142,20 @@ export function DeleteProjectDialog({
                   "The repository this project points at"
                 )}{" "}
                 could not be read — deleted, renamed, or no longer covered by
-                TerraBlox's access. Deleting here does not depend on it and will
+                Terrablox's access. Deleting here does not depend on it and will
                 work. Nothing is deleted on GitHub either way, so if the
                 repository is still there, it and its commits stay as they are.
               </>
             ) : repoFullName ? (
               <>
                 <code className="font-mono text-xs">{repoFullName}</code> is
-                left untouched, with every commit TerraBlox made to it. Your
+                left untouched, with every commit Terrablox made to it. Your
                 Terraform is not lost, and another project reading this
                 repository keeps working. Delete the repository on GitHub if you
                 want it gone.
               </>
             ) : (
-              "The repository this project points at is left untouched, with every commit TerraBlox made to it."
+              "The repository this project points at is left untouched, with every commit Terrablox made to it."
             )}
           </p>
         </div>

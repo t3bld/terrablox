@@ -1,10 +1,6 @@
 import { NextResponse } from "next/server";
-
+import { requireQueryParam, resolveRepoRequest } from "@/lib/api/git-request";
 import { ApiError, routeError } from "@/lib/api/route-error";
-import {
-  requireQueryParam,
-  resolveRepoRequest,
-} from "@/lib/git-provider/request";
 
 export async function GET(
   req: Request,

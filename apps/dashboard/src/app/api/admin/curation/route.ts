@@ -1,11 +1,8 @@
-import { NextResponse } from "next/server";
 import {
-  getHarnessCuration,
-  mergeHarnessCuration,
-  saveHarnessOverrides,
-} from "@/lib/agent/harness-curation";
-import { HARNESS_ELEMENTS, HARNESS_PLANES } from "@/lib/agent/harness-model";
-import { AGENT_KNOWLEDGE } from "@/lib/agent/knowledge";
+  HARNESS_ELEMENTS,
+  HARNESS_PLANES,
+} from "@terrablox/agent-harness/harness-model";
+import { AGENT_KNOWLEDGE } from "@terrablox/agent-harness/knowledge";
 import {
   AGENT_HISTORY_BUDGET_CHARS,
   AGENT_MAX_MCP_CALLS,
@@ -13,31 +10,42 @@ import {
   AGENT_MAX_TOOL_CALLS,
   DEFAULT_TURN_TIMEOUT_SECONDS,
   FALLBACK_MODELS,
-} from "@/lib/agent/runtime-options";
-import { getCurrentUserId } from "@/lib/auth/server-helpers";
-import { database } from "@/lib/database";
-import { DEFAULT_SUBMODULES_FOLDER } from "@/lib/modules/submodule-discovery";
+} from "@terrablox/agent-harness/runtime-options";
 import {
   ARCHITECTURE_MAP,
   architectureEntry,
   CONTAINMENT_ATTRIBUTES,
-} from "@/lib/terraform/aws-architecture";
+} from "@terrablox/terraform/aws-architecture";
 import {
   COST_DRIVER_MAP,
   FREE_RESOURCE_TYPES,
   NO_CHARGE_SUFFIXES,
   resolveCostDriver,
-} from "@/lib/terraform/aws-cost-drivers";
-import { AWS_ICON_NAMES } from "@/lib/terraform/aws-icon-manifest";
+} from "@terrablox/terraform/aws-cost-drivers";
+import { AWS_ICON_NAMES } from "@terrablox/terraform/aws-icon-manifest";
 import {
   ICON_BY_SERVICE,
   SERVICE_BY_PREFIX,
   SERVICE_BY_TYPE,
-} from "@/lib/terraform/aws-services";
-import { CONVENTIONAL_LABELS } from "@/lib/terraform/resource-label";
+} from "@terrablox/terraform/aws-services";
+import { CONVENTIONAL_LABELS } from "@terrablox/terraform/resource-label";
+import { NextResponse } from "next/server";
+import { z } from "zod";
+import {
+  getHarnessCuration,
+  mergeHarnessCuration,
+  saveHarnessOverrides,
+} from "@/lib/agent/harness-curation";
+import { parseJsonBody } from "@/lib/api/guard";
+import { routeError } from "@/lib/api/route-error";
+import { audit } from "@/lib/audit/log";
+import { getCurrentUserId } from "@/lib/auth/server-helpers";
+import { database } from "@/lib/database";
+import { visibleToUser } from "@/lib/module-library/ownership";
+import { DEFAULT_SUBMODULES_FOLDER } from "@/lib/module-library/submodule-discovery";
 
 /**
- * Everything in TerraBlox that a person decided rather than a machine derived.
+ * Everything in Terrablox that a person decided rather than a machine derived.
  *
  * The point is not the lists themselves — those are in the source — but reading
  * them *against the data*: which of the 400-odd resource types your catalogue
@@ -45,9 +53,14 @@ import { CONVENTIONAL_LABELS } from "@/lib/terraform/resource-label";
  * table is only as good as its overlap with what people import, and that overlap
  * is invisible from the source file.
  *
- * No write side. Everything here lives in version control, where a change is
- * reviewable; an editor on this page would move that decision into a database row
- * nobody reviews.
+ * Everything on this screen is scoped to the caller. The classification tables are
+ * the same for everyone because they live in version control, but the coverage
+ * counts describe the caller's own catalogue and the harness wording is the
+ * caller's own — there is no installation-wide state behind this route, which is
+ * what lets it stay reachable without a role model.
+ *
+ * Named `admin` for historical reasons; it is a power-user screen, not a privileged
+ * one. Nothing here reads or writes another account's data.
  */
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -55,11 +68,18 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Distinct resource types this installation has actually seen, which is what
-  // makes the coverage numbers below mean anything.
+  // Distinct resource types *this user's* catalogue contains, which is what makes
+  // the coverage numbers below mean anything.
+  //
+  // Scoped through the module rather than counted installation-wide. An unfiltered
+  // aggregate here was a cross-tenant read: the counts describe which AWS services
+  // appear in somebody's imported modules, and on a shared instance that is a
+  // detail about their infrastructure, not a property of the classification tables.
+  // Builtins are included because `visibleToUser` admits them and they are the same
+  // rows for everyone.
   const seen = await database.providerResource.groupBy({
     by: ["resourceType"],
-    where: { kind: "resource" },
+    where: { kind: "resource", module: { ...visibleToUser(userId) } },
     _count: { resourceType: true },
   });
 
@@ -133,7 +153,7 @@ export async function GET() {
     // genuinely changed fields if it knows the default it is being compared to.
     // Sending everything as an override would freeze today's wording and stop
     // future code changes from ever reaching anyone.
-    harness: await getHarnessCuration(),
+    harness: await getHarnessCuration(userId),
     harnessDefaults: mergeHarnessCuration({}, null),
 
     agent: {
@@ -153,8 +173,8 @@ export async function GET() {
       fallbackModels: FALLBACK_MODELS.map((model) => model.id),
       limits: {
         // A default rather than a ceiling since the budgets became settings, and
-        // named so: this screen edits the rules for everyone, and `{maxToolCalls}`
-        // in a rule is substituted per user with whatever that person chose.
+        // named so: `{maxToolCalls}` in a rule is substituted per turn with
+        // whatever that person chose in their own agent settings.
         defaultMaxToolCalls: AGENT_MAX_TOOL_CALLS,
         defaultMaxMcpCalls: AGENT_MAX_MCP_CALLS,
         // A default too, for the same reason: the trail size is a per-user
@@ -173,7 +193,13 @@ export async function GET() {
 }
 
 /**
- * Replaces the editable overrides.
+ * Replaces the caller's own editable overrides.
+ *
+ * Scoped to the signed-in user, and that is the entire authorization story: the
+ * row's primary key *is* the user id, so this cannot reach another account's
+ * wording even by accident. It used to write a single installation-wide row, which
+ * meant any signed-in account could edit the operating rules that go into every
+ * other user's agent prompt.
  *
  * A full replace, not a patch: the editor holds the whole set, and "put this
  * field back to the code default" has to be expressible. With a patch it would
@@ -190,17 +216,29 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // `parseHarnessOverrides` owns the field rules and the text caps; this adds the
+  // body-size limit and rejects a non-object outright rather than silently saving
+  // an empty override set.
   let body: unknown;
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Expected JSON." }, { status: 400 });
+    body = await parseJsonBody(
+      request,
+      z.record(z.string().max(100), z.unknown()),
+    );
+  } catch (error) {
+    return routeError("harness.write", error);
   }
 
   try {
-    return NextResponse.json({
-      harness: await saveHarnessOverrides(userId, body),
+    const harness = await saveHarnessOverrides(userId, body);
+
+    await audit({
+      action: "harness.updated",
+      userId,
+      detail: { ruleCount: harness.operatingRulesRaw.length },
     });
+
+    return NextResponse.json({ harness });
   } catch (error) {
     console.error("[admin] failed to save harness curation", error);
     const reason = error instanceof Error ? error.message : String(error);

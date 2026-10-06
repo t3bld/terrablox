@@ -1,20 +1,27 @@
-# TerraBlox, self-hosted: the dashboard and its database, nothing else.
+# Terrablox, self-hosted: the dashboard and its database, nothing else.
 #
 # Distinct from docker-compose.local.yml, which starts only Postgres for `pnpm
 # dev`. This one runs the built image, so it is also how you check that an image
 # actually works before pushing it anywhere.
 #
-#   cp .env.docker.example .env
-#   # fill in the four values it asks for
+#   cp .env.example .env
+#   # fill in BETTER_AUTH_SECRET, POSTGRES_PASSWORD and the two GITHUB_CLIENT_* values
 #   docker compose up --build
 #
-# Configuration comes from a root .env file, which compose reads automatically.
+# Configuration comes from the root .env, the same file `pnpm dev` uses, and
+# compose reads it automatically. The one value it deliberately ignores is
+# DATABASE_URL: that one points at localhost for development, while in here the
+# database is reached by service name, so the connection string is composed from
+# the POSTGRES_* parts below.
+#
 # Nothing here has a secret as a default: an instance that boots with a
 # predictable BETTER_AUTH_SECRET is an instance where anyone can forge a session.
 
 services:
   postgres:
-    image: postgres:17-alpine
+    # Digest-pinned so the database engine cannot change under a `docker compose pull`.
+    # Refresh with: docker buildx imagetools inspect postgres:17-alpine
+    image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     container_name: terrablox-db
     restart: unless-stopped
     environment:
@@ -32,6 +39,25 @@ services:
     # Not published. The dashboard reaches it over the compose network, and a
     # database on a host port is a database on the internet more often than
     # anyone intends.
+    networks:
+      - internal
+    security_opt:
+      - no-new-privileges:true
+    # Postgres needs to chown its data directory and set shared memory, so the full
+    # ALL drop breaks it. These four are the ones it actually uses.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
 
   # Migrations as their own container, so the schema is up to date before the
   # first request rather than racing it. Runs to completion and exits; the
@@ -45,10 +71,28 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-terrablox}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-terrablox}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-terrablox}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-terrablox}
+      # `prisma migrate deploy` needs a database and nothing else. The signing secret
+      # used to be here too, which handed the migration container a credential it has
+      # no use for — and the entrypoint's own check is what made it look necessary.
+      # MIGRATE_ONLY exits before that check is reached.
       MIGRATE_ONLY: "true"
     restart: "no"
+    networks:
+      - internal
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+      - /home/node:size=32m,mode=0700,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: "1.0"
 
   dashboard:
     build:
@@ -63,14 +107,30 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-terrablox}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-terrablox}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-terrablox}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-terrablox}
+      # `:?` here and not only on the migrate service. Compose interpolates the whole
+      # file, so the other `:?` would already abort `up` — but that made this service
+      # depend on another one's declaration for its own safety, and splitting the file
+      # or starting this service alone would have booted it with an empty secret.
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       # The public URL users reach this instance on. Wrong here means GitHub sends
-      # people back to a host that is not serving the app.
+      # people back to a host that is not serving the app — and if it is http:// while
+      # users arrive over https, session cookies lose the Secure attribute.
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3001}
+      # From a GitHub App, not an OAuth App. An OAuth App signs in and then every
+      # repository picker is empty: the listing asks which repositories the
+      # installation was granted, and those endpoints reject OAuth tokens.
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      # The app's slug from github.com/apps/<slug>, used to link users to the
+      # install page. Only wrong values are harmful: they lead to a 404 at the
+      # moment somebody is trying to grant access.
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-terrablox}
       TERRABLOX_BUILTIN_MODULES: ${TERRABLOX_BUILTIN_MODULES:-true}
+      # Off unless a proxy in front overwrites X-Forwarded-For. Left on without one,
+      # the audit trail records whatever a caller put in the header, which is worse
+      # than recording nothing.
+      TERRABLOX_TRUST_PROXY: ${TERRABLOX_TRUST_PROXY:-false}
     ports:
       - "${TERRABLOX_PORT:-3001}:3001"
     # An agent turn can hold a request for up to 300s, so a 10s default SIGKILL
@@ -94,6 +154,42 @@ services:
       - /app/apps/dashboard/.next/cache:size=512m,mode=0700,uid=1000,gid=1000
     security_opt:
       - no-new-privileges:true
+    # The app runs as `node` and never needs a privileged operation: no binding to a
+    # low port, no chown, no raw sockets. Dropping everything costs nothing here.
+    cap_drop:
+      - ALL
+    networks:
+      - internal
+      # Reaching GitHub, the Copilot runtime and any MCP server the user connected.
+      - egress
+    # Resource limits, which is the ceiling the agent needs and did not have.
+    #
+    # Every turn forks a Copilot CLI child of roughly 190 MB and may hold the request
+    # for five minutes. Without a limit one authenticated account could start enough
+    # concurrent turns to OOM the host — the in-process rate limiter now caps the
+    # rate, and this caps the damage if that limiter is ever bypassed or the process
+    # count grows another way. `pids` is the direct control on runaway forking.
+    #
+    # 2 GB fits Next plus a handful of concurrent CLI children. Raise it if turns are
+    # being killed; lower it and the first long conversation dies mid-answer.
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: "2.0"
+          # The direct control on runaway forking, and the reason it is here rather
+          # than as the top-level `pids_limit` key: Compose rejects the file if both
+          # are present, and this is the one the spec calls canonical.
+          pids: 512
+        reservations:
+          memory: 512m
+
+networks:
+  # The database is only reachable on this one, so nothing added to the file later
+  # gets to Postgres by default — it has to ask, visibly, by joining the network.
+  internal:
+    internal: true
+  egress:
 
 volumes:
   terrablox-data:
