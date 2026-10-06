@@ -14,7 +14,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@dagrejs/dagre": "^3.1.0",
+    "@dagrejs/dagre": "^3.1.1",
     "@xyflow/react": "^12",
     "react": "^18.2.0"
   },
