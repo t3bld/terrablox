@@ -60,13 +60,13 @@
     "next": "^14.1.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.11",
+    "@biomejs/biome": "^2.6.3",
     "@tailwindcss/typography": "^0.5.20",
     "@terrablox/tsconfig": "workspace:*",
     "@types/react": "^18.2.45",
     "next": "^14.1.0",
-    "tailwindcss": "^3.4.0",
+    "tailwindcss": "^4.3.3",
     "tailwindcss-animate": "^1.0.7",
-    "typescript": "^5.3.3"
+    "typescript": "^7.0.2"
   }
 }

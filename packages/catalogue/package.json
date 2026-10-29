@@ -13,9 +13,9 @@
     "type-check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.11",
+    "@biomejs/biome": "^2.6.3",
     "@terrablox/terraform": "workspace:*",
     "@terrablox/tsconfig": "workspace:*",
-    "typescript": "^5.3.3"
+    "typescript": "^7.0.2"
   }
 }
