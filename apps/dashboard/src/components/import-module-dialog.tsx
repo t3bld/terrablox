@@ -72,8 +72,9 @@ type ImportedModule = {
 
 type ImportedVersionsResponse = {
   repoImported?: boolean;
-  /** The repository is part of the catalogue Terrablox ships with. */
+  /** The repository is part of a library Terrablox manages (catalogue, Porsche, …). */
   isBuiltin?: boolean;
+  library?: { id: string; name: string } | null;
   source?: ImportedSource;
   importedVersions?: string[];
 };
@@ -168,6 +169,7 @@ export function ImportModuleDialog({
     source: ImportedSource;
     importedVersions: string[];
     isBuiltin: boolean;
+    libraryName: string | null;
   } | null>(null);
   const [repoImportedLoading, setRepoImportedLoading] = useState(false);
 
@@ -561,6 +563,7 @@ export function ImportModuleDialog({
           source: body.source,
           importedVersions: body.importedVersions ?? [],
           isBuiltin: body.isBuiltin ?? false,
+          libraryName: body.library?.name ?? null,
         });
         // Populate fields from the source; these live on terraform_module_sources.
         setModuleName((prev) => body.source?.name ?? prev);
@@ -817,7 +820,10 @@ export function ImportModuleDialog({
             {repoImportedInfo ? (
               <div className="rounded-md border bg-muted/20 p-3 text-sm text-muted-foreground">
                 {repoImportedInfo.isBuiltin
-                  ? "This repository ships with Terrablox and is already in your module list. Its versions are disabled; pick another ref to add one of your own."
+                  ? repoImportedInfo.libraryName &&
+                    repoImportedInfo.libraryName !== "Terrablox"
+                    ? `This repository is part of the ${repoImportedInfo.libraryName} library and is already in your module list. Its versions are disabled; pick another ref to add one of your own.`
+                    : "This repository ships with Terrablox and is already in your module list. Its versions are disabled; pick another ref to add one of your own."
                   : "This repository was imported before. Versions already imported are disabled."}
               </div>
             ) : null}

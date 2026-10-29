@@ -9,10 +9,12 @@ import {
   DropdownMenuTrigger,
 } from "@terrablox/ui/dropdown-menu";
 import { Input } from "@terrablox/ui/input";
+import { Label } from "@terrablox/ui/label";
+import { Select } from "@terrablox/ui/select";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { TagsInput } from "@terrablox/ui/tags-input";
-import { Filter, Search, X } from "lucide-react";
+import { Filter, RefreshCw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
@@ -20,9 +22,22 @@ import {
   CardGridSkeleton,
   PageSkeleton,
 } from "@/components/layout/page-skeleton";
-import { ModuleImportActions } from "@/components/module-import-actions";
+import { LibraryAccessHint } from "@/components/module-overview/library-access-hint";
 import { RepositoryCard } from "@/components/module-overview/repository-card";
 import type { RepositoryDto } from "@/components/module-overview/types";
+import { useModuleLibraries } from "@/components/module-overview/use-module-libraries";
+
+/** Library filter value for the user's own imports; "" means every library. */
+const OWN_IMPORTS = "__own__";
+
+function relativeTime(iso: string): string {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return new Date(iso).toLocaleDateString();
+}
 
 function normalizeTag(input: string) {
   return input.trim().replace(/\s+/g, "-").toLowerCase();
@@ -35,6 +50,7 @@ export default function ModulesPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedLibrary, setSelectedLibrary] = useState("");
 
   const loadRepositories = useCallback(
     async ({ silent = false }: { silent?: boolean } = {}) => {
@@ -70,6 +86,29 @@ export default function ModulesPage() {
   useEffect(() => {
     void loadRepositories();
   }, [loadRepositories]);
+
+  // Per-user libraries (e.g. Porsche) sync in the background; the list reloads
+  // quietly whenever a sync changed what the user can see.
+  const {
+    libraries,
+    syncingIds,
+    refresh: refreshLibrary,
+  } = useModuleLibraries({
+    enabled: Boolean(user?.id),
+    onChanged: () => {
+      void loadRepositories({ silent: true });
+    },
+  });
+
+  const libraryOptions = useMemo(() => {
+    const byId = new Map<string, string>();
+    for (const repo of repositories) {
+      if (repo.library) byId.set(repo.library.id, repo.library.name);
+    }
+    return [...byId.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [repositories]);
 
   const availableTags = useMemo(() => {
     const set = new Set<string>();
@@ -107,15 +146,22 @@ export default function ModulesPage() {
       const matchesTags =
         selected.length === 0 || selected.every((t) => repoTags.includes(t));
 
-      return matchesSearch && matchesTags;
-    });
-  }, [repositories, searchQuery, selectedTags]);
+      const matchesLibrary =
+        !selectedLibrary ||
+        (selectedLibrary === OWN_IMPORTS
+          ? repo.library === null
+          : repo.library?.id === selectedLibrary);
 
-  const activeFilterCount = selectedTags.length;
+      return matchesSearch && matchesTags && matchesLibrary;
+    });
+  }, [repositories, searchQuery, selectedTags, selectedLibrary]);
+
+  const activeFilterCount = selectedTags.length + (selectedLibrary ? 1 : 0);
 
   const clearAll = useCallback(() => {
     setSearchQuery("");
     setSelectedTags([]);
+    setSelectedLibrary("");
   }, []);
 
   if (!isAuthenticated) {
@@ -130,16 +176,7 @@ export default function ModulesPage() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <PageHeader
-          breadcrumbs={[{ label: "Modules" }]}
-          actions={
-            <ModuleImportActions
-              onImported={() => {
-                void loadRepositories({ silent: true });
-              }}
-            />
-          }
-        />
+        <PageHeader breadcrumbs={[{ label: "Modules" }]} />
 
         <main className="space-y-4 p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -200,7 +237,9 @@ export default function ModulesPage() {
                       <Button
                         className="h-7 px-2 text-xs"
                         disabled={
-                          !searchQuery.trim() && selectedTags.length === 0
+                          !searchQuery.trim() &&
+                          selectedTags.length === 0 &&
+                          !selectedLibrary
                         }
                         onClick={clearAll}
                         size="sm"
@@ -212,6 +251,23 @@ export default function ModulesPage() {
                     </div>
 
                     <div className="space-y-4 p-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="module-library-filter">Library</Label>
+                        <Select
+                          id="module-library-filter"
+                          onChange={(e) => setSelectedLibrary(e.target.value)}
+                          value={selectedLibrary}
+                        >
+                          <option value="">All</option>
+                          {libraryOptions.map((option) => (
+                            <option key={option.id} value={option.id}>
+                              {option.name}
+                            </option>
+                          ))}
+                          <option value={OWN_IMPORTS}>Your imports</option>
+                        </Select>
+                      </div>
+
                       <TagsInput
                         disabled={availableTags.length === 0}
                         label="Filter by tags"
@@ -227,7 +283,7 @@ export default function ModulesPage() {
                       />
                       {availableTags.length === 0 ? (
                         <p className="text-xs text-muted-foreground">
-                          Tags become available after modules are imported.
+                          No tags available yet.
                         </p>
                       ) : null}
                     </div>
@@ -235,8 +291,20 @@ export default function ModulesPage() {
                 </DropdownMenu>
               </div>
 
-              {selectedTags.length > 0 ? (
+              {selectedTags.length > 0 || selectedLibrary ? (
                 <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                  {selectedLibrary ? (
+                    <span className="rounded border bg-background px-2 py-1">
+                      library:{" "}
+                      <span className="font-medium text-foreground">
+                        {selectedLibrary === OWN_IMPORTS
+                          ? "Your imports"
+                          : (libraryOptions.find(
+                              (o) => o.id === selectedLibrary,
+                            )?.name ?? selectedLibrary)}
+                      </span>
+                    </span>
+                  ) : null}
                   {selectedTags.map((tag) => (
                     <span
                       className="rounded border bg-background px-2 py-1"
@@ -251,6 +319,43 @@ export default function ModulesPage() {
             </div>
           </div>
 
+          {libraries.map((library) => (
+            <LibraryAccessHint key={library.id} library={library} />
+          ))}
+
+          {libraries.some(
+            (library) =>
+              syncingIds.includes(library.id) || library.moduleCount > 0,
+          ) ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {libraries.map((library) =>
+                syncingIds.includes(library.id) ? (
+                  <span aria-live="polite" key={library.id}>
+                    Syncing the {library.name} library…
+                  </span>
+                ) : library.moduleCount > 0 ? (
+                  <span className="flex items-center gap-1" key={library.id}>
+                    {library.name}
+                    {library.lastSyncedAt
+                      ? ` · synced ${relativeTime(library.lastSyncedAt)}`
+                      : ""}
+                    <Button
+                      aria-label={`Refresh the ${library.name} library`}
+                      className="h-6 gap-1 px-1.5 text-xs"
+                      onClick={() => refreshLibrary(library.id)}
+                      size="sm"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <RefreshCw aria-hidden="true" className="h-3 w-3" />
+                      Refresh
+                    </Button>
+                  </span>
+                ) : null,
+              )}
+            </div>
+          ) : null}
+
           {loading ? (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
               {[0, 1, 2].map((i) => (
@@ -262,7 +367,7 @@ export default function ModulesPage() {
           ) : filteredRepositories.length === 0 ? (
             <div className="text-sm text-muted-foreground">
               {repositories.length === 0
-                ? "No modules imported yet."
+                ? "No modules available yet."
                 : "No modules match your filters."}
             </div>
           ) : (

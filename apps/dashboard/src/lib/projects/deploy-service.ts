@@ -9,7 +9,10 @@ import {
   listRepoTree,
   readRepoFile,
 } from "@terrablox/git/files";
-
+import {
+  moduleLibraries,
+  needsPipelineToken,
+} from "@/lib/module-library/libraries";
 import {
   AWS_REGION_VARIABLE,
   AWS_ROLE_VARIABLE,
@@ -28,7 +31,8 @@ import {
   TERRAFORM_VERSIONS,
   WORKFLOW_DIR,
 } from "./deploy";
-import { normalizeFolder } from "./service";
+import { librariesUsedBy, type PrivateModuleAccess } from "./private-modules";
+import { normalizeFolder, readProjectFiles } from "./service";
 import type {
   DeployVariablesDto,
   ProjectDeployState,
@@ -97,8 +101,12 @@ function backendPath(project: Project): string {
  */
 export function pipelineFiles(
   project: Project,
+  privateModules: PrivateModuleAccess[] = [],
 ): { path: string; content: string }[] {
-  const context = pipelineContext(project);
+  const context: PipelineContext = {
+    ...pipelineContext(project),
+    ...(privateModules.length > 0 ? { privateModules } : {}),
+  };
   const config = templateConfig(project);
 
   const files = activeTemplates(config).map((template) => ({
@@ -110,6 +118,34 @@ export function pipelineFiles(
   if (backend) files.push({ path: backendPath(project), content: backend });
 
   return files;
+}
+
+/**
+ * The private module libraries this project's Terraform calls, e.g. Porsche.
+ *
+ * Read from the committed `.tf` files, because that is what `terraform init`
+ * will clone. A read failure degrades to "none": the pipeline then renders as it
+ * always did, which is the right default for the projects that use none.
+ */
+export async function privateModulesFor(
+  token: string,
+  project: Project,
+): Promise<PrivateModuleAccess[]> {
+  // Every configured private library, visible or not: hiding a library in
+  // the UI does not change what `terraform init` has to clone.
+  const libraries = moduleLibraries().filter(needsPipelineToken);
+  if (libraries.length === 0) return [];
+
+  try {
+    const { files } = await readProjectFiles(token, project);
+    return librariesUsedBy(files.values(), libraries);
+  } catch (error) {
+    console.warn("[deploy] could not scan for private modules", {
+      project: project.id,
+      status: error instanceof GithubRequestError ? error.status : null,
+    });
+    return [];
+  }
 }
 
 /** The three variables together, or the reason none of them could be read. */
@@ -149,7 +185,8 @@ export async function readDeployState(
   token: string,
   project: Project,
 ): Promise<ProjectDeployState> {
-  const expected = pipelineFiles(project);
+  const privateModules = await privateModulesFor(token, project);
+  const expected = pipelineFiles(project, privateModules);
   const context = pipelineContext(project);
   const config = templateConfig(project);
   const managedPaths = new Set(expected.map((file) => file.path));
@@ -285,6 +322,7 @@ export async function readDeployState(
       complete: missing.length === 0 && variablesReady && pipelineReady,
     },
     workflows,
+    privateModules,
     hasBackendFile: backendFile !== null,
     backendUpToDate:
       backendFile?.content.trim() === renderedBackend?.content.trim(),
@@ -330,7 +368,7 @@ export async function writeDeployPipeline(
   token: string,
   project: Project,
 ): Promise<{ sha: string; paths: string[] } | null> {
-  const files = pipelineFiles(project);
+  const files = pipelineFiles(project, await privateModulesFor(token, project));
   const wanted = new Set(files.map((file) => file.path));
 
   const changes: FileChange[] = files.map((file) => ({

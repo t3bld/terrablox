@@ -42,6 +42,8 @@ export interface LibraryModule extends LinkCandidate {
   description?: string | null;
   /** Curation tags on the source, e.g. `network`, `aws`. Same reason. */
   tags?: string[];
+  /** The library it belongs to (Terrablox, Porsche), or null for an own import. */
+  library?: { id: string; name: string } | null;
 }
 
 function toInputPorts(variables: ModuleVariableDto[]): ProjectGraphPort[] {

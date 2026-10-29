@@ -412,3 +412,30 @@ export function buildStateChecklist(input: {
     }),
   ];
 }
+
+/**
+ * One line per private module library the project's Terraform calls.
+ *
+ * Always pending: Terrablox can neither read nor write repository secrets, so it
+ * can never honestly claim this is done. The line says exactly what to create.
+ */
+export function buildPrivateModulesChecklist(input: {
+  modules: ReadonlyArray<{
+    libraryId: string;
+    libraryName: string;
+    org: string;
+    secretName: string;
+  }>;
+  repoFullName: string;
+}): ChecklistItem[] {
+  return input.modules.map((module) => ({
+    id: `private-modules:${module.libraryId}`,
+    label: `Add the ${module.secretName} secret for ${module.libraryName} modules`,
+    state: "pending",
+    detail: `Terrablox can't read or write repository secrets, so this one is yours. Create a fine-grained personal access token with resource owner ${module.org}, access to only the module repositories, and Repository permissions → Contents: Read-only. Save it as the repository secret ${module.secretName}. Without it, terraform init stops at the first ${module.org} module.`,
+    link: {
+      href: `https://github.com/${input.repoFullName}/settings/secrets/actions/new`,
+      label: "Add the secret on GitHub",
+    },
+  }));
+}

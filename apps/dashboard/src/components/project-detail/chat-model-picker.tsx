@@ -19,6 +19,8 @@ interface ModelOption {
   name: string;
   reasoningEfforts: string[];
   multiplier: number | null;
+  /** Absent on the fallback list, which holds no previews. */
+  preview?: boolean;
 }
 
 export interface ModelSelection {
@@ -45,6 +47,8 @@ export function ChatModelPicker({
   value,
 }: ChatModelPickerProps) {
   const [models, setModels] = useState<ModelOption[]>([]);
+  /** The newest Anthropic model on the user's list, marked as the default. */
+  const [defaultModel, setDefaultModel] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,7 +56,9 @@ export function ChatModelPicker({
     fetch("/api/agent/models")
       .then((res) => res.json())
       .then((body) => {
-        if (!cancelled) setModels(body?.models ?? []);
+        if (cancelled) return;
+        setModels(body?.models ?? []);
+        setDefaultModel(body?.defaults?.model ?? null);
       })
       .catch(() => {
         // A missing catalogue must not block sending; the defaults still apply.
@@ -105,16 +111,26 @@ export function ChatModelPicker({
             value={value.model}
           >
             <div className="max-h-64 overflow-y-auto">
-              {options.map((entry) => (
-                <DropdownMenuRadioItem key={entry.id} value={entry.id}>
-                  <span className="min-w-0 truncate">{entry.name}</span>
-                  {entry.multiplier ? (
-                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                      {entry.multiplier}x
-                    </span>
-                  ) : null}
-                </DropdownMenuRadioItem>
-              ))}
+              {options.map((entry) => {
+                // The same muted note the effort menu uses for its default,
+                // with the preview and premium multiplier beside it.
+                const notes = [
+                  entry.id === defaultModel ? "default" : null,
+                  "preview" in entry && entry.preview ? "preview" : null,
+                  entry.multiplier ? `${entry.multiplier}x` : null,
+                ].filter(Boolean);
+
+                return (
+                  <DropdownMenuRadioItem key={entry.id} value={entry.id}>
+                    <span className="min-w-0 truncate">{entry.name}</span>
+                    {notes.length > 0 ? (
+                      <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                        {notes.join(" · ")}
+                      </span>
+                    ) : null}
+                  </DropdownMenuRadioItem>
+                );
+              })}
             </div>
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>

@@ -2,11 +2,8 @@ import { parseScope } from "@terrablox/terraform/delete-scope";
 import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import {
-  isBuiltin,
-  ownedByUser,
-  visibleToUser,
-} from "@/lib/module-library/ownership";
+import { deleteRefusal, ownedByUser } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * Reports what a delete would destroy.
@@ -41,23 +38,19 @@ export async function GET(
   // Visibility, then the same builtin refusal the DELETE handler gives. Without
   // it a builtin would 404 here and the dialog would report a load failure for
   // something that is simply not deletable.
+  const visibility = await visibleModulesForUser(userId);
   const mod = await database.terraformModule.findFirst({
-    where: { id: moduleId, ...visibleToUser(userId) },
-    select: { id: true, sourceId: true, userId: true },
+    where: { id: moduleId, ...visibility },
+    select: { id: true, sourceId: true, userId: true, library: true },
   });
 
   if (!mod) {
     return NextResponse.json({ error: "Module not found" }, { status: 404 });
   }
 
-  if (isBuiltin(mod)) {
-    return NextResponse.json(
-      {
-        error:
-          "This module ships with Terrablox and cannot be deleted. Every user shares it.",
-      },
-      { status: 403 },
-    );
+  const refusal = deleteRefusal(mod);
+  if (refusal) {
+    return NextResponse.json({ error: refusal }, { status: 403 });
   }
 
   // Mirrors the target selection in the DELETE handler, so the warning can

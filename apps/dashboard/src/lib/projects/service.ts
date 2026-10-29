@@ -29,8 +29,10 @@ import {
 import { resolveModuleLink } from "@terrablox/terraform/module-link";
 import { database } from "@/lib/database";
 import { analyzeTerraformFiles } from "@/lib/module-library/analyze";
-import { visibleToUser } from "@/lib/module-library/ownership";
+import { libraryOf } from "@/lib/module-library/libraries";
+import { isManaged } from "@/lib/module-library/ownership";
 import { parseOutputs, parseVariables } from "@/lib/module-library/types";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 import {
   buildProjectGraph,
@@ -156,10 +158,24 @@ export async function readProjectFiles(
 export async function readModuleLibrary(
   userId: string,
 ): Promise<LibraryModule[]> {
-  const modules = await database.terraformModule.findMany({
-    where: visibleToUser(userId),
+  const visibility = await visibleModulesForUser(userId);
+  const rows = await database.terraformModule.findMany({
+    where: visibility,
     include: { source: true },
   });
+
+  // Managed rows (the catalogue, a per-user library) before personal imports,
+  // stably. Link resolution takes the first exact match, so a `porsche-code`
+  // source resolves to the library entry even when the user also imported the
+  // same repository by hand — and the tie-break no longer depends on DB order.
+  const modules = rows
+    .map((mod, index) => ({ mod, index }))
+    .sort(
+      (a, b) =>
+        Number(isManaged(b.mod)) - Number(isManaged(a.mod)) ||
+        a.index - b.index,
+    )
+    .map(({ mod }) => mod);
 
   return modules.map((mod) => ({
     id: mod.id,
@@ -176,6 +192,7 @@ export async function readModuleLibrary(
     // only guess at.
     description: mod.source?.description ?? null,
     tags: mod.source?.tags ?? [],
+    library: libraryOf(mod),
   }));
 }
 
@@ -197,10 +214,11 @@ export async function readModuleResourceTypes(
 ): Promise<Record<string, Array<{ kind: string; resourceType: string }>>> {
   if (moduleIds.length === 0) return {};
 
+  const visibility = await visibleModulesForUser(userId);
   const rows = await database.providerResource.findMany({
     // Scoped through the module rather than trusting the ids: they arrive from a
     // model, and another user's module id is a valid-looking string.
-    where: { moduleId: { in: moduleIds }, module: visibleToUser(userId) },
+    where: { moduleId: { in: moduleIds }, module: visibility },
     select: { moduleId: true, kind: true, resourceType: true },
   });
 

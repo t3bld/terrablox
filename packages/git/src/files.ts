@@ -204,6 +204,45 @@ function explainTreeFailure(error: unknown, paths: string[]): unknown {
   );
 }
 
+/**
+ * The commit a branch points at, or null when there is nothing to point at.
+ *
+ * Asked the same way {@link commitFiles} asks, on purpose: a project is bound to a
+ * repository and a branch so that commits can be written there, and every commit starts
+ * with exactly this lookup. A branch that passes here is one the first commit will find.
+ *
+ * Null covers two answers GitHub gives in different words. A branch that does not exist
+ * is a 404; a repository with no commits at all has no refs to look up, and GitHub says
+ * so with a 409 ("Git Repository is empty") — or, depending on the endpoint's mood, a
+ * 404 as well. The caller tells them apart by asking whether the branch was the
+ * repository's default: a repository with any commit has its default branch.
+ */
+export async function getBranchHead(
+  token: string,
+  params: { repoFullName: string; branch: string },
+): Promise<string | null> {
+  let res: Response;
+  try {
+    res = await githubRequest(
+      token,
+      `/repos/${params.repoFullName}/git/ref/heads/${encodeURIComponent(
+        params.branch,
+      )}`,
+    );
+  } catch (error) {
+    if (
+      error instanceof GithubRequestError &&
+      (error.status === 404 || error.status === 409)
+    ) {
+      return null;
+    }
+    throw error;
+  }
+
+  const ref = (await res.json()) as { object?: { sha?: string } };
+  return ref.object?.sha ?? null;
+}
+
 export interface RepoTreeEntry {
   path: string;
   type: "tree" | "blob";

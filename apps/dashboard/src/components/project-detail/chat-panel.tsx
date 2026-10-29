@@ -195,6 +195,7 @@ export function ChatPanel({
 
       const body = (await response.json()) as {
         model: string | null;
+        modelUnavailable?: boolean;
         reasoningEffort: string | null;
         defaults: { model: string; reasoningEffort: string };
         overrides?: Record<string, unknown>;
@@ -203,7 +204,13 @@ export function ChatPanel({
       overridesRef.current = body.overrides ?? {};
 
       setSelection({
-        model: body.model ?? body.defaults.model,
+        // A stored model that has left the user's Copilot list is not what the
+        // turn runs on, so the composer shows the default it falls back to; the
+        // settings screen says which model was dropped.
+        model:
+          body.model && !body.modelUnavailable
+            ? body.model
+            : body.defaults.model,
         reasoningEffort: body.reasoningEffort ?? body.defaults.reasoningEffort,
       });
     } catch {

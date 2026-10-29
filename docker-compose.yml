@@ -126,7 +126,9 @@ services:
       # install page. Only wrong values are harmful: they lead to a 404 at the
       # moment somebody is trying to grant access.
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-terrablox}
-      TERRABLOX_BUILTIN_MODULES: ${TERRABLOX_BUILTIN_MODULES:-true}
+      # Module libraries as one JSON array (docs/quickstart.md). Empty means the
+      # default: Terrablox + Porsche, both visible.
+      TERRABLOX_MODULE_LIBRARIES: ${TERRABLOX_MODULE_LIBRARIES:-}
       # Off unless a proxy in front overwrites X-Forwarded-For. Left on without one,
       # the audit trail records whatever a caller put in the header, which is worse
       # than recording nothing.

@@ -1,9 +1,17 @@
 /**
  * Who may see a module, and who may change it.
  *
- * A module row with `userId = null` is part of the catalogue Terrablox ships
- * with: every user sees it, nobody owns it, and no user may edit or delete it.
- * Everything else belongs to exactly one user.
+ * Three kinds of rows:
+ *
+ * - `userId = NULL, library = <global id>`: a shared library such as the
+ *   Terrablox catalogue. Every user sees it, nobody owns it, nobody edits it.
+ * - `userId = <user>, library = <per-user id>`: that user's synced copy of a
+ *   per-user library such as Porsche. Only they see it; read-only to them too.
+ * - `userId = <user>, library = NULL`: the user's own import. Theirs to change.
+ *
+ * Which libraries are admitted at all is decided by their `visible` flag in
+ * `TERRABLOX_MODULE_LIBRARIES`. Per-user callers must additionally pass only library
+ * ids whose sync completed successfully.
  *
  * The two ideas get two separate helpers on purpose. They read almost the same
  * and differ by one clause, so a future refactor that "removes the duplication"
@@ -11,76 +19,111 @@
  * user the power to delete the shipped catalogue. Keeping them apart makes that
  * mistake require deleting a name that says what it protects.
  *
- * No `server-only`: the sync script imports {@link BUILTIN_USER_ID} and
- * {@link builtinModulesEnabled} too. Nothing here touches the database or any
- * secret — it returns query fragments and reads one environment variable — and
- * every importer is server-side, so the guard would buy nothing.
+ * No `server-only`: the CLI scripts import it too. Nothing here touches the
+ * database or any secret — it returns query fragments and reads environment
+ * variables.
  */
 
+import {
+  findModuleLibrary,
+  TERRABLOX_LIBRARY_ID,
+  visibleLibraryIds,
+} from "./libraries";
+
 /**
- * The owner of the shipped catalogue.
+ * The owner of every global library row.
  *
  * SQL, and therefore Prisma, never matches NULL with an equality filter. That is
  * not a quirk being exploited here, it is the whole mechanism: a write path that
- * says `where: { userId }` with a real user id cannot reach a builtin row even
- * if someone forgets there is such a thing as a builtin row. Visibility is the
- * only thing that has to opt in, and it does so loudly via
- * {@link visibleToUser}.
+ * says `where: { userId }` with a real user id cannot reach a global row even
+ * if someone forgets there is such a thing. Visibility is the only thing that
+ * has to opt in, and it does so loudly via {@link visibleToUser}.
  */
 export const BUILTIN_USER_ID = null;
 
 /**
- * Whether this installation offers the catalogue Terrablox ships with.
+ * Modules a user may look at: their own imports, their successfully synced copy of
+ * each admitted per-user library, and every visible global library.
  *
- * Defaults to on: a fresh install is more useful with a module library than
- * without one, and an operator who wants a bare instance can say so. Only
- * `false` and `0` turn it off, so a typo leaves the catalogue enabled rather
- * than silently emptying every user's library.
- *
- * One flag governs both halves — whether {@link visibleToUser} admits builtins,
- * and whether the sync script will write them. Two flags would let an instance
- * hold rows it refuses to show, which is a state nobody asked for and everybody
- * would have to reason about.
- */
-export function builtinModulesEnabled(): boolean {
-  const raw = process.env.TERRABLOX_BUILTIN_MODULES?.trim().toLowerCase();
-  return raw !== "false" && raw !== "0";
-}
-
-/**
- * Modules a user may look at: their own, plus the shipped catalogue.
+ * The per-user arm includes the successful sync in the same database predicate as the
+ * module read. A refresh that sets `pending` between requests therefore closes access
+ * atomically instead of leaving a previously computed list of library ids usable.
  *
  * Spread into a `where`, e.g.
  * `findMany({ where: { ...visibleToUser(userId), isSubmodule: false } })`.
- * Returned as a spreadable object rather than a whole `where` so it composes
- * with the caller's own filters without either side having to know about the
- * other.
  *
- * Always an `OR`, even when the catalogue is off and the list holds a single
- * clause. A one-armed `OR` compiles to the same `user_id = $1` a bare equality
- * would, and keeping the shape constant means the eleven call sites that spread
- * this never have to care which mode the instance is in.
+ * The global arm admits only ids whose definition is *global*. So even a row a
+ * buggy writer stored with a NULL owner under a per-user library id — one
+ * person's private module — is visible to nobody, rather than to everybody.
  */
-export function visibleToUser(userId: string): {
-  OR: Array<{ userId: string } | { userId: null }>;
-} {
-  return builtinModulesEnabled()
-    ? { OR: [{ userId }, { userId: BUILTIN_USER_ID }] }
-    : { OR: [{ userId }] };
+export function visibleToUser(userId: string) {
+  const perUser = visibleLibraryIds("user");
+  const global = visibleLibraryIds("global");
+
+  return {
+    OR: [
+      { userId, library: null },
+      ...(perUser.length > 0
+        ? [
+            {
+              userId,
+              library: { in: perUser },
+              librarySync: { is: { state: "available", pending: false } },
+            },
+          ]
+        : []),
+      ...(global.length > 0
+        ? [{ userId: BUILTIN_USER_ID, library: { in: global } }]
+        : []),
+    ],
+  };
 }
 
 /**
- * Modules a user may change or delete: only their own.
+ * Modules a user may change or delete: only their own imports.
  *
- * Trivial today, and that is the point — it gives every mutating query a name to
- * state its intent with, so the difference from {@link visibleToUser} is visible
- * at the call site instead of living in whoever last edited the query's head.
+ * `library: null` excludes rows a library sync manages: those mirror GitHub,
+ * and an edit would be overwritten (or a delete undone) by the next sync.
+ * Global rows are excluded by the NULL owner.
  */
-export function ownedByUser(userId: string): { userId: string } {
-  return { userId };
+export function ownedByUser(userId: string): {
+  userId: string;
+  library: null;
+} {
+  return { userId, library: null };
 }
 
-/** Whether a row is part of the catalogue Terrablox ships with. */
+/** Whether a row is part of a global library, shared by every user. */
 export function isBuiltin(row: { userId: string | null }): boolean {
   return row.userId === BUILTIN_USER_ID;
+}
+
+/**
+ * Whether Terrablox manages a row — any library, global or per-user — and the
+ * user therefore may not edit or delete it.
+ */
+export function isManaged(row: {
+  userId: string | null;
+  library?: string | null;
+}): boolean {
+  return isBuiltin(row) || row.library != null;
+}
+
+/** Why a managed row cannot be deleted, or null when it can. */
+export function deleteRefusal(row: {
+  userId: string | null;
+  library?: string | null;
+}): string | null {
+  if (!isManaged(row)) return null;
+
+  // A global row always has a library (a CHECK constraint says so).
+  const id = row.library ?? TERRABLOX_LIBRARY_ID;
+  const name = findModuleLibrary(id)?.name ?? id;
+
+  if (isBuiltin(row)) {
+    return id === TERRABLOX_LIBRARY_ID
+      ? "This module ships with Terrablox and cannot be deleted. Every user shares it."
+      : `This module comes from the shared ${name} library and cannot be deleted. Every user shares it.`;
+  }
+  return `This module comes from the ${name} library and cannot be deleted. Terrablox keeps it in step with GitHub.`;
 }

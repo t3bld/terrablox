@@ -27,6 +27,7 @@
  */
 
 import { prisma } from "@/lib/database";
+import { TERRABLOX_LIBRARY_ID } from "@/lib/module-library/libraries";
 import { BUILTIN_USER_ID } from "@/lib/module-library/ownership";
 
 /**
@@ -65,7 +66,7 @@ function renamedTo(repo: string): string | null {
 }
 
 const sources = await prisma.terraformModuleSource.findMany({
-  where: { userId: BUILTIN_USER_ID },
+  where: { userId: BUILTIN_USER_ID, library: TERRABLOX_LIBRARY_ID },
   select: { id: true, name: true, url: true, iconUrl: true },
 });
 

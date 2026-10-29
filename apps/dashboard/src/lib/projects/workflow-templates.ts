@@ -101,6 +101,52 @@ function setupTerraform(
           }`;
 }
 
+/**
+ * One git authentication step per private module library the project uses.
+ *
+ * The job's GITHUB_TOKEN can only read this repository, so `terraform init`
+ * cannot clone modules from another organisation's private repositories. A
+ * user-created repository secret holds a token that can; Terrablox never sees
+ * or writes it.
+ *
+ * Scoped as `http.https://github.com/<org>/.extraheader` rather than a global
+ * `url.insteadOf`: `actions/checkout` persists the job token as the host-wide
+ * extraheader, and git applies the most specific `http.<url>` match, so the
+ * org-scoped header wins for that org and reaches no other URL.
+ *
+ * Fails fast with a readable message when the secret is missing — the step is
+ * only rendered for projects that need it, and a 404 inside `terraform init`
+ * says nothing about why.
+ */
+function privateModulesSteps(context: PipelineContext): string {
+  return (context.privateModules ?? [])
+    .map(
+      (
+        library,
+      ) => `      # Modules in ${library.org} are private, and this job's GITHUB_TOKEN can only
+      # read this repository. The header is scoped to that organisation's URLs, so
+      # no other clone sees the token.
+      - name: Authenticate Git for ${library.libraryName} modules
+        env:
+          MODULES_TOKEN: \${{ secrets.${library.secretName} }}
+        run: |
+          if [ -z "$MODULES_TOKEN" ]; then
+            echo "::error::Add the repository secret ${library.secretName}: a token that can read the module repositories in ${library.org}. terraform init cannot fetch them without it."
+            exit 1
+          fi
+          header="$(printf 'x-access-token:%s' "$MODULES_TOKEN" | base64 -w0)"
+          echo "::add-mask::$header"
+          git config --global "http.https://github.com/${library.org}/.extraheader" "AUTHORIZATION: basic $header"`,
+    )
+    .join("\n\n");
+}
+
+/** The init step, preceded by any private module authentication. */
+function terraformInit(context: PipelineContext): string {
+  const steps = privateModulesSteps(context);
+  return `${steps ? `${steps}\n\n` : ""}      - run: terraform init -input=false`;
+}
+
 function renderPlan(
   context: PipelineContext,
   config: ResolvedTemplateConfig,
@@ -136,7 +182,7 @@ ${setupTerraform(config)}
 
       - run: terraform fmt -check -recursive
 
-      - run: terraform init -input=false
+${terraformInit(context)}
 
       - run: terraform validate
 
@@ -207,7 +253,7 @@ ${awsCredentialsStep(context)}
 
 ${setupTerraform(config)}
 
-      - run: terraform init -input=false
+${terraformInit(context)}
 
       # Validated before anything is created: a configuration error should stop
       # the run while it is still harmless, not half-way through an apply.

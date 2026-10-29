@@ -788,7 +788,7 @@ const MODULE_SERVICE_TYPES: Record<string, string> = {
   opensearch: "aws_opensearch_domain",
   rds: "aws_rds_cluster",
   redshift: "aws_redshift_cluster",
-  route53: "aws_route53_record",
+  route53: "aws_route53_zone",
   s3: "aws_s3_bucket",
   "secrets-manager": "aws_secretsmanager_secret",
   secretsmanager: "aws_secretsmanager_secret",

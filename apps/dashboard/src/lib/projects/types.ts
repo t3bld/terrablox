@@ -162,6 +162,52 @@ export type AgentStep =
   | { kind: "thought"; text: string }
   | { kind: "tool"; tool: string; summary: string; ok: boolean };
 
+/** One SDK tool invocation, separate from the human-readable step trail. */
+export interface AgentToolCall {
+  /** SDK call id, used to pair start and completion events. */
+  id: string;
+  source: "terrablox" | "mcp";
+  tool: string;
+  server: string | null;
+  /** The arguments reported by the SDK when execution started. */
+  arguments: unknown;
+  /** The complete result envelope reported by the SDK. */
+  result: unknown;
+  success: boolean | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  /** End-to-end time observed by Terrablox. */
+  durationMs: number | null;
+}
+
+/** Aggregated model usage for one Terrablox user turn. */
+export interface AgentTurnUsage {
+  modelCalls: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+  /** Sum of provider API-call durations, not wall-clock turn time. */
+  apiDurationMs: number | null;
+  /** Copilot/provider cost fields when the selected model reports them. */
+  cost: number | null;
+  totalNanoAiu: number | null;
+}
+
+/** Measurements captured while one project-agent turn runs. */
+export interface AgentTurnTelemetry {
+  startedAt: string;
+  finishedAt: string | null;
+  /** Wall time spent inside `runProjectAgent`. */
+  agentDurationMs: number | null;
+  /** Request setup, agent execution, commits and persistence. */
+  totalDurationMs: number | null;
+  usage: AgentTurnUsage;
+  toolCalls: AgentToolCall[];
+}
+
 export type ProjectGraphMutation =
   | {
       action: "add-module";
@@ -321,6 +367,23 @@ export interface ProjectLogTurnDto {
   commits: string[];
   decisionId: string | null;
   operations: ProjectOperationDto[];
+  /**
+   * The model the turn ran on, null for an older turn or a canvas gesture.
+   *
+   * Recorded on the turn rather than read from the current settings, because the
+   * settings move: a turn from last week ran on whatever was chosen then, and the
+   * log's job is to say what actually happened.
+   */
+  model: string | null;
+  /** The reasoning effort the turn ran at, same provenance as `model`. */
+  reasoningEffort: string | null;
+  /**
+   * How the turn ended: `completed`, `stopped` (cancelled, nothing committed) or
+   * `error` (failed before finishing). Null for a canvas gesture.
+   */
+  outcome: "completed" | "stopped" | "error" | null;
+  /** SDK tool-call and usage telemetry; absent on turns recorded before it existed. */
+  telemetry: AgentTurnTelemetry | null;
 }
 
 /**
@@ -433,6 +496,11 @@ export interface ProjectDeployState {
   variables: DeployVariablesDto;
   setup: DeploySetupState;
   workflows: WorkflowFileDto[];
+  /**
+   * Private module libraries (e.g. Porsche) the Terraform calls. Each needs a
+   * repository secret the user creates; the workflows read it before `init`.
+   */
+  privateModules: PrivateModuleAccessDto[];
   /** Kept for the pipeline preview; the backend file is not a template. */
   hasBackendFile: boolean;
   backendUpToDate: boolean;
@@ -451,3 +519,11 @@ export interface ProjectDeployState {
 
 /** The workflows Terrablox can start on the user's behalf. */
 export type DeployRunKind = "plan" | "apply";
+
+/** One private module library a project's pipeline needs a secret for. */
+export interface PrivateModuleAccessDto {
+  libraryId: string;
+  libraryName: string;
+  org: string;
+  secretName: string;
+}

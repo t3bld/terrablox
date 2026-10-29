@@ -28,6 +28,15 @@ export interface GitRepo {
    * imported.
    */
   default_branch: string | null;
+  /**
+   * Present on GitHub's full repository objects (including installation
+   * listings), kept optional because not every endpoint or host returns them.
+   * Module library discovery filters on these.
+   */
+  archived?: boolean;
+  topics?: string[];
+  pushed_at?: string | null;
+  owner?: { login: string } | null;
 }
 
 export interface GitBranch {

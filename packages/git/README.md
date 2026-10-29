@@ -29,7 +29,9 @@ read them; a real afternoon went into a bare 404 from `POST /git/trees` that mea
 | Entry point | Holds |
 | --- | --- |
 | `./client` | `githubRequest`, `GithubRequestError` — the only place a request is made |
-| `./repositories` | Describing a repository, listing where a new one may go, creating it |
+| `./repositories` | Describing a repository. Nothing here creates, deletes or reconfigures one |
+| `./installations` | Where the GitHub App is installed, and which repositories each installation grants |
+| `./discovery` | Topics, branch heads and visible org memberships, for per-user module library discovery |
 | `./files` | Reading a file, committing several as one revision, listing the tree |
 | `./actions` | Workflow runs, dispatching one, and the variables a workflow reads |
 | `./types` | The shapes a host has to answer in, and `IGitProvider` |

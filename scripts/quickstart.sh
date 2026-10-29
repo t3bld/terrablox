@@ -158,7 +158,7 @@ for legacy in $LEGACY_ENV_FILES; do
 
 	carried=0
 	for key in BETTER_AUTH_SECRET GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
-		BETTER_AUTH_URL NEXT_PUBLIC_APP_URL DATABASE_URL TERRABLOX_BUILTIN_MODULES; do
+		BETTER_AUTH_URL NEXT_PUBLIC_APP_URL DATABASE_URL; do
 		legacy_value="$(read_env_var "$legacy" "$key")"
 		[ -n "$legacy_value" ] || continue
 		# The root file wins where it already has a value; this only fills gaps.
@@ -304,11 +304,7 @@ ok "schema is up to date"
 # minutes to import. The user gets to decide.
 step "Built-in module catalogue"
 
-builtin_flag="$(read_env_var "$ENV_FILE" TERRABLOX_BUILTIN_MODULES)"
-
-if [ "$builtin_flag" = "false" ] || [ "$builtin_flag" = "0" ]; then
-	muted "TERRABLOX_BUILTIN_MODULES is false - skipping"
-elif [ ! -t 0 ]; then
+if [ ! -t 0 ]; then
 	# Non-interactive (CI, piped): import automatically if token available.
 	builtin_token="${TERRABLOX_SEED_GITHUB_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
 	if [ -z "$builtin_token" ] && command -v gh >/dev/null 2>&1; then

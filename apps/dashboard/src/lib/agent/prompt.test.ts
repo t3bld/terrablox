@@ -355,6 +355,7 @@ describe("systemPrompt", () => {
         appRepo: {
           fullName: "acme/app",
           branch: "main",
+          sha: "abc123",
           token: "gho_app_secret",
         },
       }),
@@ -413,7 +414,12 @@ describe("systemPrompt", () => {
 
     const withheld = systemPrompt(
       context({
-        appRepo: { fullName: "acme/app", branch: "main", token: "t" },
+        appRepo: {
+          fullName: "acme/app",
+          branch: "main",
+          sha: "abc123",
+          token: "t",
+        },
         appRepoLink: { fullName: "acme/app" },
         disabledKnowledge: [KNOWLEDGE_APP_REPO],
       }),
@@ -437,7 +443,12 @@ describe("systemPrompt", () => {
     expect(
       systemPrompt(
         context({
-          appRepo: { fullName: "acme/app", branch: "main", token: "t" },
+          appRepo: {
+            fullName: "acme/app",
+            branch: "main",
+            sha: "abc123",
+            token: "t",
+          },
         }),
       ),
     ).toContain("`list_app_files`");

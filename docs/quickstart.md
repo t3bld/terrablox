@@ -109,10 +109,12 @@ middle of a deployment, as a `404` that reads like a deleted repository.
 | Repository → Workflows | Read and write | commits touching `.github/workflows/` are refused without it, *on top of* Contents |
 | Repository → Actions | Read and write | start a deployment run and follow it |
 | Repository → Variables | Read and write | the pipeline's configuration |
-| Repository → Administration | Read and write | creating a project's repository |
-| Account → Email addresses | Read | so GitHub returns a primary email |
 
-Leave everything else off. In particular **not** *Copilot Chat*: it sounds relevant
+Leave everything else off, including *Administration*, *Secrets* and every account
+permission. Terrablox never creates, deletes or reconfigures a repository, and the
+pipeline's configuration lives in repository *Variables* because none of it is
+secret. Without *Email addresses*, an account that keeps its email private on GitHub
+is shown with its GitHub noreply address. In particular **not** *Copilot Chat*: it sounds relevant
 because the agent runs on Copilot, but it is the permission for Copilot Extensions,
 which receive a user's chat messages. Terrablox calls Copilot rather than being
 called by it, and enabling it would only add a data-sharing line to the consent
@@ -134,26 +136,153 @@ in and installing are two separate things: signing in identifies you, installing
 what grants access to repositories. Terrablox links to the install page wherever a
 repository list is empty, and on the account screen under *Repository access*.
 
-One thing worth knowing when you choose *Only select repositories*: creating a
-project creates a repository, and a new repository is not part of that selection.
-Terrablox refuses before creating anything and says so, rather than leaving an
-unusable repository behind. Choosing *All repositories* avoids it.
+Choose *Only select repositories* — it is supported and recommended. Terrablox does
+not create repositories: a project is imported from one that already exists. To start
+a project, create an empty repository on GitHub with a README (the first commit is what
+Terrablox commits on top of), add it to the installation's selection, and pick it in
+*Import project*. The project is named after the repository. Only repositories without any `.tf` file are accepted, so the
+Terraform root is always the repository root and there is nothing to configure.
 
-## The module catalogue
+## Module libraries
 
-Terrablox ships with a curated catalogue of AWS modules. Importing it needs a GitHub
-token and a few minutes, so the quickstart asks rather than deciding for you.
+Terrablox keeps *module libraries* in sync: sets of Terraform module repositories that
+users build projects from, next to the modules they import themselves. Every module
+shows which library it comes from, and the modules page can filter by library.
 
-To import it later:
+All libraries are configured in one JSON array in `.env`, `TERRABLOX_MODULE_LIBRARIES`
+(one line). Unset, it holds the two defaults:
 
 ```bash
-GITHUB_TOKEN=$(gh auth token) pnpm db:builtin:sync
-pnpm db:builtin:status
+TERRABLOX_MODULE_LIBRARIES=[{"id":"terrablox","name":"Terrablox","scope":"global","visible":true,"org":"terrablox","prefix":"terrablox-aws-","submoduleContainer":"modules"},{"id":"porsche","name":"Porsche","scope":"user","visible":true,"org":"porsche-code","topics":["aws","cbbac"]}]
 ```
 
-Until it has run, a project whose Terraform calls one of these modules renders it as
-a node with no inputs or outputs. `TERRABLOX_BUILTIN_MODULES=false` hides the
-catalogue without deleting it, so turning it back on is instant.
+| Field | |
+| --- | --- |
+| `id` | Slug stored on every row, e.g. `terrablox`. Required. |
+| `name` | Label shown on every module. Required. |
+| `scope` | `global` or `user` (see below). Required. |
+| `visible` | `false` hides the library everywhere without touching its rows. Default `true`. |
+| `org` | GitHub org or user. Required. |
+| `prefix`, `topics` | Repository name prefix and/or topics, all of which must match. At least one is required. |
+| `publicOnly` | Global only: list public repositories only. Default `true`. |
+| `submoduleContainer` | Pinned submodule folder, e.g. `modules`. Default: detected. |
+| `pipelineSecret` | Repository secret generated pipelines read for private modules. Default `TERRABLOX_<ID>_MODULES_TOKEN`. |
+
+Adding an entry adds a library without any code change. `[]` means no libraries. An
+invalid entry is skipped and logged. If the JSON is invalid as a whole, only the
+public Terrablox entry is used.
+There are two kinds:
+
+- **Global** (`"scope": "global"`): one shared copy that every user sees, such as the
+  **Terrablox** catalogue of AWS modules. An operator imports it with a token from
+  the shell.
+- **Per-user** (`"scope": "user"`): private repositories, such as **Porsche**. Each user's copy is read
+  with that user's own GitHub token (see below).
+
+Importing the Terrablox catalogue takes a GitHub token and a few minutes, so the
+quickstart asks first. To import it later:
+
+```bash
+GITHUB_TOKEN=$(gh auth token) pnpm db:builtin:sync    # = db:library:sync --library terrablox
+GITHUB_TOKEN=$(gh auth token) pnpm db:library:sync    # every global library
+pnpm db:library:status                                # rows and visibility per library
+```
+
+`db:library:sync` re-imports every ref by default, which also refreshes the
+analysis.
+- `--changed-only` skips tags that are already imported. The default branch is
+  always refreshed.
+- `--prune` removes repositories the org no longer lists. Pruning is opt-in, because
+  removing a shared module also removes it from every user's canvas.
+
+Container startup never imports anything: a sync takes minutes and needs a token.
+
+**Visibility is separate from importing.** `"visible": false` on an entry hides that
+library from every list, picker, agent and API, without deleting any rows. Switching
+it back on is instant, and a hidden library can still be imported in advance. While it's hidden, or before it has
+been imported, a project whose Terraform calls one of its modules shows that call as a
+node with no inputs or outputs.
+
+## Private module libraries (Porsche)
+
+Next to the Terrablox catalogue, Terrablox offers per-user libraries: the repositories
+in one GitHub organisation that carry all of a set of topics. The default is
+**Porsche**: repositories in `porsche-code` tagged both `aws` and `cbbac` (archived
+repositories are skipped). Each module shows its library as a badge, and the modules
+page can filter by library.
+
+These repositories are private, so they are never part of the shared catalogue. Each
+user's copy is discovered with that user's own GitHub token when they open the
+modules page or the canvas picker. It refreshes at most every 15 minutes, or at once
+with *Refresh*. A user who can't read the repositories doesn't get the library and
+sees no error. When access is revoked or a topic is removed, the module disappears at
+the next sync.
+
+To make the library available:
+
+1. An owner of `porsche-code` installs the Terrablox GitHub App on the organisation
+   (`https://github.com/apps/<GITHUB_APP_SLUG>/installations/new`) and adds the
+   module repositories to the selection. The app needs no extra permissions.
+2. Users need read access to those repositories on GitHub.
+
+If the app is installed but grants no matching repositories, the modules page links
+to the installation settings. If it isn't installed and GitHub reveals that you're a
+member of the org, the page links to the install page. GitHub only reveals public
+memberships to the app. With a private membership you get no hint, so make the
+membership public or ask an owner.
+
+A per-user library is an entry with `"scope": "user"` in `TERRABLOX_MODULE_LIBRARIES`.
+To hide it without touching anyone's rows, set `"visible": false` on it.
+
+### Pipelines that use Porsche modules
+
+A workflow's `GITHUB_TOKEN` can only read its own repository, so `terraform init`
+cannot clone `porsche-code` modules with it. When a project's Terraform calls one, the
+generated plan and apply workflows get an extra step before `terraform init`. That
+step reads a repository secret and sets an org-scoped git auth header. The deploy
+wizard lists the secret under *Private module access*. To create it:
+
+- Create a fine-grained personal access token (or a machine user's token).
+  - Resource owner: `porsche-code`.
+  - Repository access: only the module repositories.
+  - Repository permissions: *Contents: Read-only*.
+- Add it in the project repository under *Settings → Secrets and variables →
+  Actions* as `TERRABLOX_PORSCHE_MODULES_TOKEN`. The name is
+  `TERRABLOX_<ID>_MODULES_TOKEN`, or `pipelineSecret` if the library sets one.
+
+Terrablox never reads or writes secrets. Projects without Porsche modules get
+unchanged workflows and need no secret.
+
+## Captured agent turns
+
+Every agent turn that changes a project is recorded whole, as training data for the
+harness. The record holds the prompt and the settings it ran under, the project graph
+before and after, the trajectory of thoughts and tool calls, the mutations and
+decisions, and the commits the turn produced. A later turn backfills the pipeline's
+verdict on those commits — whether the resulting Terraform was valid — which is the
+label that makes a turn worth learning from.
+
+Not every turn starts from the graph. Three starting states are distinguished:
+
+- **greenfield** — the project was empty; the agent built from nothing.
+- **graph** — the agent extended the existing Terraform graph.
+- **legacy** — the agent read an external source and migrated from it. The source is
+  captured in full: the application-repository files the agent read (as it saw them,
+  pinned to a commit) and the MCP calls it made, including the arguments and the result
+  each call returned. This is the on-prem or legacy state a migration transforms from,
+  which the before/after graph alone cannot show.
+
+Turns that only answer a question commit nothing and are not recorded. The data is
+kept unredacted: it may carry account ids, ARNs, bucket names and source code from the
+systems it describes, and users are told their projects are used this way.
+
+Export the records as JSONL, one turn per line:
+
+```bash
+pnpm transformations:export > transformations.jsonl
+pnpm transformations:export --labelled-only > labelled.jsonl   # only turns a pipeline has ruled on
+pnpm transformations:export --kind legacy > migrations.jsonl   # only migrations from a legacy source
+```
 
 ## Everyday commands
 

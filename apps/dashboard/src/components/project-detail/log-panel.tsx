@@ -3,11 +3,19 @@
 import { PROJECT_AGENT_TOOLS } from "@terrablox/agent-harness/tool-catalogue";
 import { Badge } from "@terrablox/ui/badge";
 import { Input } from "@terrablox/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@terrablox/ui/sheet";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { TabsNav, tabPanelProps } from "@terrablox/ui/tabs-nav";
 import {
   AlertCircle,
   Bot,
+  BrainCircuit,
   ChevronDown,
   ChevronRight,
   ExternalLink,
@@ -26,6 +34,7 @@ import {
   toGroups,
 } from "@/lib/projects/log-view";
 import type {
+  AgentToolCall,
   ProjectDecisionDto,
   ProjectLogDto,
   ProjectOperationDto,
@@ -254,6 +263,98 @@ function Meta({ label, value }: { label: string; value: string }) {
   );
 }
 
+function duration(value: number | null): string {
+  if (value === null) return "not reported";
+  if (value < 1000) return `${Math.round(value)} ms`;
+  if (value < 60_000) return `${(value / 1000).toFixed(1)} s`;
+  const minutes = Math.floor(value / 60_000);
+  const seconds = Math.round((value % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+function count(value: number | null): string {
+  return value === null ? "not reported" : value.toLocaleString();
+}
+
+function JsonValue({ value }: { value: unknown }) {
+  const text =
+    typeof value === "string"
+      ? value
+      : (JSON.stringify(value, null, 2) ?? String(value));
+
+  return (
+    <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-[11px] [overflow-wrap:anywhere]">
+      {text}
+    </pre>
+  );
+}
+
+function ToolCallList({ calls }: { calls: AgentToolCall[] }) {
+  return (
+    <div className="space-y-2">
+      {calls.map((call) => (
+        <details className="group rounded-md border" key={call.id}>
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs hover:bg-accent/50">
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-90" />
+            <Badge className="shrink-0 text-[10px]" variant="outline">
+              {call.source === "mcp" && call.server
+                ? `${call.server}:${call.tool}`
+                : call.tool.replace(/^custom:/, "")}
+            </Badge>
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              {call.success === false
+                ? (call.error ?? "Failed")
+                : call.success === true
+                  ? "Completed"
+                  : "No completion event"}
+            </span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">
+              {duration(call.durationMs)}
+            </span>
+          </summary>
+          <div className="space-y-3 border-t p-3">
+            <div className="space-y-1">
+              <h5 className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wide">
+                Arguments
+              </h5>
+              <JsonValue value={call.arguments} />
+            </div>
+            <div className="space-y-1">
+              <h5 className="font-semibold text-[10px] text-muted-foreground uppercase tracking-wide">
+                Result
+              </h5>
+              <JsonValue value={call.result} />
+            </div>
+            {call.error ? (
+              <div className="space-y-1">
+                <h5 className="font-semibold text-[10px] text-destructive uppercase tracking-wide">
+                  Error
+                </h5>
+                <p className="text-destructive text-xs [overflow-wrap:anywhere]">
+                  {call.error}
+                </p>
+              </div>
+            ) : null}
+            <dl>
+              <Meta
+                label="Started"
+                value={new Date(call.startedAt).toLocaleString()}
+              />
+              {call.finishedAt ? (
+                <Meta
+                  label="Finished"
+                  value={new Date(call.finishedAt).toLocaleString()}
+                />
+              ) : null}
+              <Meta label="Call ID" value={call.id} />
+            </dl>
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
+
 function OperationList({
   operations,
   repo,
@@ -292,14 +393,60 @@ function OperationList({
   );
 }
 
-/**
- * A whole turn, for the panel: the question, the answer, every step, every change.
- *
- * The turn's own view, not a row's. Picking the turn is how you ask "what happened
- * here" without unfolding it, so this has to answer that completely — which means
- * the trail is written out in full rather than counted, and the counts in the header
- * exist to tell you whether it is worth opening.
- */
+function MetricCard({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+}) {
+  return (
+    <div className="min-w-0 rounded-lg border bg-card p-3 shadow-sm">
+      <p className="font-medium text-[10px] text-muted-foreground uppercase tracking-wide">
+        {label}
+      </p>
+      <p
+        className="mt-1 break-words font-semibold text-lg tabular-nums"
+        title={value}
+      >
+        {value}
+      </p>
+      {note ? (
+        <p className="mt-0.5 text-muted-foreground text-xs" title={note}>
+          {note}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function DetailCard({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="overflow-hidden rounded-lg border bg-card shadow-sm">
+      <div className="border-b px-4 py-3">
+        <h4 className="font-semibold text-sm">{title}</h4>
+        {description ? (
+          <p className="mt-0.5 text-muted-foreground text-xs">{description}</p>
+        ) : null}
+      </div>
+      <div className="p-4">{children}</div>
+    </section>
+  );
+}
+
+type TurnDetailView = "overview" | "reasoning" | "tools" | "changes";
+
+/** A whole turn, split by the questions someone asks while investigating it. */
 function TurnDetail({
   decision,
   group,
@@ -312,98 +459,330 @@ function TurnDetail({
   repo: string | null;
 }) {
   const { turn } = group;
+  const [section, setSection] = useState<TurnDetailView>("overview");
+  const thoughts = turn.steps.filter((step) => step.kind === "thought");
+  const toolSteps = turn.steps.filter((step) => step.kind === "tool");
+  const usage = turn.telemetry?.usage ?? null;
+  const reportedTokens = usage
+    ? [usage.inputTokens, usage.outputTokens, usage.reasoningTokens].filter(
+        (value): value is number => value !== null,
+      )
+    : [];
+  const totalTokens = reportedTokens.length
+    ? reportedTokens.reduce((sum, value) => sum + value, 0)
+    : null;
+  const toolCount = turn.telemetry?.toolCalls.length ?? group.calls;
+  const outcome = turn.outcome ?? (group.canvas ? "changed" : "recorded");
+  const outcomeLabel = `${outcome.charAt(0).toUpperCase()}${outcome.slice(1)}`;
+  const idPrefix = `turn-detail-${group.key}`;
 
   return (
-    <div className="space-y-4">
-      <PanelSection title={group.label ?? "Canvas change"}>
-        <p className="whitespace-pre-wrap text-sm [overflow-wrap:anywhere]">
-          {group.canvas
-            ? (group.rows[0]?.line ?? "Change")
-            : (turn.prompt ?? "(no prompt)")}
-        </p>
-      </PanelSection>
+    <div className="-m-4 min-h-full bg-muted/20">
+      <div className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <TabsNav
+          idPrefix={idPrefix}
+          label="Turn detail sections"
+          onChange={setSection}
+          tabs={[
+            { value: "overview", label: "Overview", icon: MessageSquare },
+            {
+              value: "reasoning",
+              label: "Reasoning",
+              icon: BrainCircuit,
+              count: thoughts.length,
+            },
+            {
+              value: "tools",
+              label: "Tool calls",
+              icon: Wrench,
+              count: toolCount,
+            },
+            {
+              value: "changes",
+              label: "Changes",
+              icon: GitCommit,
+              count: turn.operations.length,
+            },
+          ]}
+          value={section}
+        />
+      </div>
 
-      <PanelSection title="At a glance">
-        <dl>
-          <Meta label="At" value={new Date(turn.createdAt).toLocaleString()} />
-          {group.canvas ? null : (
-            <Meta
-              label="Trail"
-              value={`${group.calls} tool call${group.calls === 1 ? "" : "s"}, ${group.thoughts} reasoning step${group.thoughts === 1 ? "" : "s"}`}
-            />
-          )}
-          <Meta
-            label="Changed"
-            value={`${turn.operations.length} operation${
-              turn.operations.length === 1 ? "" : "s"
-            }, ${turn.commits.length} commit${turn.commits.length === 1 ? "" : "s"}`}
-          />
-        </dl>
-      </PanelSection>
+      <div
+        {...tabPanelProps(idPrefix, section)}
+        className="space-y-4 p-4 lg:p-5"
+      >
+        {section === "overview" ? (
+          <>
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <MetricCard
+                label="Outcome"
+                note={
+                  group.failed ? "Failures recorded" : "No failed tool steps"
+                }
+                value={outcomeLabel}
+              />
+              <MetricCard
+                label="Total duration"
+                note={
+                  turn.telemetry
+                    ? `${duration(turn.telemetry.agentDurationMs)} in the agent`
+                    : "Older turn"
+                }
+                value={duration(turn.telemetry?.totalDurationMs ?? null)}
+              />
+              <MetricCard
+                label="Tokens"
+                note={
+                  usage
+                    ? `${count(usage.inputTokens)} in · ${count(usage.outputTokens)} out`
+                    : "Usage was not recorded"
+                }
+                value={count(totalTokens)}
+              />
+              <MetricCard
+                label="Changes"
+                note={`${turn.commits.length} commit${turn.commits.length === 1 ? "" : "s"}`}
+                value={`${turn.operations.length} operation${turn.operations.length === 1 ? "" : "s"}`}
+              />
+            </div>
 
-      {turn.reply ? (
-        <PanelSection title="Answer">
-          <p className="whitespace-pre-wrap text-xs [overflow-wrap:anywhere]">
-            {turn.reply}
-          </p>
-        </PanelSection>
-      ) : null}
+            <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(17rem,1fr)]">
+              <div className="min-w-0 space-y-4">
+                <DetailCard title={group.canvas ? "Change" : "Request"}>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">
+                    {group.canvas
+                      ? (group.rows[0]?.line ?? "Change")
+                      : (turn.prompt ?? "(no prompt)")}
+                  </p>
+                </DetailCard>
 
-      {decision ? (
-        <PanelSection title="Under decision">
-          <button
-            className="flex w-full items-start gap-2 rounded-md border p-2 text-left text-xs hover:bg-accent"
-            onClick={onShowDecision}
-            type="button"
+                {turn.reply ? (
+                  <DetailCard title="Response">
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">
+                      {turn.reply}
+                    </p>
+                  </DetailCard>
+                ) : null}
+              </div>
+
+              <div className="min-w-0 space-y-4">
+                <DetailCard title="Execution">
+                  <dl>
+                    <Meta
+                      label="Started"
+                      value={new Date(turn.createdAt).toLocaleString()}
+                    />
+                    {turn.model ? (
+                      <Meta label="Model" value={turn.model} />
+                    ) : null}
+                    {turn.reasoningEffort ? (
+                      <Meta label="Effort" value={turn.reasoningEffort} />
+                    ) : null}
+                    <Meta
+                      label="Reasoning"
+                      value={`${thoughts.length} summar${thoughts.length === 1 ? "y" : "ies"}`}
+                    />
+                    <Meta
+                      label="Tool calls"
+                      value={toolCount.toLocaleString()}
+                    />
+                    {turn.telemetry ? (
+                      <>
+                        <Meta
+                          label="Agent time"
+                          value={duration(turn.telemetry.agentDurationMs)}
+                        />
+                        <Meta
+                          label="API time"
+                          value={duration(usage?.apiDurationMs ?? null)}
+                        />
+                      </>
+                    ) : null}
+                  </dl>
+                </DetailCard>
+
+                {usage ? (
+                  <DetailCard title="Model usage">
+                    <dl>
+                      <Meta
+                        label="Model calls"
+                        value={usage.modelCalls.toLocaleString()}
+                      />
+                      <Meta label="Input" value={count(usage.inputTokens)} />
+                      <Meta label="Output" value={count(usage.outputTokens)} />
+                      <Meta
+                        label="Reasoning"
+                        value={count(usage.reasoningTokens)}
+                      />
+                      <Meta
+                        label="Cache read"
+                        value={count(usage.cacheReadTokens)}
+                      />
+                      <Meta
+                        label="Cache write"
+                        value={count(usage.cacheWriteTokens)}
+                      />
+                      {usage.cost !== null ? (
+                        <Meta
+                          label="Cost"
+                          value={usage.cost.toLocaleString()}
+                        />
+                      ) : null}
+                      {usage.totalNanoAiu !== null ? (
+                        <Meta
+                          label="Nano AIU"
+                          value={usage.totalNanoAiu.toLocaleString()}
+                        />
+                      ) : null}
+                    </dl>
+                  </DetailCard>
+                ) : null}
+
+                {decision ? (
+                  <DetailCard title="Decision">
+                    <button
+                      className="flex w-full items-start gap-2 rounded-md text-left text-xs hover:text-primary"
+                      onClick={onShowDecision}
+                      type="button"
+                    >
+                      <Scale className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
+                        <span className="font-medium">{decision.question}</span>
+                        <span className="mt-1 block text-muted-foreground">
+                          {decision.choice}
+                        </span>
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    </button>
+                  </DetailCard>
+                ) : null}
+              </div>
+            </div>
+          </>
+        ) : null}
+
+        {section === "reasoning" ? (
+          <DetailCard
+            description="Concise reasoning summaries emitted by the model, in execution order."
+            title={`Reasoning (${thoughts.length})`}
           >
-            <Scale className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-              {decision.question} → {decision.choice}
-            </span>
-          </button>
-        </PanelSection>
-      ) : null}
+            {thoughts.length ? (
+              <ol className="space-y-0">
+                {thoughts.map((step, index) => (
+                  <li
+                    className="grid grid-cols-[2rem_1fr] gap-3"
+                    key={`${group.key}-thought-${index}`}
+                  >
+                    <div className="flex flex-col items-center">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-background font-medium text-[10px] tabular-nums">
+                        {index + 1}
+                      </span>
+                      {index < thoughts.length - 1 ? (
+                        <span className="my-1 w-px flex-1 bg-border" />
+                      ) : null}
+                    </div>
+                    <p className="pb-5 whitespace-pre-wrap text-sm leading-relaxed [overflow-wrap:anywhere]">
+                      {step.text}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="text-muted-foreground text-sm">
+                This model did not emit a reasoning summary for the turn.
+              </p>
+            )}
+          </DetailCard>
+        ) : null}
 
-      {/* In full, because this is the only place it is written out — the list shows
-          it only when the turn is unfolded, and the question this panel answers is
-          what the agent did rather than which line you clicked. */}
-      {turn.steps.length ? (
-        <PanelSection title={`Trail (${turn.steps.length})`}>
-          <ol className="divide-y rounded-md border">
-            {turn.steps.map((step, index) => (
-              <li
-                className="flex items-baseline gap-2 px-2 py-1 text-xs"
-                key={`${group.key}-step-${index}`}
-              >
-                <span
-                  className={`w-20 shrink-0 truncate rounded px-1 py-0.5 font-medium text-[10px] uppercase tracking-wide ${
-                    step.kind === "thought"
-                      ? BADGE_TONE.thought
-                      : step.ok
-                        ? BADGE_TONE.tool
-                        : "bg-destructive/15 text-destructive"
-                  }`}
-                  title={step.kind === "thought" ? "thought" : step.tool}
-                >
-                  {(step.kind === "thought" ? "thought" : step.tool).replace(
-                    /_/g,
-                    " ",
-                  )}
-                </span>
-                <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">
-                  {step.kind === "thought" ? step.text : step.summary}
-                </span>
-              </li>
-            ))}
-          </ol>
-        </PanelSection>
-      ) : null}
+        {section === "tools" ? (
+          <DetailCard
+            description="Exact SDK arguments, result envelopes, status and observed duration."
+            title={`Tool calls (${toolCount})`}
+          >
+            {turn.telemetry?.toolCalls.length ? (
+              <ToolCallList calls={turn.telemetry.toolCalls} />
+            ) : toolSteps.length ? (
+              <ol className="divide-y rounded-md border">
+                {toolSteps.map((step, index) => (
+                  <li
+                    className="flex items-start gap-3 p-3 text-xs"
+                    key={`${group.key}-tool-${index}`}
+                  >
+                    <Badge
+                      className="shrink-0 text-[10px]"
+                      variant={step.ok ? "outline" : "destructive"}
+                    >
+                      {step.tool.replace(/_/g, " ")}
+                    </Badge>
+                    <span className="min-w-0 flex-1 whitespace-pre-wrap leading-relaxed [overflow-wrap:anywhere]">
+                      {step.summary}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="text-muted-foreground text-sm">
+                No tools were called in this turn.
+              </p>
+            )}
+          </DetailCard>
+        ) : null}
 
-      {turn.operations.length ? (
-        <PanelSection title={`Operations (${turn.operations.length})`}>
-          <OperationList operations={turn.operations} repo={repo} />
-        </PanelSection>
-      ) : null}
+        {section === "changes" ? (
+          <div className="grid items-start gap-4 xl:grid-cols-2">
+            <DetailCard
+              description="Applied project mutations in execution order."
+              title={`Operations (${turn.operations.length})`}
+            >
+              {turn.operations.length ? (
+                <OperationList operations={turn.operations} repo={repo} />
+              ) : (
+                <p className="text-muted-foreground text-sm">
+                  This turn did not change the project.
+                </p>
+              )}
+            </DetailCard>
+
+            <DetailCard
+              description="Git revisions created by this turn."
+              title={`Commits (${turn.commits.length})`}
+            >
+              {turn.commits.length ? (
+                <ul className="divide-y rounded-md border">
+                  {turn.commits.map((sha) => (
+                    <li key={sha}>
+                      {repo ? (
+                        <a
+                          className="flex items-center gap-2 px-3 py-2 font-mono text-xs hover:bg-accent/50"
+                          href={`https://github.com/${repo}/commit/${sha}`}
+                          rel="noreferrer"
+                          target="_blank"
+                        >
+                          <GitCommit className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1 break-all">
+                            {sha}
+                          </span>
+                          <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        </a>
+                      ) : (
+                        <span className="block break-all px-3 py-2 font-mono text-xs">
+                          {sha}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-muted-foreground text-sm">
+                  No commit was created.
+                </p>
+              )}
+            </DetailCard>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -426,7 +805,7 @@ function RowDetail({
 
   return (
     <div className="space-y-4">
-      <PanelSection title={row.badge.replace(/_/g, " ")}>
+      <PanelSection title="Full text">
         <p className="whitespace-pre-wrap text-sm [overflow-wrap:anywhere]">
           {row.line || "(empty)"}
         </p>
@@ -742,6 +1121,64 @@ export function LogPanel({ projectId }: { projectId: string }) {
     [decision, groups],
   );
 
+  /**
+   * Whether the detail sheet is open, and what closes it.
+   *
+   * Driven by the same selection the panel reads rather than a flag of its own, so
+   * there is no second source of truth to drift: clicking a row opens it, and the
+   * close button or the overlay clears the selection that opened it.
+   */
+  const detailOpen = Boolean(
+    (view === "trajectory" && (pickedGroup || row)) ||
+      (view === "decisions" && decision),
+  );
+
+  const closeDetail = () => {
+    setPicked(null);
+    setSelectedDecision(null);
+  };
+
+  /** The sheet's title: the turn's label, the row's badge, or the decision. */
+  const detailTitle =
+    view === "trajectory"
+      ? (pickedGroup?.label ??
+        (pickedGroup?.canvas ? "Canvas change" : undefined) ??
+        row?.badge.replace(/_/g, " ") ??
+        "Details")
+      : (decision?.question ?? "Decision");
+
+  /**
+   * The header pills: what the turn ran on and how it ended.
+   *
+   * Only for a turn — a decision and a single row have nothing to run on — and
+   * only the fields a turn actually recorded, so an older turn from before these
+   * were stored simply shows fewer pills rather than "unknown".
+   */
+  const detailTurn = pickedGroup?.turn ?? row?.turn ?? null;
+  const detailBadges: Array<{
+    label: string;
+    variant: "secondary" | "outline" | "destructive";
+  }> =
+    view === "trajectory" && detailTurn
+      ? [
+          detailTurn.outcome && detailTurn.outcome !== "completed"
+            ? {
+                label: detailTurn.outcome,
+                variant: "destructive" as const,
+              }
+            : null,
+          detailTurn.model
+            ? { label: detailTurn.model, variant: "secondary" as const }
+            : null,
+          detailTurn.reasoningEffort
+            ? {
+                label: `effort: ${detailTurn.reasoningEffort}`,
+                variant: "outline" as const,
+              }
+            : null,
+        ].filter((badge): badge is NonNullable<typeof badge> => badge !== null)
+      : [];
+
   if (error) {
     return (
       <p className="flex items-center gap-2 p-6 text-sm text-destructive">
@@ -814,9 +1251,9 @@ export function LogPanel({ projectId }: { projectId: string }) {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        {/* The list scrolls on its own so the detail panel stays put while walking
-            down it — the reason this is a column beside the list and not a sheet
-            over it. */}
+        {/* The list owns its scroll position. Opening and closing a detail sheet
+            therefore returns the reader to the same turn rather than moving the
+            whole project page underneath it. */}
         <div
           {...tabPanelProps("log", view)}
           className="min-w-0 flex-1 overflow-y-auto"
@@ -917,60 +1354,99 @@ export function LogPanel({ projectId }: { projectId: string }) {
             </ol>
           )}
         </div>
-
-        <aside
-          aria-label="Details"
-          className="hidden w-96 shrink-0 overflow-y-auto border-l bg-card p-4 lg:block"
-        >
-          {view === "trajectory" && pickedGroup ? (
-            <TurnDetail
-              decision={
-                (log.decisions ?? []).find(
-                  (entry) => entry.id === pickedGroup.turn.decisionId,
-                ) ?? null
-              }
-              group={pickedGroup}
-              onShowDecision={() => {
-                if (pickedGroup.turn.decisionId) {
-                  showDecision(pickedGroup.turn.decisionId);
-                }
-              }}
-              repo={repo}
-            />
-          ) : view === "trajectory" && row ? (
-            <RowDetail
-              decision={
-                (log.decisions ?? []).find(
-                  (entry) => entry.id === row.turn.decisionId,
-                ) ?? null
-              }
-              onShowDecision={() => {
-                if (row.turn.decisionId) showDecision(row.turn.decisionId);
-              }}
-              repo={repo}
-              row={row}
-            />
-          ) : view === "decisions" && decision ? (
-            <DecisionDetail
-              decision={decision}
-              groups={decisionGroups}
-              onShowTurn={showTurn}
-              repo={repo}
-            />
-          ) : (
-            <p className="flex items-start gap-2 text-muted-foreground text-xs">
-              {view === "trajectory" ? (
-                <Wrench className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              ) : (
-                <Scale className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              )}
-              {view === "trajectory"
-                ? "Pick a turn to see everything it did, or unfold it and pick one line."
-                : "Pick a decision to see the requirements it worked from and the edits it produced."}
-            </p>
-          )}
-        </aside>
       </div>
+
+      {/* The detail opens as a sheet over the list rather than a column beside it.
+          A turn is read one at a time and from top to bottom — the question is
+          "what happened in this turn", not "how do these two compare" — so the
+          wider surface a sheet gives is worth more than keeping the list in view,
+          and it is the one surface that also works on a narrow screen, where the
+          old fixed column was hidden outright. */}
+      <Sheet
+        onOpenChange={(next) => (next ? undefined : closeDetail())}
+        open={detailOpen}
+      >
+        <SheetContent
+          className="flex w-full max-w-none flex-col gap-0 overflow-hidden p-0 sm:w-full sm:max-w-none lg:w-[65vw] lg:max-w-[65vw]"
+          side="right"
+        >
+          <SheetHeader className="shrink-0 space-y-2 border-b bg-background px-5 py-4 text-left">
+            <SheetTitle className="pr-8 text-lg">{detailTitle}</SheetTitle>
+            {detailTurn ? (
+              <SheetDescription className="pr-8">
+                {new Date(detailTurn.createdAt).toLocaleString()} ·{" "}
+                {
+                  detailTurn.steps.filter((step) => step.kind === "thought")
+                    .length
+                }{" "}
+                reasoning summaries ·{" "}
+                {detailTurn.telemetry?.toolCalls.length ??
+                  detailTurn.steps.filter((step) => step.kind === "tool")
+                    .length}{" "}
+                tool calls
+              </SheetDescription>
+            ) : decision ? (
+              <SheetDescription className="pr-8">
+                {new Date(decision.createdAt).toLocaleString()} ·{" "}
+                {decision.status === "active" ? "In force" : "Superseded"}
+              </SheetDescription>
+            ) : null}
+            {detailBadges.length ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {detailBadges.map((badge) => (
+                  <Badge
+                    className="font-normal text-[10px]"
+                    key={badge.label}
+                    variant={badge.variant}
+                  >
+                    {badge.label}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+          </SheetHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {view === "trajectory" && pickedGroup ? (
+              <TurnDetail
+                key={pickedGroup.key}
+                decision={
+                  (log.decisions ?? []).find(
+                    (entry) => entry.id === pickedGroup.turn.decisionId,
+                  ) ?? null
+                }
+                group={pickedGroup}
+                onShowDecision={() => {
+                  if (pickedGroup.turn.decisionId) {
+                    showDecision(pickedGroup.turn.decisionId);
+                  }
+                }}
+                repo={repo}
+              />
+            ) : view === "trajectory" && row ? (
+              <RowDetail
+                decision={
+                  (log.decisions ?? []).find(
+                    (entry) => entry.id === row.turn.decisionId,
+                  ) ?? null
+                }
+                onShowDecision={() => {
+                  if (row.turn.decisionId) showDecision(row.turn.decisionId);
+                }}
+                repo={repo}
+                row={row}
+              />
+            ) : view === "decisions" && decision ? (
+              <DecisionDetail
+                decision={decision}
+                groups={decisionGroups}
+                onShowTurn={showTurn}
+                repo={repo}
+              />
+            ) : null}
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

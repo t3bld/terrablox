@@ -14,7 +14,7 @@
  * Where `terraform-aws-modules`-style repositories keep their submodules.
  *
  * The same value the catalogue sync uses (`SUBMODULE_CONTAINER` in
- * `scripts/seed-builtin-modules/main.mts`), so a repository imported by hand is
+ * the Terrablox entry's `submoduleContainer`), so a repository imported by hand is
  * read the same way as one that ships with Terrablox.
  */
 export const DEFAULT_SUBMODULES_FOLDER = "modules";

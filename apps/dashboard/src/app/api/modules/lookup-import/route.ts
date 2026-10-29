@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { canonicalRepoUrl } from "@/lib/module-library/import-from-git";
-import { visibleToUser } from "@/lib/module-library/ownership";
+import { libraryOf } from "@/lib/module-library/libraries";
+import { isManaged } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * Lookup existing imports for a repo+ref+folder combination.
@@ -44,12 +46,14 @@ export async function GET(req: Request) {
 
   const canonicalSourceUrl = canonicalRepoUrl(repoFullName);
   const versionTag = refName;
+  const visibility = await visibleModulesForUser(userId);
 
   const sources = await database.terraformModuleSource.findMany({
-    where: { ...visibleToUser(userId), url: canonicalSourceUrl },
+    where: { ...visibility, url: canonicalSourceUrl },
     select: {
       id: true,
       userId: true,
+      library: true,
       name: true,
       description: true,
       tags: true,
@@ -64,7 +68,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ exists: false });
   }
 
-  const preferred = sources.find((s) => s.userId === userId) ?? sources[0];
+  // A per-user library row is the user's too, but read-only: their personal
+  // import, if any, is the one edits land on.
+  const preferred =
+    sources.find((s) => s.userId === userId && s.library === null) ??
+    sources[0];
   const source = {
     id: preferred?.id,
     name: preferred?.name,
@@ -78,7 +86,7 @@ export async function GET(req: Request) {
 
   const module = await database.terraformModule.findFirst({
     where: {
-      ...visibleToUser(userId),
+      ...visibility,
       sourceId: { in: sources.map((s) => s.id) },
       versionTag,
       terraformRootFolder,
@@ -87,6 +95,7 @@ export async function GET(req: Request) {
     select: {
       id: true,
       userId: true,
+      library: true,
       versionTag: true,
       terraformRootFolder: true,
       url: true,
@@ -100,7 +109,8 @@ export async function GET(req: Request) {
 
   return NextResponse.json({
     exists: true,
-    isBuiltin: module.userId === null,
+    isBuiltin: isManaged(module),
+    library: libraryOf(module),
     source,
     module,
   });

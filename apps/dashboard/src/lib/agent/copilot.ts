@@ -6,6 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
+import {
+  type ModelChoice,
+  resolveModelChoice,
+} from "@terrablox/agent-harness/runtime-options";
 
 /**
  * Copilot as the model behind the project agent.
@@ -20,8 +24,15 @@ import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
  * surface to protect and nothing to start or configure separately.
  */
 
-/** Model a turn runs on unless the chat picker says otherwise. */
-export const COPILOT_MODEL = "claude-opus-5";
+/**
+ * The default when the user's model list cannot be read.
+ *
+ * Not the default itself any more: that is the newest Anthropic model on the
+ * user's own list (see `resolveDefaultModel`), so a new Claude release becomes
+ * the default without a deploy. This id only applies when there is no list to
+ * choose from — no token, no seat, a runtime that would not start.
+ */
+export const COPILOT_MODEL = "claude-opus-5.5";
 
 /** How hard that model thinks unless the chat picker says otherwise. */
 export const COPILOT_REASONING_EFFORT = "high";
@@ -62,6 +73,9 @@ export interface CopilotModelInfo {
   name: string;
   reasoningEfforts: string[];
   multiplier: number | null;
+  /** Null when the runtime does not say, which is the usual case today. */
+  vendor: string | null;
+  preview: boolean;
 }
 
 /**
@@ -71,6 +85,10 @@ export interface CopilotModelInfo {
  * ten minutes is far shorter than the thing it caches. It exists because the
  * listing costs a CLI process: roughly half a second to spawn and a second to
  * answer, which is too much to pay on every render of the settings screen.
+ *
+ * It is also the longest a newly released model takes to appear, and with it to
+ * become the default when it is the newest Claude: entries expire rather than
+ * being refreshed in place, so the next request after that asks the runtime.
  */
 const MODEL_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -78,6 +96,15 @@ const modelCache = new Map<
   string,
   { at: number; models: CopilotModelInfo[] }
 >();
+
+/**
+ * Listings in flight, by the same key.
+ *
+ * The settings screen asks for the list and for what "no choice" resolves to in
+ * two parallel requests, and both need the listing. Without this a cold cache
+ * would spawn two CLI processes to answer the same question twice.
+ */
+const pendingListings = new Map<string, Promise<CopilotModelInfo[] | null>>();
 
 /** Keyed by digest so the cache never holds a usable token. */
 function cacheKey(token: string): string {
@@ -94,6 +121,17 @@ function cacheKey(token: string): string {
  * to come back empty every single time and leave the model dropdown with nothing
  * in it but whatever was already stored.
  *
+ * Every model the runtime reports is kept — any vendor, preview or not, whatever
+ * its multiplier — except two kinds. One is a model the user's Copilot policy
+ * has not enabled: `disabled` was switched off by them or their organisation, and
+ * `unconfigured` is waiting for someone to accept its terms, which this headless
+ * runtime has no way to do, so a turn on it would fail. A model reported with no
+ * policy at all is offered, since nothing says it is withheld. The other is
+ * `auto`, below.
+ *
+ * Returned in the runtime's own order, which is the order Copilot's own pickers
+ * use, so the list reads the same here as in the user's editor.
+ *
  * Returns null when the listing could not be obtained, so the caller can tell
  * "no entitlement information" from "entitled to nothing".
  */
@@ -107,6 +145,26 @@ export async function listCopilotModels(
     return cached.models;
   }
 
+  const pending = pendingListings.get(key);
+  if (pending) return pending;
+
+  const listing = fetchCopilotModels(githubToken, key).finally(() => {
+    pendingListings.delete(key);
+  });
+  pendingListings.set(key, listing);
+  return listing;
+}
+
+/** The fields some runtimes add to a listing beyond the SDK's own type. */
+interface ListedModelExtras {
+  vendor?: unknown;
+  preview?: unknown;
+}
+
+async function fetchCopilotModels(
+  githubToken: string,
+  key: string,
+): Promise<CopilotModelInfo[] | null> {
   // Its own directory: two CLI processes sharing session state is not something
   // to find out about in production.
   const baseDirectory = join(tmpdir(), "terrablox-copilot-models");
@@ -125,16 +183,26 @@ export async function listCopilotModels(
     await client.start();
 
     const models = (await client.listModels())
-      .filter((model) => model.policy?.state !== "disabled")
+      .filter((model) => !model.policy || model.policy.state === "enabled")
       // `auto` is not a model, it is Copilot choosing one. Offering it in a list
       // of model names makes the list mean two different things.
       .filter((model) => model.id !== "auto")
-      .map((model) => ({
-        id: model.id,
-        name: model.name ?? model.id,
-        reasoningEfforts: model.supportedReasoningEfforts ?? [],
-        multiplier: model.billing?.multiplier ?? null,
-      }));
+      .map((model) => {
+        // Read defensively: neither field is in the SDK's type, and the runtime
+        // this was verified against sends neither — the id carries the vendor.
+        const extras = model as typeof model & ListedModelExtras;
+
+        return {
+          id: model.id,
+          name: model.name ?? model.id,
+          reasoningEfforts: model.supportedReasoningEfforts ?? [],
+          multiplier: model.billing?.multiplier ?? null,
+          vendor: typeof extras.vendor === "string" ? extras.vendor : null,
+          preview:
+            extras.preview === true ||
+            /preview/i.test(`${model.id} ${model.name ?? ""}`),
+        };
+      });
 
     modelCache.set(key, { at: Date.now(), models });
     return models;
@@ -145,6 +213,24 @@ export async function listCopilotModels(
     // Left running it would leak a CLI process per cache miss.
     await client.stop().catch(() => undefined);
   }
+}
+
+/**
+ * What a turn for this user runs on, given what they chose (null for nothing).
+ *
+ * The one place a default model is resolved on the server, so the settings
+ * screen, the composer, a new project's snapshot and the turn itself cannot
+ * disagree about it. The rule is `resolveModelChoice`: an explicit choice wins
+ * while the user's list still offers it, and otherwise the newest Anthropic
+ * model on that list. Without a token or a listing it falls back to
+ * {@link COPILOT_MODEL}, and an explicit choice is trusted as it stands.
+ */
+export async function resolveCopilotModel(
+  githubToken: string | null,
+  chosen: string | null | undefined,
+): Promise<ModelChoice> {
+  const models = githubToken ? await listCopilotModels(githubToken) : null;
+  return resolveModelChoice(chosen, models, COPILOT_MODEL);
 }
 
 /**

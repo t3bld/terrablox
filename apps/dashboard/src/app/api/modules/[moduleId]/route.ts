@@ -3,11 +3,8 @@ import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { loadModuleDetail } from "@/lib/module-library/detail-service";
-import {
-  isBuiltin,
-  ownedByUser,
-  visibleToUser,
-} from "@/lib/module-library/ownership";
+import { deleteRefusal, ownedByUser } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 export async function GET(
   _req: Request,
@@ -60,23 +57,19 @@ export async function DELETE(
   // follows uses `ownedByUser`, which cannot match a builtin's NULL owner — the
   // check below decides what the caller is *told*, not what they are allowed to
   // do. Deleting it would change the message, never the outcome.
+  const visibility = await visibleModulesForUser(userId);
   const mod = await database.terraformModule.findFirst({
-    where: { id: moduleId, ...visibleToUser(userId) },
-    select: { id: true, sourceId: true, userId: true },
+    where: { id: moduleId, ...visibility },
+    select: { id: true, sourceId: true, userId: true, library: true },
   });
 
   if (!mod) {
     return NextResponse.json({ error: "Module not found" }, { status: 404 });
   }
 
-  if (isBuiltin(mod)) {
-    return NextResponse.json(
-      {
-        error:
-          "This module ships with Terrablox and cannot be deleted. Every user shares it.",
-      },
-      { status: 403 },
-    );
+  const refusal = deleteRefusal(mod);
+  if (refusal) {
+    return NextResponse.json({ error: refusal }, { status: 403 });
   }
 
   // `scope=module` wipes every ref of the repository, so the target set is

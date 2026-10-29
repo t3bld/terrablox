@@ -14,7 +14,10 @@ import {
 } from "@terrablox/agent-harness/runtime-options";
 import { PROJECT_AGENT_TOOLS } from "@terrablox/agent-harness/tool-catalogue";
 import { NextResponse } from "next/server";
-import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
+import {
+  COPILOT_REASONING_EFFORT,
+  resolveCopilotModel,
+} from "@/lib/agent/copilot";
 import {
   type AgentOverrides,
   getEffectiveAgentSettings,
@@ -29,7 +32,7 @@ import {
   getUserGithubToken,
 } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { visibleToUser } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * What the project agent can draw on, read from the same places a turn reads.
@@ -48,6 +51,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const visibility = await visibleModulesForUser(userId);
   const projectId = new URL(request.url).searchParams.get("projectId")?.trim();
 
   if (projectId) {
@@ -72,7 +76,7 @@ export async function GET(request: Request) {
     const [settings, moduleCount, projectCount, githubToken] =
       await Promise.all([
         getEffectiveAgentSettings(userId, projectId),
-        database.terraformModule.count({ where: visibleToUser(userId) }),
+        database.terraformModule.count({ where: visibility }),
         database.project.count({ where: { userId } }),
         getUserGithubToken(),
       ]);
@@ -80,6 +84,7 @@ export async function GET(request: Request) {
     return NextResponse.json(
       view({
         settings,
+        modelChoice: await resolveCopilotModel(githubToken, settings.model),
         moduleCount,
         projectCount,
         githubConnected: Boolean(githubToken),
@@ -98,7 +103,7 @@ export async function GET(request: Request) {
 
   const [settings, moduleCount, projectCount, githubToken] = await Promise.all([
     getAgentSettings(userId),
-    database.terraformModule.count({ where: visibleToUser(userId) }),
+    database.terraformModule.count({ where: visibility }),
     database.project.count({ where: { userId } }),
     getUserGithubToken(),
   ]);
@@ -106,6 +111,7 @@ export async function GET(request: Request) {
   return NextResponse.json(
     view({
       settings,
+      modelChoice: await resolveCopilotModel(githubToken, settings.model),
       moduleCount,
       projectCount,
       githubConnected: Boolean(githubToken),
@@ -137,6 +143,8 @@ function view(input: {
     mcpServers: McpServerView[];
     allowDestructive: boolean;
   };
+  /** The stored model checked against this user's list, and the default. */
+  modelChoice: { defaultModel: string; unavailable: boolean };
   moduleCount: number;
   projectCount: number;
   githubConnected: boolean;
@@ -159,6 +167,10 @@ function view(input: {
     // fallbacks rather than already resolved: the settings screen has to show what
     // "no choice" resolves to without claiming somebody chose it.
     model: settings.model,
+    // True when that choice is no longer on the user's Copilot list. Turns then
+    // run on the default instead, and the screen says so rather than showing a
+    // model nothing will run on.
+    modelUnavailable: input.modelChoice.unavailable,
     reasoningEffort: settings.reasoningEffort,
     turnTimeout: settings.turnTimeout,
     maxToolCalls: settings.maxToolCalls,
@@ -172,7 +184,9 @@ function view(input: {
     // plain answer it is: may the agent delete here, yes or no.
     allowDestructive: settings.allowDestructive,
     defaults: {
-      model: COPILOT_MODEL,
+      // The newest Anthropic model on this user's list, resolved per request:
+      // a hard-coded id here would name a model the turn no longer runs on.
+      model: input.modelChoice.defaultModel,
       reasoningEffort: COPILOT_REASONING_EFFORT,
       turnTimeout: DEFAULT_TURN_TIMEOUT_SECONDS,
       maxToolCalls: AGENT_MAX_TOOL_CALLS,

@@ -14,6 +14,7 @@ import {
   type IconChoiceValue,
   REPO_ICON_FILES,
 } from "@/lib/module-library/icon";
+import { findModuleLibrary } from "@/lib/module-library/libraries";
 import { persistAnalysis } from "@/lib/module-library/persist-analysis";
 
 /**
@@ -36,6 +37,14 @@ export type GitRefType = "release" | "branch" | "tag";
 export interface ImportModuleFromGitInput {
   /** The owner of the resulting rows, or null for the shipped catalogue. */
   userId: string | null;
+  /**
+   * The library these rows belong to (e.g. `terrablox`, `porsche`), or
+   * null/omitted for a personal import. Part of the source's identity: a user's
+   * manual import of a repository and a library's copy of it are separate
+   * sources, so neither ever overwrites the other. Must match `userId`: a global
+   * library writes with a null owner, a per-user library with a real one.
+   */
+  library?: string | null;
   /** GitHub token. Optional for public repos — omitting it uses the 60 req/h unauthenticated limit. */
   token: string | null;
   repoFullName: string;
@@ -60,6 +69,11 @@ export interface ImportModuleFromGitInput {
    * a hundred imports in a row against a shared rate limit.
    */
   defaultBranch?: string | null;
+  /**
+   * Optional fence checked immediately before database mutations. Library syncs use
+   * it to prove they still own their lease; personal and global imports omit it.
+   */
+  assertCurrent?: () => Promise<void>;
 }
 
 /**
@@ -616,6 +630,32 @@ async function resolveSubmoduleFolders(params: {
 }
 
 /**
+ * Refuses an owner/library pairing that would put rows where they don't belong.
+ *
+ * The one write-side rule that keeps private modules private: rows without an
+ * owner are shared with every user, so only a library *configured as global*
+ * may write them. A per-user library always writes one person's rows.
+ */
+function assertLibraryOwner(userId: string | null, library: string | null) {
+  if (library === null) {
+    if (userId === null) {
+      throw new Error("A shared module must belong to a global library");
+    }
+    return;
+  }
+
+  const def = findModuleLibrary(library);
+  if (!def) throw new Error(`Unknown module library '${library}'`);
+
+  if (def.scope === "global" && userId !== null) {
+    throw new Error(`Library '${library}' is global and has no owner`);
+  }
+  if (def.scope === "user" && userId === null) {
+    throw new Error(`Library '${library}' is per-user and needs an owner`);
+  }
+}
+
+/**
  * Imports one ref of one repository, creating or refreshing its module rows.
  *
  * Idempotent on `(sourceId, versionTag, terraformRootFolder)`: importing the same
@@ -629,6 +669,8 @@ export async function importModuleFromGit(
 ): Promise<ImportModuleFromGitResult> {
   const startedAt = performance.now();
   const { userId, token, repoFullName, refName } = input;
+  const library = input.library ?? null;
+  assertLibraryOwner(userId, library);
 
   const defaultName = repoFullName.split("/").pop() ?? repoFullName;
 
@@ -646,7 +688,7 @@ export async function importModuleFromGit(
   // explicit null in a filter into IS NULL — the equality-never-matches-NULL
   // rule that protects builtins elsewhere applies to a *string* userId.
   const existingSource = await database.terraformModuleSource.findFirst({
-    where: { userId, url: canonicalSourceUrl },
+    where: { userId, library, url: canonicalSourceUrl },
     select: { id: true },
   });
 
@@ -689,35 +731,6 @@ export async function importModuleFromGit(
   // rendered from its own contents.
   const icon = input.icon ?? null;
 
-  const source = existingSource
-    ? await database.terraformModuleSource.update({
-        where: { id: existingSource.id },
-        data: {
-          name: sourceName,
-          description: input.description?.trim() || null,
-          tags: normalizeTags(input.tags),
-          // `iconUrl` is detection, not preference: re-read on every import so an
-          // icon added or removed upstream is picked up. The preference is only
-          // touched when the caller actually expressed one.
-          iconUrl,
-          ...(icon ? { iconMode: icon.mode, iconName: icon.iconName } : {}),
-        },
-      })
-    : await database.terraformModuleSource.create({
-        data: {
-          userId,
-          name: sourceName,
-          description: input.description?.trim() || null,
-          tags: normalizeTags(input.tags),
-          url: canonicalSourceUrl,
-          provider: "github",
-          iconUrl,
-          // No choice on a first import means the repository's own icon, which is
-          // what the schema default says and what the catalogue relies on.
-          ...(icon ? { iconMode: icon.mode, iconName: icon.iconName } : {}),
-        },
-      });
-
   const terraformSubmodulesFolders = await resolveSubmoduleFolders({
     treeEntries,
     rootFolder: terraformRootFolder,
@@ -748,12 +761,41 @@ export async function importModuleFromGit(
     }),
   );
 
+  await input.assertCurrent?.();
+
   // Bracketed with timestamps rather than wrapped in `timed`, which would cost
   // the whole transaction body a level of indentation for one number.
   const dbStartedAt = performance.now();
 
   const created = await database.$transaction(
     async (tx) => {
+      // Source metadata and module analysis publish together. A sync that loses its
+      // lease during network analysis therefore leaves no stale metadata behind.
+      const source = existingSource
+        ? await tx.terraformModuleSource.update({
+            where: { id: existingSource.id },
+            data: {
+              name: sourceName,
+              description: input.description?.trim() || null,
+              tags: normalizeTags(input.tags),
+              iconUrl,
+              ...(icon ? { iconMode: icon.mode, iconName: icon.iconName } : {}),
+            },
+          })
+        : await tx.terraformModuleSource.create({
+            data: {
+              userId,
+              library,
+              name: sourceName,
+              description: input.description?.trim() || null,
+              tags: normalizeTags(input.tags),
+              url: canonicalSourceUrl,
+              provider: "github",
+              iconUrl,
+              ...(icon ? { iconMode: icon.mode, iconName: icon.iconName } : {}),
+            },
+          });
+
       // Root module: idempotent on the unique (sourceId, versionTag, terraformRootFolder) tuple.
       const existingRoot = await tx.terraformModule.findFirst({
         where: {
@@ -781,6 +823,7 @@ export async function importModuleFromGit(
         : await tx.terraformModule.create({
             data: {
               userId,
+              library,
               sourceId: source.id,
               // Root module display is derived from terraform_module_sources.
               submoduleName: null,
@@ -825,6 +868,7 @@ export async function importModuleFromGit(
           : await tx.terraformModule.create({
               data: {
                 userId,
+                library,
                 sourceId: source.id,
                 // For imported submodules, store the folder basename as submodule_name.
                 submoduleName: subFolder.split("/").pop() ?? subFolder,
@@ -846,7 +890,7 @@ export async function importModuleFromGit(
 
       await persistAnalysis(tx, rootModule.id, rootAnalysis);
 
-      return { rootModule, submodules };
+      return { rootModule, submodules, source };
     },
     // Analysis is done before the transaction opens, but resource rewrites
     // can still take a moment on large modules.
@@ -858,7 +902,7 @@ export async function importModuleFromGit(
   return {
     module: created.rootModule,
     submodules: created.submodules,
-    source,
+    source: created.source,
     warnings: rootAnalysis.errors,
     timings: {
       totalMs: performance.now() - startedAt,

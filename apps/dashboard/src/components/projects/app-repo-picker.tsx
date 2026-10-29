@@ -59,15 +59,33 @@ export function AppRepoPicker({
   onChange,
   disabled = false,
   triggerId,
+  placeholder = "None — the agent will ask instead",
+  clearable = true,
 }: {
   value: AppRepoSelection | null;
   onChange: (next: AppRepoSelection | null) => void;
   disabled?: boolean;
   /** So a `Label` elsewhere can point at the trigger. */
   triggerId?: string;
+  /**
+   * What the trigger says while nothing is picked.
+   *
+   * The default is the application-repository wording. The create-project dialog
+   * reuses this picker for the project's own repository, where "the agent will ask
+   * instead" would be untrue — that one is required.
+   */
+  placeholder?: string;
+  /** Whether the unlink button is offered. Off where a choice is required. */
+  clearable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  // The dialog this picker sits in, if any. The popover is portaled into it so
+  // the wheel reaches the list: see `PopoverContent`'s `container` prop. Null
+  // outside a dialog (e.g. project detail), where the body default is correct.
+  const [dialogContainer, setDialogContainer] = useState<HTMLElement | null>(
+    null,
+  );
   const [repos, setRepos] = useState<RepoOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -167,7 +185,14 @@ export function AppRepoPicker({
   const hidden = Math.max(0, matches.total - matches.rows.length);
 
   return (
-    <div className="flex items-center gap-2">
+    <div
+      className="flex items-center gap-2"
+      ref={(node) =>
+        setDialogContainer(
+          node?.closest<HTMLElement>('[role="dialog"]') ?? null,
+        )
+      }
+    >
       <Popover onOpenChange={setOpen} open={open}>
         <PopoverTrigger asChild>
           <Button
@@ -185,13 +210,16 @@ export function AppRepoPicker({
                   : "min-w-0 truncate text-muted-foreground"
               }
             >
-              {value?.fullName ?? "None — the agent will ask instead"}
+              {value?.fullName ?? placeholder}
             </span>
             <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
 
-        <PopoverContent className="w-[--radix-popover-trigger-width] p-0">
+        <PopoverContent
+          className="w-[--radix-popover-trigger-width] p-0"
+          {...(dialogContainer ? { container: dialogContainer } : {})}
+        >
           {/* Filtered above, so cmdk is told not to score the list again — it
               would reorder rows that are already in the order the search
               produced. */}
@@ -269,7 +297,7 @@ export function AppRepoPicker({
         </PopoverContent>
       </Popover>
 
-      {value ? (
+      {value && clearable ? (
         <Button
           aria-label="Unlink the application repository"
           className="h-10 w-10 shrink-0"

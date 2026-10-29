@@ -31,6 +31,7 @@ import {
   GITHUB_OIDC_PROVIDER,
 } from "@/lib/projects/deploy";
 import {
+  buildPrivateModulesChecklist,
   buildRoleChecklist,
   buildStateChecklist,
   type ChecklistItem,
@@ -723,6 +724,13 @@ export function DeployWizard({
       runBaseline.state?.variables === true && state.setup.variablesReady,
   });
 
+  // Never blocks finishing: Terrablox cannot see secrets, so it cannot check.
+  const privateModulesChecklist = buildPrivateModulesChecklist({
+    // Without a bound repository there is no pipeline to add a secret to.
+    modules: repoFullName ? (state.privateModules ?? []) : [],
+    repoFullName: repoFullName ?? "",
+  });
+
   /**
    * Moves to a step, and drops any half-pressed Delete on the way out.
    *
@@ -1398,6 +1406,12 @@ export function DeployWizard({
                   ))}
                 </ul>
               </StepSection>
+
+              {privateModulesChecklist.length > 0 ? (
+                <StepSection title="Private module access">
+                  <StepChecklist items={privateModulesChecklist} />
+                </StepSection>
+              ) : null}
 
               {state.setup.roleReady ? null : (
                 <p className="text-muted-foreground text-xs">

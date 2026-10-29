@@ -21,9 +21,13 @@ import {
 import { Prisma } from "@terrablox/database";
 import { listWorkflowRuns } from "@terrablox/git/actions";
 import { GithubRequestError } from "@terrablox/git/client";
+import { getBranchHead } from "@terrablox/git/files";
 import { getRepository } from "@terrablox/git/repositories";
 import { z } from "zod";
-import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
+import {
+  COPILOT_REASONING_EFFORT,
+  resolveCopilotModel,
+} from "@/lib/agent/copilot";
 import { getEffectiveAgentSettings } from "@/lib/agent/effective-settings";
 import { getHarnessCuration } from "@/lib/agent/harness-curation";
 import { toAgentLibrary } from "@/lib/agent/library-view";
@@ -56,7 +60,15 @@ import {
   readModuleLibrary,
   readModuleResourceTypes,
 } from "@/lib/projects/service";
-import type { AgentStep, ProjectGraph } from "@/lib/projects/types";
+import {
+  backfillPipelineOutcome,
+  recordTransformation,
+} from "@/lib/projects/transformations";
+import type {
+  AgentStep,
+  AgentTurnTelemetry,
+  ProjectGraph,
+} from "@/lib/projects/types";
 
 /**
  * How many messages of a project's transcript are read at once.
@@ -90,11 +102,15 @@ const HISTORY_QUERY = {
  * The composer sends the model and effort with every turn, so nothing here is
  * trusted: an unknown id would fail the session with a runtime error instead of
  * a message the user can act on.
+ *
+ * Only the shape is checked here, and anything else reads as "no choice". Whether
+ * the user may still run the model is `resolveCopilotModel`'s question, asked
+ * against their own list before the turn starts.
  */
-function resolveModel(value: unknown): string {
+function requestedModel(value: unknown): string | null {
   return typeof value === "string" && /^[\w.:-]{1,100}$/.test(value)
     ? value
-    : COPILOT_MODEL;
+    : null;
 }
 
 function resolveEffort(value: unknown): ReasoningEffortValue {
@@ -158,11 +174,21 @@ async function resolveAppRepo(
 
   try {
     const repository = await getRepository(token, project.appRepoFullName);
+    const branch = project.appRepoBranch ?? repository.defaultBranch;
+
+    // The commit the reads this turn will be pinned to. Non-fatal: a null SHA
+    // leaves the link working — the tools read by branch name regardless — and
+    // only costs a captured migration source its exact revision.
+    const sha = await getBranchHead(token, {
+      repoFullName: repository.fullName,
+      branch,
+    }).catch(() => null);
 
     return {
       appRepo: {
         fullName: repository.fullName,
-        branch: project.appRepoBranch ?? repository.defaultBranch,
+        branch,
+        sha,
         token,
       },
       problem: null,
@@ -289,6 +315,24 @@ export async function POST(
   }
 
   const message = body.message;
+  const totalStartedMs = performance.now();
+  let latestTelemetry: AgentTurnTelemetry | null = null;
+  let resolvedModel: string | null = null;
+  let resolvedReasoningEffort: ReasoningEffortValue | null = null;
+
+  const withTotalDuration = (
+    telemetry: AgentTurnTelemetry | null,
+  ): AgentTurnTelemetry | null =>
+    telemetry
+      ? {
+          ...telemetry,
+          totalDurationMs: Math.round(performance.now() - totalStartedMs),
+        }
+      : null;
+
+  /** Prisma JSON after removing any SDK-side `undefined` fields. */
+  const metadataJson = (value: unknown): Prisma.InputJsonValue =>
+    JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 
   const token = await getProviderTokenForRequest(req, project.provider);
   if (!token) {
@@ -400,6 +444,13 @@ export async function POST(
       activeDecisions(project.id),
     ]);
 
+    // The pipeline's verdict on the previous turn is now a fact — `readLastCheck`
+    // just read it — so the transformation that turn recorded can be labelled with
+    // it. Fire-and-forget: it is bookkeeping on an earlier turn and must not hold
+    // up this one. Runs regardless of what the agent is allowed to see, because the
+    // label is about the commit, not about what the model was shown.
+    void backfillPipelineOutcome(project.id, lastCheck);
+
     // Knowledge is withheld by not assembling it, not by asking the model to
     // ignore it. `graph` below is still the real one — it goes back to the
     // client to refresh the canvas, and mutations commit against the repository
@@ -412,6 +463,17 @@ export async function POST(
       settings.disabledKnowledge,
       KNOWLEDGE_MODULE_LIBRARY,
     );
+
+    // The composer's pick, else the project's stored one, checked against the
+    // user's Copilot list: a model that has left it would fail the session, so
+    // the turn runs on the newest Anthropic model instead. The settings screen
+    // and the composer read the same answer and show it before the turn.
+    const modelChoice = await resolveCopilotModel(
+      copilotToken,
+      requestedModel(body?.model) ?? settings.model,
+    );
+    resolvedModel = modelChoice.model;
+    resolvedReasoningEffort = resolveEffort(body?.reasoningEffort);
 
     const turn = await runProjectAgent(message, {
       projectName: project.name,
@@ -432,8 +494,8 @@ export async function POST(
       instructions: settings.instructions,
       disabledKnowledge: settings.disabledKnowledge,
       mcpServers,
-      model: resolveModel(body?.model),
-      reasoningEffort: resolveEffort(body?.reasoningEffort),
+      model: resolvedModel,
+      reasoningEffort: resolvedReasoningEffort,
       disabledTools: settings.disabledTools,
       turnTimeout: settings.turnTimeout,
       maxToolCalls: settings.maxToolCalls,
@@ -464,6 +526,9 @@ export async function POST(
         ]),
       ),
       onStep: publishProgress,
+      onTelemetry: (telemetry) => {
+        latestTelemetry = telemetry;
+      },
       signal: cancellation.signal,
       // The whole module rather than a three-field summary. The ports were always
       // loaded here and thrown away one line before the prompt, which left the
@@ -497,6 +562,7 @@ export async function POST(
           }))
         : [],
     });
+    latestTelemetry = turn.telemetry;
 
     let currentGraph: ProjectGraph = graph;
     const commits: string[] = [];
@@ -515,7 +581,13 @@ export async function POST(
         projectId: project.id,
         role: "assistant",
         content: turn.reply,
-        metadata: { mutations: turn.mutations.length },
+        metadata: metadataJson({
+          mutations: turn.mutations.length,
+          model: resolvedModel,
+          reasoningEffort: resolvedReasoningEffort,
+          outcome: "completed",
+          telemetry: withTotalDuration(turn.telemetry),
+        }),
       },
     });
 
@@ -579,9 +651,11 @@ export async function POST(
     }
 
     // The commit closes the trail: the reasoning above explains the intent, this
-    // is the proof it reached the repository the graph is rebuilt from.
-    const steps: AgentStep[] = [
-      ...turn.steps,
+    // is the proof it reached the repository the graph is rebuilt from. The same
+    // tail is appended to both trails — the capped one the UI stores and the full
+    // one the training record keeps — so neither ends before the commit it
+    // describes.
+    const trailTail: AgentStep[] = [
       ...(commits.length
         ? [
             {
@@ -599,19 +673,77 @@ export async function POST(
         ok: false,
       })),
     ];
+    const steps: AgentStep[] = [...turn.steps, ...trailTail];
+    const fullSteps: AgentStep[] = [...turn.fullSteps, ...trailTail];
 
     // The row already exists — the operations point at it — so this fills in what
     // only the commit loop could know.
     const completed = await database.projectChatMessage.update({
       where: { id: assistantMessage.id },
       data: {
-        metadata: {
+        metadata: metadataJson({
           commits,
           mutations: turn.mutations.length,
           decisions: decisionIds.filter(Boolean),
           steps,
-        },
+          model: resolvedModel,
+          reasoningEffort: resolvedReasoningEffort,
+          // A mutation that threw is still a completed turn with a reported
+          // failure in its trail, not an `error` turn — that word is reserved for
+          // a turn that never produced a reply at all.
+          outcome: "completed",
+          telemetry: withTotalDuration(turn.telemetry),
+        }),
       },
+    });
+
+    // The whole turn, captured as one record for the harness: the prompt and the
+    // conditions it ran under, the graph before (`graph`) and after
+    // (`currentGraph`), the trajectory, mutations and decisions in between, and the
+    // commits it produced. Fire-and-forget and self-skipping — it writes nothing
+    // for a turn that only answered — so a pure question costs no row and a failed
+    // write never costs the reply. The pipeline verdict is filled in by a later
+    // turn's `backfillPipelineOutcome`.
+    void recordTransformation({
+      projectId: project.id,
+      userId,
+      chatMessageId: assistantMessage.id,
+      prompt: message,
+      reply: turn.reply,
+      settings: {
+        model: resolvedModel ?? modelChoice.model,
+        reasoningEffort: resolvedReasoningEffort,
+        maxToolCalls: settings.maxToolCalls ?? null,
+        maxSteps: settings.maxSteps ?? null,
+        allowDestructive: settings.allowDestructive ?? null,
+        disabledTools: settings.disabledTools ?? [],
+        disabledKnowledge: settings.disabledKnowledge ?? [],
+        seesRepo,
+        seesLibrary,
+      },
+      graphBefore: graph,
+      graphAfter: currentGraph,
+      // The full, untrimmed trail for training; the UI trail (`steps`) is stored
+      // on the assistant message above.
+      steps: fullSteps,
+      mutations: turn.mutations,
+      decisions: turn.decisions,
+      commits,
+      mutationErrors,
+      outcome: "completed",
+      // What the turn read beyond the graph — app-repo files, MCP results —
+      // collected inside the tools because the step trail only summarises it. This
+      // is the legacy/on-prem starting state a migration transforms from.
+      migrationSource: turn.migrationSource,
+      // Pinned to the revision the reads came from. `application.appRepo` carries
+      // the token too, which has no place in a record, so only identity is passed.
+      appRepo: application.appRepo
+        ? {
+            fullName: application.appRepo.fullName,
+            branch: application.appRepo.branch,
+            sha: application.appRepo.sha,
+          }
+        : null,
     });
 
     return NextResponse.json({
@@ -636,7 +768,13 @@ export async function POST(
           role: "system",
           content:
             "Stopped. Nothing was committed — the agent's edits are only written to the repository once a turn finishes.",
-          metadata: { stopped: true },
+          metadata: metadataJson({
+            stopped: true,
+            outcome: "stopped",
+            model: resolvedModel,
+            reasoningEffort: resolvedReasoningEffort,
+            telemetry: withTotalDuration(latestTelemetry),
+          }),
         },
       });
 
@@ -656,7 +794,13 @@ export async function POST(
         projectId: project.id,
         role: "system",
         content: reason,
-        metadata: { error: true },
+        metadata: metadataJson({
+          error: true,
+          outcome: "error",
+          model: resolvedModel,
+          reasoningEffort: resolvedReasoningEffort,
+          telemetry: withTotalDuration(latestTelemetry),
+        }),
       },
     });
 

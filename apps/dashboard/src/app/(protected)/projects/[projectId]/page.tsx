@@ -5,6 +5,7 @@ import {
   type ProjectCanvasConnection,
   type ProjectCanvasEdge,
   type ProjectCanvasNode,
+  toCanvasModel,
 } from "@terrablox/graph";
 import { ComingLater } from "@terrablox/ui/coming-later";
 import { Dialog, DialogContent, DialogTitle } from "@terrablox/ui/dialog";
@@ -87,16 +88,16 @@ const GRAPH_LEVELS: {
   hint: string;
 }[] = [
   {
-    value: "detail",
-    label: "Detail",
-    icon: Workflow,
-    hint: "Module blocks, their inputs and the wires between them",
-  },
-  {
     value: "architecture",
     label: "Architecture",
     icon: Network,
     hint: "The AWS services these modules deploy, and how they connect",
+  },
+  {
+    value: "detail",
+    label: "Details",
+    icon: Workflow,
+    hint: "Module blocks, their inputs and the wires between them",
   },
 ];
 
@@ -202,7 +203,7 @@ export default function ProjectDetailPage({
   const [panelOpen, setPanelOpen] = useState(true);
   /** The module library, collapsed the same way the agent panel is. */
   const [libraryOpen, setLibraryOpen] = useState(true);
-  const [graphLevel, setGraphLevel] = useState<GraphLevel>("detail");
+  const [graphLevel, setGraphLevel] = useState<GraphLevel>("architecture");
 
   // Read once for the whole page: the strip under the tabs shows it everywhere,
   // and the Deploy and State gates act on the same answer.
@@ -227,7 +228,7 @@ export default function ProjectDetailPage({
   // not built yet.
   const tabs = useMemo<TabDefinition<ProjectTab>[]>(
     () => [
-      { value: "code", label: "Code", icon: Workflow },
+      { value: "code", label: "Architecture", icon: Workflow },
       { value: "deploy", label: "Deploy", icon: Rocket },
       { value: "state", label: "State", icon: Layers },
       {
@@ -420,31 +421,18 @@ export default function ProjectDetailPage({
   );
 
   /**
-   * Modules only.
-   *
-   * Values are deliberately absent: they are drawn nowhere and reached from the
-   * input that reads them. A value as a node cost a box and two handles to say
-   * something the input row says better, and it made a six-module project read as
-   * a twenty-node system. The graph still knows about them — every input picker
-   * is built from the same nodes.
+   * What the canvas draws, from the same function the MCP App uses for the same graph.
+   * Which nodes and wires count lives there; this page adds only what is its own, the
+   * modules whose commit is still running.
    */
+  const canvasModel = useMemo(
+    () => toCanvasModel(graph ?? { nodes: [], edges: [] }),
+    [graph],
+  );
+
   const canvasNodes = useMemo<ProjectCanvasNode[]>(
     () => [
-      ...(graph?.nodes ?? [])
-        .filter((node) => node.kind === "module")
-        .map((node) => ({
-          id: node.id,
-          name: node.id,
-          label: node.label,
-          moduleName: node.moduleName,
-          version: node.version,
-          source: node.source,
-          linked: node.moduleId !== null,
-          inputs: node.inputs,
-          outputs: node.outputs,
-          setArguments: node.setArguments,
-          position: node.position,
-        })),
+      ...canvasModel.nodes,
       // Modules whose commit is still running, drawn where they were dropped.
       ...pending.map((entry) => ({
         id: entry.id,
@@ -456,26 +444,10 @@ export default function ProjectDetailPage({
         pending: true,
       })),
     ],
-    [graph, pending],
+    [canvasModel, pending],
   );
 
-  // Module-to-module wiring only. An edge with a value at either end would now
-  // point at a node that is not on the canvas.
-  const canvasEdges = useMemo<ProjectCanvasEdge[]>(
-    () =>
-      (graph?.edges ?? [])
-        .filter(
-          (edge) =>
-            edge.sourceKind === "module" && edge.targetKind === "module",
-        )
-        .map((edge) => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          links: edge.links,
-        })),
-    [graph],
-  );
+  const canvasEdges: ProjectCanvasEdge[] = canvasModel.edges;
 
   const handleConnect = useCallback(
     (connection: ProjectCanvasConnection) => {

@@ -5,7 +5,7 @@ import {
   getProviderTokenForRequest,
 } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { visibleToUser } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * Serves the `icon.png` a repository ships.
@@ -57,8 +57,9 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const visibility = await visibleModulesForUser(userId);
   const source = await database.terraformModuleSource.findFirst({
-    where: { id: params.sourceId, ...visibleToUser(userId) },
+    where: { id: params.sourceId, ...visibility },
     select: { iconUrl: true },
   });
 

@@ -22,7 +22,13 @@ import { GithubRequestError } from "@terrablox/git/client";
 import { listRepoTree, readRepoFile } from "@terrablox/git/files";
 import { checkValueAgainstType } from "@terrablox/terraform/type-check";
 import { isValidLocalName } from "@/lib/projects/locals";
-import type { AgentStep, ProjectGraphMutation } from "@/lib/projects/types";
+import type {
+  AgentStep,
+  AgentToolCall,
+  AgentTurnTelemetry,
+  AgentTurnUsage,
+  ProjectGraphMutation,
+} from "@/lib/projects/types";
 import { coerceHclValue } from "@/lib/projects/wiring";
 import {
   COPILOT_MODEL,
@@ -87,14 +93,110 @@ export interface RecordedDecision {
   fromMutation: number;
 }
 
+/**
+ * One application-repository read the agent made, captured in full.
+ *
+ * The step trail only keeps a summary — "Read services/api/Dockerfile" — which is
+ * enough for a person watching the turn and useless as training data: the content
+ * the agent reasoned from is gone. This keeps what the agent actually saw, which
+ * is the starting state of a migration whose source is a codebase rather than a
+ * graph. `content` is what the tool returned, so it is already capped at
+ * `appRepoFileChars` and `truncated` says whether more existed. A listing has no
+ * content; its `paths` are the file names the agent was shown.
+ */
+export interface AppRepoRead {
+  kind: "file" | "listing";
+  path: string;
+  /** The ref the read was pinned to, i.e. the app repo's resolved branch. */
+  ref: string;
+  /** File content as the agent saw it, capped. Absent for a listing. */
+  content?: string;
+  /** The file names a listing returned. Absent for a file read. */
+  paths?: string[];
+  /** True when the content or listing was cut to fit the budget. */
+  truncated: boolean;
+}
+
+/**
+ * One MCP tool call the agent made, as far as it can be observed.
+ *
+ * MCP servers are a migration source in their own right — an inventory API, a CMDB,
+ * a cloud account read through somebody's own server. The permission handler sees
+ * the request but not the result: the SDK routes the result straight back to the
+ * model. So `result` is best-effort and usually absent, and `resultCaptured` says
+ * which it is, rather than letting an empty result read as "the call returned
+ * nothing".
+ */
+export interface McpCall {
+  server: string;
+  tool: string;
+  /** The server's own claim, not verified here. */
+  readOnly: boolean;
+  /** The call's arguments, as the runtime reported them on the start event. */
+  args?: unknown;
+  /**
+   * What the call returned: the tool's verbatim JSON when it gave any, else the
+   * text the model was handed. Present only once `resultCaptured` is true.
+   */
+  result?: unknown;
+  /** Whether the server's own `success` flag was true. Absent until completion. */
+  success?: boolean;
+  /** The error message when the call failed. */
+  error?: string;
+  /**
+   * Whether the result above was observed.
+   *
+   * A call that was budget-rejected, or whose completion event never arrived,
+   * leaves this false. It stops an absent result from reading as "the call
+   * returned nothing", which for a migration source is a materially different
+   * fact.
+   */
+  resultCaptured: boolean;
+}
+
+/**
+ * Everything the agent read as the starting state of this turn, beyond the graph.
+ *
+ * Collected during the turn because none of it survives in the step trail. Empty
+ * arrays are the common case — a greenfield or graph-only turn reads neither an app
+ * repo nor an MCP server — and that emptiness is itself the signal that the turn was
+ * not a migration from an external source.
+ */
+export interface MigrationSourceCapture {
+  appRepoReads: AppRepoRead[];
+  mcpCalls: McpCall[];
+}
+
 export interface AgentTurn {
   reply: string;
   /** Mutations to apply, in order. Empty when the turn only answers. */
   mutations: ProjectGraphMutation[];
   /** Decisions to record, in the order they were made. */
   decisions: RecordedDecision[];
-  /** How the turn got to its answer, in the order it happened. */
+  /**
+   * The UI trail: capped and truncated, in the order it happened.
+   *
+   * What the chat shows live and stores on the assistant message. For a faithful
+   * record of the turn use `fullSteps`.
+   */
   steps: AgentStep[];
+  /**
+   * The complete trail: every step, every thought, at full length.
+   *
+   * The same events as `steps` but before `pushStep` dropped or truncated any of
+   * them. This is what the harness trains on; `steps` is only for display.
+   */
+  fullSteps: AgentStep[];
+  /**
+   * What the agent read as the turn's starting state, beyond the project graph.
+   *
+   * The app-repo files and MCP results that a migration transforms *from*. Kept
+   * separately from `steps` because the trail is a lossy summary and this is the
+   * faithful copy the harness trains on.
+   */
+  migrationSource: MigrationSourceCapture;
+  /** Exact SDK calls, token usage and timing for the user-facing log. */
+  telemetry: AgentTurnTelemetry;
 }
 
 /**
@@ -127,7 +229,18 @@ const DEFAULT_TURN_TIMEOUT_MS = DEFAULT_TURN_TIMEOUT_SECONDS * 1000;
  * canvas, where a person is looking at what they are removing.
  */
 const DESTRUCTIVE_TOOLS = ["remove_module", "remove_local"] as const;
-const MAX_THOUGHT_LENGTH = 600;
+
+/**
+ * How much of one reasoning summary the UI trail keeps.
+ *
+ * The trail is stored on the message and sent to every client that loads the
+ * transcript, so a thought still has a ceiling — but the detail panel now writes
+ * it out in full rather than as a single clipped line, and at 600 the panel was
+ * cutting the model mid-sentence on exactly the turns worth reading. 2000 holds a
+ * whole concise summary; `reasoningSummary: "concise"` keeps these short on its
+ * own, so this is a guard against an outlier, not the common length.
+ */
+const MAX_THOUGHT_LENGTH = 2000;
 
 /**
  * How many modules a plan may add before the user is asked first.
@@ -191,7 +304,68 @@ export async function runProjectAgent(
 ): Promise<AgentTurn> {
   const mutations: ProjectGraphMutation[] = [];
   const decisions: RecordedDecision[] = [];
+  // The UI trail: capped and truncated, shown live in the chat and stored on the
+  // assistant message. `fullSteps` is its untrimmed twin, for the training record.
   const steps: AgentStep[] = [];
+  const fullSteps: AgentStep[] = [];
+  // The faithful copy of what the agent read, collected inside the tools and the
+  // MCP handler. Returned beside `steps`, which only summarises these.
+  const appRepoReads: AppRepoRead[] = [];
+  const mcpCaptures: McpCall[] = [];
+  // Open MCP calls keyed by the runtime's tool-call id, so the completion event
+  // can attach its result to the record the start event opened.
+  const mcpCallsById = new Map<string, McpCall>();
+
+  /**
+   * Exact SDK telemetry for the user-facing log.
+   *
+   * This is deliberately separate from `steps`: one hand-written step can cover
+   * more than one queued mutation, while a tool call is an SDK fact with its own
+   * id, arguments, result and timestamps.
+   */
+  const telemetryStartedAt = new Date().toISOString();
+  const telemetryStartedMs = performance.now();
+  let telemetryFinishedAt: string | null = null;
+  let agentDurationMs: number | null = null;
+  const toolCalls: AgentToolCall[] = [];
+  const toolCallsById = new Map<string, AgentToolCall>();
+  const usage: AgentTurnUsage = {
+    modelCalls: 0,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+    apiDurationMs: null,
+    cost: null,
+    totalNanoAiu: null,
+  };
+
+  const addUsage = (
+    current: number | null,
+    next: number | undefined,
+  ): number | null => (next === undefined ? current : (current ?? 0) + next);
+
+  const telemetrySnapshot = (): AgentTurnTelemetry => ({
+    startedAt: telemetryStartedAt,
+    finishedAt: telemetryFinishedAt,
+    agentDurationMs,
+    // The route fills this after applying mutations and persisting the reply.
+    totalDurationMs: null,
+    usage: { ...usage },
+    toolCalls: toolCalls.map((call) => ({ ...call })),
+  });
+
+  const publishTelemetry = () => context.onTelemetry?.(telemetrySnapshot());
+  const finishTelemetry = (): AgentTurnTelemetry => {
+    if (!telemetryFinishedAt) {
+      telemetryFinishedAt = new Date().toISOString();
+      agentDurationMs = Math.round(performance.now() - telemetryStartedMs);
+    }
+    const snapshot = telemetrySnapshot();
+    context.onTelemetry?.(snapshot);
+    return snapshot;
+  };
 
   /**
    * The caps this turn runs under, resolved once.
@@ -209,6 +383,12 @@ export async function runProjectAgent(
    * is still running rather than only in the finished message.
    */
   const record = (step: AgentStep) => {
+    // The full trail first, untouched: every step, every thought, at full
+    // length. `pushStep` then adds the same step to the UI trail under its caps,
+    // dropping and truncating as it must. The two diverge only once a turn is
+    // long enough to hit a cap, which is exactly the turn the harness most wants
+    // to see in full.
+    fullSteps.push(step);
     pushStep(steps, step, trail);
     context.onStep?.(steps);
   };
@@ -238,7 +418,7 @@ export async function runProjectAgent(
       sessionId: `terrablox-${context.userId}-${context.projectId}-${Date.now()}`,
       model: context.model || COPILOT_MODEL,
       gitHubToken: context.githubToken,
-      tools: buildTools(context, mutations, decisions, record),
+      tools: buildTools(context, mutations, decisions, record, appRepoReads),
       ...(usesMcp ? { mcpServers } : {}),
       // Omitted rather than defaulted: a model that does not support the
       // setting rejects the session, so "leave it alone" has to mean absent.
@@ -253,6 +433,108 @@ export async function runProjectAgent(
         if (event.type === "assistant.reasoning") {
           const text = event.data.content?.trim();
           if (text) record({ kind: "thought", text });
+          return;
+        }
+
+        // One user turn contains several model calls as the model alternates with
+        // tools. The SDK emits usage per call, so sum every optional metric while
+        // preserving null when the provider never reported that metric at all.
+        if (event.type === "assistant.usage") {
+          usage.modelCalls += 1;
+          usage.inputTokens = addUsage(
+            usage.inputTokens,
+            event.data.inputTokens,
+          );
+          usage.outputTokens = addUsage(
+            usage.outputTokens,
+            event.data.outputTokens,
+          );
+          usage.cacheReadTokens = addUsage(
+            usage.cacheReadTokens,
+            event.data.cacheReadTokens,
+          );
+          usage.cacheWriteTokens = addUsage(
+            usage.cacheWriteTokens,
+            event.data.cacheWriteTokens,
+          );
+          usage.reasoningTokens = addUsage(
+            usage.reasoningTokens,
+            event.data.reasoningTokens,
+          );
+          usage.apiDurationMs = addUsage(
+            usage.apiDurationMs,
+            event.data.duration,
+          );
+          usage.cost = addUsage(usage.cost, event.data.cost);
+          usage.totalNanoAiu = addUsage(
+            usage.totalNanoAiu,
+            event.data.copilotUsage?.totalNanoAiu,
+          );
+          publishTelemetry();
+          return;
+        }
+
+        // Every SDK tool call, ours and MCP alike. The result event below carries
+        // the complete result envelope the runtime observed, including structured
+        // MCP content and detailed text where present.
+        if (event.type === "tool.execution_start") {
+          const { mcpServerName, mcpToolName, arguments: args } = event.data;
+          const call: AgentToolCall = {
+            id: event.data.toolCallId,
+            source: mcpServerName ? "mcp" : "terrablox",
+            tool: mcpToolName ?? event.data.toolName,
+            server: mcpServerName ?? null,
+            arguments: args ?? null,
+            result: null,
+            success: null,
+            error: null,
+            startedAt: event.timestamp,
+            finishedAt: null,
+            durationMs: null,
+          };
+          toolCalls.push(call);
+          toolCallsById.set(call.id, call);
+
+          if (mcpServerName) {
+            const mcpCall: McpCall = {
+              server: mcpServerName,
+              tool: mcpToolName ?? event.data.toolName,
+              // The permission handler fills the server's own read-only claim.
+              readOnly: false,
+              args,
+              resultCaptured: false,
+            };
+            mcpCaptures.push(mcpCall);
+            mcpCallsById.set(event.data.toolCallId, mcpCall);
+          }
+          publishTelemetry();
+          return;
+        }
+
+        if (event.type === "tool.execution_complete") {
+          const call = toolCallsById.get(event.data.toolCallId);
+          if (call) {
+            call.finishedAt = event.timestamp;
+            call.durationMs = Math.max(
+              0,
+              Date.parse(event.timestamp) - Date.parse(call.startedAt),
+            );
+            call.success = event.data.success;
+            call.result = event.data.result ?? null;
+            call.error = event.data.error?.message ?? null;
+          }
+
+          // Keep the existing full migration-source capture for training too.
+          const mcpCall = mcpCallsById.get(event.data.toolCallId);
+          if (mcpCall) {
+            mcpCall.resultCaptured = true;
+            mcpCall.success = event.data.success;
+            mcpCall.result =
+              event.data.result?.structuredContent ??
+              event.data.result?.content;
+            if (event.data.error) mcpCall.error = event.data.error.message;
+          }
+          publishTelemetry();
           return;
         }
 
@@ -295,6 +577,24 @@ export async function runProjectAgent(
           }
 
           mcpCalls += 1;
+
+          // The call itself is captured in `onEvent` (start + complete), which is
+          // the only place the result is observable. The permission request adds
+          // the one fact those events lack: the server's `readOnly` claim. Stamp
+          // it onto the newest open call for this server+tool that has not yet
+          // been annotated, so the training record carries it too.
+          for (let i = mcpCaptures.length - 1; i >= 0; i--) {
+            const call = mcpCaptures[i];
+            if (
+              call &&
+              call.server === request.serverName &&
+              call.tool === request.toolName &&
+              !call.readOnly
+            ) {
+              call.readOnly = Boolean(request.readOnly);
+              break;
+            }
+          }
 
           record({
             kind: "tool",
@@ -342,6 +642,7 @@ export async function runProjectAgent(
       session.sendAndWait({ prompt: message }, timeoutMs),
       context.signal,
     );
+    const telemetry = finishTelemetry();
 
     return {
       reply:
@@ -350,8 +651,12 @@ export async function runProjectAgent(
       mutations,
       decisions,
       steps,
+      fullSteps,
+      migrationSource: { appRepoReads, mcpCalls: mcpCaptures },
+      telemetry,
     };
   } catch (error) {
+    finishTelemetry();
     // `sendAndWait` only stops *waiting* — the SDK says so plainly, and its
     // implementation races the wait against a timer. Without this the runtime
     // would carry on thinking for a turn nobody is listening to any more, on the
@@ -389,6 +694,9 @@ function buildTools(
   sink: ProjectGraphMutation[],
   decisions: RecordedDecision[],
   record: (step: AgentStep) => void,
+  // Collects the app-repo reads in full, since the step trail only summarises
+  // them. The same thread-through pattern as `sink` and `decisions`.
+  appRepoReads: AppRepoRead[],
 ) {
   const disabled = new Set(context.disabledTools ?? []);
 
@@ -1066,6 +1374,18 @@ function buildTools(
           const shown = files.slice(0, appRepoTreeLimit);
           const omitted = files.length - shown.length;
 
+          // The file names the agent was shown, captured for training. A listing
+          // is which paths the agent knew existed when it chose what to read —
+          // part of the migration source, even though it has no file content of
+          // its own. `truncated` covers both our cap and GitHub's own.
+          appRepoReads.push({
+            kind: "listing",
+            path: prefix,
+            ref: appRepo.branch,
+            paths: shown,
+            truncated: omitted > 0 || tree.truncated,
+          });
+
           record({
             kind: "tool",
             tool: "list_app_files",
@@ -1128,6 +1448,20 @@ function buildTools(
           }
 
           const truncated = file.content.length > appRepoFileChars;
+          const seen = truncated
+            ? file.content.slice(0, appRepoFileChars)
+            : file.content;
+
+          // Captured as the agent saw it — sliced to the same budget — so the
+          // training record holds the input the turn reasoned from, no more. The
+          // step trail keeps only the one-line summary below.
+          appRepoReads.push({
+            kind: "file",
+            path: wanted,
+            ref: appRepo.branch,
+            content: seen,
+            truncated,
+          });
 
           record({
             kind: "tool",
@@ -1139,9 +1473,7 @@ function buildTools(
           return {
             repository: appRepo.fullName,
             path: wanted,
-            content: truncated
-              ? file.content.slice(0, appRepoFileChars)
-              : file.content,
+            content: seen,
             ...(truncated
               ? {
                   truncated: `Only the first ${appRepoFileChars} characters are shown.`,

@@ -21,7 +21,10 @@ import {
   MCP_CALL_BUDGET_MAX,
   MCP_CALL_BUDGET_MIN,
   maxThoughtsFor,
+  newestAnthropicModel,
   renderOperatingRule,
+  resolveDefaultModel,
+  resolveModelChoice,
   STEP_TRAIL_MAX,
   STEP_TRAIL_MIN,
   TOOL_CALL_BUDGET_MAX,
@@ -160,5 +163,144 @@ describe("renderOperatingRule", () => {
     for (const rule of DEFAULT_OPERATING_RULES) {
       expect(renderOperatingRule(rule, 7)).not.toMatch(/\{maxToolCalls\}/);
     }
+  });
+});
+
+/** A real `models.list` answer, in the order the runtime returned it. */
+const LISTED = [
+  "claude-sonnet-5",
+  "claude-opus-5",
+  "claude-opus-4.8",
+  "claude-haiku-4.5",
+  "gpt-5.6-sol",
+  "claude-haiku-5.5",
+  "claude-opus-5.5",
+  "claude-sonnet-5.5",
+  "gemini-4-argon",
+  "gpt-6.1-sol",
+].map((id) => ({ id }));
+
+describe("newestAnthropicModel", () => {
+  it("picks the highest version, then the highest tier", () => {
+    expect(newestAnthropicModel(LISTED)).toBe("claude-opus-5.5");
+  });
+
+  it("lets a newer version beat a higher tier", () => {
+    expect(
+      newestAnthropicModel([
+        { id: "claude-opus-4.8" },
+        { id: "claude-haiku-5" },
+      ]),
+    ).toBe("claude-haiku-5");
+  });
+
+  it("prefers a released model over a preview of the same version", () => {
+    expect(
+      newestAnthropicModel([
+        { id: "claude-opus-6-preview" },
+        { id: "claude-opus-6" },
+      ]),
+    ).toBe("claude-opus-6");
+    // Only at equal tier: the tier is decided first, so a preview Opus still
+    // outranks a released Sonnet of the same version.
+    expect(
+      newestAnthropicModel([
+        { id: "claude-sonnet-6" },
+        { id: "claude-opus-6", preview: true },
+      ]),
+    ).toBe("claude-opus-6");
+    expect(
+      newestAnthropicModel([
+        { id: "claude-sonnet-6", preview: true },
+        { id: "claude-sonnet-6-fast" },
+      ]),
+    ).toBe("claude-sonnet-6-fast");
+  });
+
+  it("reads versions numerically and ignores dates and variant labels", () => {
+    expect(
+      newestAnthropicModel([
+        { id: "claude-sonnet-4.10" },
+        { id: "claude-sonnet-4.9-20250514" },
+        { id: "claude-sonnet-4.9-1m" },
+      ]),
+    ).toBe("claude-sonnet-4.10");
+  });
+
+  it("prefers the base model over a variant of it", () => {
+    expect(
+      newestAnthropicModel([
+        { id: "claude-opus-5.5-fast" },
+        { id: "claude-opus-5.5" },
+      ]),
+    ).toBe("claude-opus-5.5");
+  });
+
+  it("recognises Anthropic by vendor as well as by id", () => {
+    expect(
+      newestAnthropicModel([
+        { id: "gpt-6.1-sol", vendor: "OpenAI" },
+        { id: "fable-5", vendor: "Anthropic" },
+      ]),
+    ).toBe("fable-5");
+  });
+
+  it("answers null for a list without Anthropic", () => {
+    expect(newestAnthropicModel([{ id: "gpt-6.1-sol" }])).toBeNull();
+  });
+});
+
+describe("resolveDefaultModel", () => {
+  it("uses the newest Anthropic model on the list", () => {
+    expect(resolveDefaultModel(LISTED, "claude-opus-5")).toBe(
+      "claude-opus-5.5",
+    );
+  });
+
+  it("falls back to the built-in default without a list", () => {
+    expect(resolveDefaultModel(null, "claude-opus-5")).toBe("claude-opus-5");
+    expect(resolveDefaultModel([], "claude-opus-5")).toBe("claude-opus-5");
+  });
+
+  it("never resolves to a model the list does not offer", () => {
+    expect(resolveDefaultModel([{ id: "gpt-6.1-sol" }], "claude-opus-5")).toBe(
+      "gpt-6.1-sol",
+    );
+  });
+});
+
+describe("resolveModelChoice", () => {
+  it("keeps an explicit choice that is still offered", () => {
+    expect(resolveModelChoice("gpt-6.1-sol", LISTED, "claude-opus-5")).toEqual({
+      model: "gpt-6.1-sol",
+      defaultModel: "claude-opus-5.5",
+      unavailable: false,
+    });
+  });
+
+  it("replaces a choice the list no longer offers, and says so", () => {
+    expect(
+      resolveModelChoice("claude-opus-4.1", LISTED, "claude-opus-5"),
+    ).toEqual({
+      model: "claude-opus-5.5",
+      defaultModel: "claude-opus-5.5",
+      unavailable: true,
+    });
+  });
+
+  it("trusts the choice when the list could not be read", () => {
+    expect(
+      resolveModelChoice("claude-opus-4.1", null, "claude-opus-5"),
+    ).toEqual({
+      model: "claude-opus-4.1",
+      defaultModel: "claude-opus-5",
+      unavailable: false,
+    });
+  });
+
+  it("resolves no choice to the default", () => {
+    expect(resolveModelChoice(null, LISTED, "claude-opus-5").model).toBe(
+      "claude-opus-5.5",
+    );
   });
 });

@@ -7,7 +7,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { McpSettings } from "@/components/mcp/mcp-settings";
 
 /**
- * Editor access, on its own screen.
+ * MCP access, on its own screen.
  *
  * Its own page rather than a card under Account, because it is not a fact about the person
  * — it is a set of credentials, a list to audit, and three client configurations. On the
@@ -22,7 +22,7 @@ export default function McpPage() {
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <PageHeader breadcrumbs={[{ label: "MCP" }]} />
+        <PageHeader breadcrumbs={[{ label: "MCP Access" }]} />
 
         <main className="flex-1 p-6">
           <div className="max-w-4xl">

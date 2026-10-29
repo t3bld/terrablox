@@ -31,9 +31,10 @@ const MAX_PAGES = 10;
 /**
  * How much of an account's repositories an installation was granted.
  *
- * Worth carrying rather than discarding, because it decides whether a repository
- * Terrablox is about to *create* will be reachable afterwards. On `selected`, a new
- * repository is outside the grant until somebody adds it.
+ * Carried for the account screen, which shows it so somebody can see at a glance why
+ * a repository is or is not in the picker. `selected` is the supported and
+ * recommended setup: a project binds a repository that already exists, so the only
+ * thing it needs is for that repository to be in the selection.
  */
 export type RepositorySelection = "all" | "selected";
 
@@ -86,8 +87,8 @@ export async function listUserInstallations(
       id: raw.id,
       account: { login, type: raw.account?.type ?? "User" },
       // Anything unrecognised is treated as the restrictive case on purpose:
-      // assuming `all` would let the project-creation check wave through a
-      // repository that then turns out to be unreachable.
+      // reporting `all` for a grant that is narrower would tell somebody a
+      // repository is reachable when it is not.
       repositorySelection:
         raw.repository_selection === "all" ? "all" : "selected",
     });

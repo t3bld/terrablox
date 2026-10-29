@@ -87,7 +87,11 @@ export interface AgentSettingsView {
   /** Knowledge source ids withheld from the agent. Empty means all available. */
   disabledKnowledge: string[];
   mcpServers: McpServerView[];
-  /** Null means "auto": Copilot picks what the user is entitled to. */
+  /**
+   * Null means no choice: turns run on the newest Anthropic model on the user's
+   * Copilot list (`resolveCopilotModel`), so a new Claude release is picked up
+   * without anyone changing a setting.
+   */
   model: string | null;
   /** Null leaves the model's own default in place. */
   reasoningEffort: ReasoningEffortValue | null;

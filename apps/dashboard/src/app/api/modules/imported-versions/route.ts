@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { canonicalRepoUrl } from "@/lib/module-library/import-from-git";
-import { visibleToUser } from "@/lib/module-library/ownership";
+import { libraryOf } from "@/lib/module-library/libraries";
+import { isManaged } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * Returns which versions (ref/tag names) are already imported for a given repo.
@@ -32,14 +34,16 @@ export async function GET(req: Request) {
   }
 
   const canonicalSourceUrl = canonicalRepoUrl(repoFullName);
+  const visibility = await visibleModulesForUser(userId);
 
   // Possibly two rows: a user who imported this repo before it shipped has their
   // own alongside the builtin. Both count towards "already imported".
   const sources = await database.terraformModuleSource.findMany({
-    where: { ...visibleToUser(userId), url: canonicalSourceUrl },
+    where: { ...visibility, url: canonicalSourceUrl },
     select: {
       id: true,
       userId: true,
+      library: true,
       name: true,
       description: true,
       tags: true,
@@ -59,13 +63,18 @@ export async function GET(req: Request) {
 
   // The user's own row wins for prefilling, since that is the one their edits
   // would land on. The builtin only stands in when they have no row of their own.
-  const preferred = sources.find((s) => s.userId === userId) ?? sources[0];
-  const isBuiltin = preferred?.userId === null;
+  // A per-user library row is the user's too, but read-only: their personal
+  // import, if any, is the one edits land on.
+  const preferred =
+    sources.find((s) => s.userId === userId && s.library === null) ??
+    sources[0];
+  const isBuiltin = preferred ? isManaged(preferred) : false;
+  const library = preferred ? libraryOf(preferred) : null;
 
   // Only count root module versions; submodules are imported as a consequence of the version.
   const roots = await database.terraformModule.findMany({
     where: {
-      ...visibleToUser(userId),
+      ...visibility,
       sourceId: { in: sources.map((s) => s.id) },
       isSubmodule: false,
     },
@@ -83,6 +92,7 @@ export async function GET(req: Request) {
   return NextResponse.json({
     repoImported: true,
     isBuiltin,
+    library,
     source: {
       id: preferred?.id,
       name: preferred?.name,

@@ -104,6 +104,11 @@ export interface AgentContextView {
   overrides: Record<string, unknown>;
   /** The stored choice. Null means the default decides. */
   model: string | null;
+  /**
+   * The stored choice is no longer on the user's Copilot list, so turns run on
+   * the default. Optional because older responses and test fixtures lack it.
+   */
+  modelUnavailable?: boolean;
   reasoningEffort: string | null;
   /** Seconds a turn may run. Null means the default. */
   turnTimeout: number | null;
@@ -233,7 +238,12 @@ export function buildGraph(context: AgentContextView): {
    */
   const planeMetadata: Record<string, Record<string, string | number>> = {
     model: {
-      model: context.model ?? `default (${context.defaults.model})`,
+      // A stored model that has left the user's list is not what runs, so the
+      // box names the default the turn falls back to.
+      model:
+        context.model && !context.modelUnavailable
+          ? context.model
+          : `default (${context.defaults.model})`,
       effort:
         context.reasoningEffort ??
         `default (${context.defaults.reasoningEffort})`,

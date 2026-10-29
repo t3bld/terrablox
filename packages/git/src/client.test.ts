@@ -77,7 +77,7 @@ describe("githubRequest", () => {
     const fetchMock = respond(200, "{}");
     vi.stubGlobal("fetch", fetchMock);
 
-    void githubRequest("tok", "/user/repos", {
+    void githubRequest("tok", "/repos/o/r/git/trees", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
     });

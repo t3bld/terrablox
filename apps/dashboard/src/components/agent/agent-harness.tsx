@@ -87,6 +87,8 @@ interface ModelOption {
   name: string;
   reasoningEfforts: string[];
   multiplier: number | null;
+  /** Absent on the fallback list, which holds no previews. */
+  preview?: boolean;
 }
 
 /**
@@ -1170,8 +1172,16 @@ export function AgentHarness({
 
   // What a turn would actually use, which is the stored choice or the default it
   // falls back to. Shown as the selection rather than offering an extra "Auto"
-  // entry: the dropdown is then a list of model names and nothing else.
-  const model = context.model ?? context.defaults.model;
+  // entry: the dropdown is then a list of model names and nothing else. A stored
+  // choice that has left the user's Copilot list is not what runs, so the
+  // default is selected instead and the note under the field names the old one.
+  const model =
+    context.model && !context.modelUnavailable
+      ? context.model
+      : context.defaults.model;
+  const defaultModelName =
+    models.find((entry) => entry.id === context.defaults.model)?.name ??
+    context.defaults.model;
   const effort = context.reasoningEffort ?? context.defaults.reasoningEffort;
 
   // A list that does not contain the selected model would otherwise drop it and
@@ -1268,9 +1278,18 @@ export function AgentHarness({
                 {modelOptions.map((entry) => (
                   <option key={entry.id} value={entry.id}>
                     {entry.name}
+                    {entry.preview ? " (preview)" : ""}
+                    {entry.id === view.defaults.model ? " (default)" : ""}
                   </option>
                 ))}
               </Select>
+              {view.modelUnavailable && view.model ? (
+                <p className="text-muted-foreground text-xs">
+                  {view.model} is no longer available on your Copilot plan, so
+                  turns use the default, {defaultModelName}. Pick a model to
+                  change that.
+                </p>
+              ) : null}
               <p className="text-muted-foreground text-xs">
                 {view.githubConnected
                   ? "Runs on your own Copilot seat, so usage is billed to you."

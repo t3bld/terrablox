@@ -1,8 +1,20 @@
 import "server-only";
 
+import {
+  RESOURCE_MIME_TYPE,
+  registerAppResource,
+  registerAppTool,
+} from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/server";
 import type { Project } from "@terrablox/database";
 import { dispatchWorkflow } from "@terrablox/git/actions";
+import { toCanvasModel } from "@terrablox/graph/canvas-model";
+import {
+  GRAPH_APP_HTML,
+  GRAPH_APP_URI,
+  GRAPH_VIEW_TOOL,
+  type GraphViewPayload,
+} from "@terrablox/graph/mcp-app";
 import { z } from "zod";
 
 import type { Caller } from "@/lib/api/guard";
@@ -140,7 +152,7 @@ export function createDashboardMcpServer(caller: Caller): McpServer {
     if (caller.canWrite) return null;
 
     return refuse(
-      "This token is read-only, so it cannot change anything. Create a token with write access in the dashboard under Account → Editor access.",
+      "This token is read-only, so it cannot change anything. Create a token with write access in the dashboard under MCP Access.",
     );
   }
 
@@ -241,6 +253,127 @@ export function createDashboardMcpServer(caller: Caller): McpServer {
     },
   );
 
+  /**
+   * One project's graph in the shape the graph view renders, or a refusal.
+   *
+   * Built by the function the web app's canvas uses, so an editor and the browser draw the
+   * same picture of the same project. Port descriptions are left out: a module can declare
+   * hundreds of ports, and the canvas shows that text only as a tooltip.
+   */
+  async function graphView(
+    projectId: string,
+  ): Promise<
+    { ok: true; view: GraphViewPayload } | { ok: false; error: string }
+  > {
+    const opened = await open(projectId);
+    if (!opened.ok) return opened;
+
+    const graph = await loadProjectGraph(opened.token, opened.project);
+    const model = toCanvasModel(graph, { descriptions: false });
+
+    return {
+      ok: true,
+      view: {
+        project: {
+          id: opened.project.id,
+          name: opened.project.name,
+          repo: opened.project.repoFullName,
+          branch: opened.project.repoBranch,
+        },
+        sha: graph.sha,
+        ...model,
+        gaps: graph.gaps.length,
+        errors: graph.errors.map((e) => `${e.file}: ${e.message}`),
+      },
+    };
+  }
+
+  registerAppResource(
+    server,
+    "Project graph",
+    GRAPH_APP_URI,
+    {
+      // No `csp` at all, which is the tightest setting rather than the absence of one:
+      // omitted means no network connections and no external resources. The document is
+      // self-contained, and the host's own connection is the only one it needs.
+      _meta: {},
+    },
+    (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: RESOURCE_MIME_TYPE,
+          text: GRAPH_APP_HTML,
+        },
+      ],
+    }),
+  );
+
+  registerAppTool(
+    server,
+    "show_graph",
+    {
+      title: "Show the project graph",
+      description:
+        "Show the user the project's Terraform as an interactive graph next to the conversation: the modules, the wires between them, and the required inputs still without a value. Use it when presenting or explaining the infrastructure to a person. To read the graph yourself, call get_graph; this one is for the human.",
+      inputSchema: z.object({ projectId: PROJECT_ID }),
+      annotations: READ_ONLY,
+      _meta: { ui: { resourceUri: GRAPH_APP_URI } },
+    },
+    async ({ projectId }) => {
+      const result = await graphView(projectId);
+      if (!result.ok) return refuse(result.error);
+
+      const { view } = result;
+      const wires = view.edges.reduce(
+        (sum, edge) => sum + edge.links.length,
+        0,
+      );
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: [
+              `${view.project.name}: ${view.nodes.length} module${view.nodes.length === 1 ? "" : "s"}, ${wires} wire${wires === 1 ? "" : "s"}, ${view.gaps} required input${view.gaps === 1 ? "" : "s"} without a value.`,
+              "Shown to the user as an interactive graph. Hosts that cannot render it show only this line.",
+              ...(view.errors.length > 0
+                ? [`Could not read: ${view.errors.join("; ")}`]
+                : []),
+            ].join("\n"),
+          },
+        ],
+        // For the view, not the model: the spec keeps `structuredContent` out of the
+        // model's context, which is what lets a whole graph travel here.
+        structuredContent: view as unknown as Record<string, unknown>,
+      };
+    },
+  );
+
+  registerAppTool(
+    server,
+    GRAPH_VIEW_TOOL,
+    {
+      title: "Graph view data",
+      description:
+        "The data behind the graph view. The view calls this itself to load and refresh; it is not for the model, which should call get_graph to read a graph or show_graph to present one.",
+      inputSchema: z.object({ projectId: PROJECT_ID }),
+      annotations: READ_ONLY,
+      // App-only: hidden from the agent, callable by the view. No `resourceUri`, because
+      // calling this must not open a second view.
+      _meta: { ui: { visibility: ["app"] } },
+    },
+    async ({ projectId }) => {
+      const result = await graphView(projectId);
+      if (!result.ok) return refuse(result.error);
+
+      return {
+        content: [{ type: "text" as const, text: "Graph view data." }],
+        structuredContent: result.view as unknown as Record<string, unknown>,
+      };
+    },
+  );
+
   server.registerTool(
     "list_modules",
     {
@@ -274,6 +407,7 @@ export function createDashboardMcpServer(caller: Caller): McpServer {
           name: libraryModuleName(mod),
           description: mod.description ?? null,
           version: mod.versionTag,
+          library: mod.library?.name ?? null,
         })),
       });
     },

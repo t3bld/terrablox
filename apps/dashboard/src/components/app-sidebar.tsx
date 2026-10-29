@@ -205,7 +205,7 @@ export function AppSidebar() {
                 <DropdownMenuItem asChild>
                   <Link href="/mcp" className="cursor-pointer">
                     <Plug className="mr-2 h-4 w-4" />
-                    MCP
+                    MCP Access
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>

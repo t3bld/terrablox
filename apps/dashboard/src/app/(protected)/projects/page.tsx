@@ -10,14 +10,14 @@ import {
 } from "@terrablox/ui/card";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
-import { AlertCircle, GitBranch, Plus } from "lucide-react";
+import { AlertCircle, Download, GitBranch } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
-import { CreateProjectDialog } from "@/components/projects/create-project-dialog";
+import { ImportProjectDialog } from "@/components/projects/import-project-dialog";
 import type { ProjectDto } from "@/lib/projects/types";
 
 export default function ProjectsPage() {
@@ -53,17 +53,17 @@ export default function ProjectsPage() {
   }, []);
 
   /**
-   * Straight into the new project rather than back to the list.
+   * Straight into the imported project rather than back to the list.
    *
-   * Nobody creates a project to look at it in a list: the next thing they want is
-   * the canvas, and finding the row they just made to click it is a step that
+   * Nobody imports a project to look at it in a list: the next thing they want is
+   * the canvas, and finding the row they just added to click it is a step that
    * exists only because the dialog closed onto the wrong screen.
    *
    * Still added to the list first. The push is a client navigation and this page
    * stays mounted behind it, so a user who comes back — or whose navigation is
    * slow — sees the project already there instead of a list that has not caught up.
    */
-  const handleCreated = useCallback(
+  const handleImported = useCallback(
     (project: ProjectDto) => {
       setProjects((current) => [project, ...current]);
       router.push(`/projects/${project.id}`);
@@ -79,8 +79,8 @@ export default function ProjectsPage() {
           breadcrumbs={[{ label: "Projects" }]}
           actions={
             <Button size="sm" onClick={() => setDialogOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              New Project
+              <Download className="h-4 w-4 mr-2" />
+              Import Repository
             </Button>
           }
         />
@@ -111,15 +111,15 @@ export default function ProjectsPage() {
             <Card className="border-dashed">
               <CardContent className="flex flex-col items-center justify-center py-12">
                 <div className="rounded-full bg-muted p-4 mb-4">
-                  <Plus className="h-8 w-8 text-muted-foreground" />
+                  <Download className="h-8 w-8 text-muted-foreground" />
                 </div>
                 <h3 className="text-lg font-semibold mb-1">No projects yet</h3>
                 <p className="text-muted-foreground text-center mb-4">
-                  A project connects a repository to a graph you can edit.
+                  Import an existing, empty repository to start.
                 </p>
                 <Button onClick={() => setDialogOpen(true)}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Create Project
+                  <Download className="h-4 w-4 mr-2" />
+                  Import Repository
                 </Button>
               </CardContent>
             </Card>
@@ -159,10 +159,10 @@ export default function ProjectsPage() {
         </main>
       </SidebarInset>
 
-      <CreateProjectDialog
+      <ImportProjectDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
-        onCreated={handleCreated}
+        onImported={handleImported}
       />
     </SidebarProvider>
   );

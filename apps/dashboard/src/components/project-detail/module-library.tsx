@@ -12,9 +12,10 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ModuleIcon } from "@/components/module-icon";
+import { useModuleLibraries } from "@/components/module-overview/use-module-libraries";
 
 interface LibraryVersion {
   id: string;
@@ -30,6 +31,7 @@ interface LibraryRepository {
   iconMode: string;
   hasIcon: boolean;
   iconName: string | null;
+  library: { id: string; name: string } | null;
   defaultVersion: LibraryVersion | null;
   versions: LibraryVersion[];
 }
@@ -69,30 +71,40 @@ export function ModuleLibrary({
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
+  const cancelled = useRef(false);
 
-    fetch("/api/modules/list")
+  const load = useCallback(() => {
+    fetch("/api/modules/list", { cache: "no-store" })
       .then(async (res) => {
         const body = await res.json();
         if (!res.ok) throw new Error(body?.error ?? "Failed to load modules");
-        if (!cancelled) setRepositories(body.repositories ?? []);
+        if (!cancelled.current) {
+          setRepositories(body.repositories ?? []);
+          setError(null);
+        }
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
+        if (!cancelled.current) {
           setError(
             err instanceof Error ? err.message : "Failed to load modules",
           );
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled.current) setLoading(false);
       });
-
-    return () => {
-      cancelled = true;
-    };
   }, []);
+
+  useEffect(() => {
+    cancelled.current = false;
+    load();
+    return () => {
+      cancelled.current = true;
+    };
+  }, [load]);
+
+  // Keeps per-user libraries (e.g. Porsche) fresh; reloads when one changed.
+  useModuleLibraries({ onChanged: load });
 
   /** A repository is suggested when any of its versions would fill a gap. */
   function suggestionFor(repo: LibraryRepository): string | undefined {
@@ -231,6 +243,11 @@ export function ModuleLibrary({
                       title={repo.description ?? repo.name}
                     >
                       {repo.name}
+                      {repo.library ? (
+                        <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">
+                          {repo.library.name}
+                        </span>
+                      ) : null}
                     </p>
                     <button
                       type="button"

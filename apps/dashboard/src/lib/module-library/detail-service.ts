@@ -6,7 +6,9 @@ import {
 } from "@terrablox/terraform/module-link";
 import { sortVersionsDesc } from "@terrablox/terraform/versions";
 import { database } from "@/lib/database";
-import { isBuiltin, visibleToUser } from "@/lib/module-library/ownership";
+import { libraryOf } from "@/lib/module-library/libraries";
+import { isManaged } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * Everything the module detail screen shows, in one pass.
@@ -15,8 +17,9 @@ import { isBuiltin, visibleToUser } from "@/lib/module-library/ownership";
  * client refetch cannot drift apart.
  */
 export async function loadModuleDetail(userId: string, moduleId: string) {
+  const visibility = await visibleModulesForUser(userId);
   const mod = await database.terraformModule.findFirst({
-    where: { id: moduleId, ...visibleToUser(userId) },
+    where: { id: moduleId, ...visibility },
     include: {
       source: true,
       resources: {
@@ -47,7 +50,7 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
     mod.sourceId
       ? database.terraformModule.findMany({
           where: {
-            ...visibleToUser(userId),
+            ...visibility,
             sourceId: mod.sourceId,
             isSubmodule: false,
           },
@@ -59,7 +62,7 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
     // so dependencies resolve regardless of the order things were imported in —
     // and so a shipped module calling another shipped module links up.
     database.terraformModule.findMany({
-      where: visibleToUser(userId),
+      where: visibility,
       select: {
         id: true,
         versionTag: true,
@@ -73,7 +76,7 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
     // The reverse direction. Loading every dependency the user can see keeps
     // this a single query; resolution then decides which land on this module.
     database.moduleDependency.findMany({
-      where: { module: visibleToUser(userId) },
+      where: { module: visibility },
       select: { name: true, source: true, sourceKind: true, moduleId: true },
     }),
   ]);
@@ -111,7 +114,9 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
     effectiveName: mod.submoduleName ?? mod.source?.name ?? "(unnamed)",
     effectiveDescription: mod.source?.description ?? null,
     // Lets the detail view drop the actions that the server would refuse anyway.
-    isBuiltin: isBuiltin(mod),
+    // Managed covers both the shipped catalogue and a per-user library.
+    isBuiltin: isManaged(mod),
+    library: libraryOf(mod),
     versions: sortVersionsDesc(siblingVersions).map((version) => ({
       id: version.id,
       versionTag: version.versionTag,
@@ -128,8 +133,9 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
  * most expensive part of opening a submodule.
  */
 export async function loadModuleParent(userId: string, parentId: string) {
+  const visibility = await visibleModulesForUser(userId);
   const parent = await database.terraformModule.findFirst({
-    where: { id: parentId, ...visibleToUser(userId) },
+    where: { id: parentId, ...visibility },
     select: {
       id: true,
       submoduleName: true,

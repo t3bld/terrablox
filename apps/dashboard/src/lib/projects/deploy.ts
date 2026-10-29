@@ -111,6 +111,17 @@ export interface PipelineContext extends DeploySettings {
    * set up yet, which is the only case with nothing to preserve.
    */
   stateKmsAlias?: string | null;
+  /**
+   * Private module libraries the configuration pulls from, e.g. Porsche.
+   *
+   * Each one renders an authentication step before `terraform init`; absent or
+   * empty renders nothing, so a project without them keeps identical workflows.
+   */
+  privateModules?: Array<{
+    libraryName: string;
+    org: string;
+    secretName: string;
+  }>;
 }
 
 /** `.` is where Terraform lives by default, but Actions wants a real path. */

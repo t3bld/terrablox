@@ -41,8 +41,8 @@ import { routeError } from "@/lib/api/route-error";
 import { audit } from "@/lib/audit/log";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { visibleToUser } from "@/lib/module-library/ownership";
 import { DEFAULT_SUBMODULES_FOLDER } from "@/lib/module-library/submodule-discovery";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * Everything in Terrablox that a person decided rather than a machine derived.
@@ -77,9 +77,10 @@ export async function GET() {
   // detail about their infrastructure, not a property of the classification tables.
   // Builtins are included because `visibleToUser` admits them and they are the same
   // rows for everyone.
+  const visibility = await visibleModulesForUser(userId);
   const seen = await database.providerResource.groupBy({
     by: ["resourceType"],
-    where: { kind: "resource", module: { ...visibleToUser(userId) } },
+    where: { kind: "resource", module: { ...visibility } },
     _count: { resourceType: true },
   });
 

@@ -72,6 +72,12 @@ export const FALLBACK_MODELS: ReadonlyArray<{
   multiplier: number | null;
 }> = [
   {
+    id: "claude-opus-5.5",
+    name: "Claude Opus 5.5",
+    reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    multiplier: null,
+  },
+  {
     id: "claude-opus-5",
     name: "Claude Opus 5",
     reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
@@ -84,6 +90,173 @@ export const FALLBACK_MODELS: ReadonlyArray<{
     multiplier: null,
   },
 ];
+
+/** What the default-model rule needs to know about one listed model. */
+export interface ModelCandidate {
+  id: string;
+  name?: string;
+  /** Reported by some runtimes and not others, so the id is the fallback. */
+  vendor?: string | null;
+  preview?: boolean;
+}
+
+/**
+ * Claude's tiers, most capable first.
+ *
+ * Only a tiebreak: the version decides first, so a new Haiku outranks an old
+ * Opus. A tier missing from this list (a new family name) sorts after Haiku —
+ * we cannot tell where it belongs, and guessing it is the strongest would make
+ * the default jump to a model nobody has looked at.
+ */
+const CLAUDE_TIERS = ["opus", "sonnet", "haiku"] as const;
+
+/** Anthropic's models: the vendor says so, or the id is a Claude id. */
+export function isAnthropicModel(model: ModelCandidate): boolean {
+  return (
+    model.vendor?.trim().toLowerCase() === "anthropic" ||
+    model.id.toLowerCase().startsWith("claude-")
+  );
+}
+
+/**
+ * The version numbers in an id, most significant first.
+ *
+ * `claude-opus-4.8` is [4, 8] and `claude-3-5-sonnet` is [3, 5]. Segments with
+ * six or more digits are dates (`-20250514`), not versions, and segments that
+ * are not purely numeric (`1m`, `fast`) are variant labels, so both are ignored.
+ */
+function modelVersion(id: string): number[] {
+  return id
+    .toLowerCase()
+    .split(/[-._]/)
+    .filter((segment) => /^\d{1,5}$/.test(segment))
+    .map(Number);
+}
+
+/** Positive when `a` is the higher version; a missing part counts as zero. */
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function tierRank(id: string): number {
+  const segments = id.toLowerCase().split(/[-._]/);
+  const rank = CLAUDE_TIERS.findIndex((tier) => segments.includes(tier));
+  return rank === -1 ? CLAUDE_TIERS.length : rank;
+}
+
+function isPreview(model: ModelCandidate): boolean {
+  return (
+    model.preview === true ||
+    /preview/i.test(model.id) ||
+    /preview/i.test(model.name ?? "")
+  );
+}
+
+/**
+ * The newest Anthropic model in a listing, or null when it has none.
+ *
+ * Computed from the user's own list rather than written down, because a
+ * hard-coded id goes stale the day Anthropic ships the next one and every user
+ * keeps running the old model without knowing a newer one is on their seat.
+ *
+ * The rule, in order:
+ *   1. highest version, read from the numbers in the id (5.5 > 5 > 4.8);
+ *   2. at equal version, the higher tier: opus > sonnet > haiku > anything else;
+ *   3. at equal version and tier, a released model over a preview;
+ *   4. then the shorter id, which is the base model rather than a variant of
+ *      it (`-fast`, `-1m`), and finally the id itself so the answer never
+ *      depends on the order the runtime happened to list them in.
+ */
+export function newestAnthropicModel(
+  models: ReadonlyArray<ModelCandidate>,
+): string | null {
+  const ranked = models.filter(isAnthropicModel).sort((a, b) => {
+    const version = compareVersions(modelVersion(b.id), modelVersion(a.id));
+    if (version !== 0) return version;
+
+    const tier = tierRank(a.id) - tierRank(b.id);
+    if (tier !== 0) return tier;
+
+    const preview = Number(isPreview(a)) - Number(isPreview(b));
+    if (preview !== 0) return preview;
+
+    if (a.id.length !== b.id.length) return a.id.length - b.id.length;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+
+  return ranked[0]?.id ?? null;
+}
+
+/**
+ * The model "no choice" means for this user.
+ *
+ * `models` is the user's listing, or null when it could not be read. The chain:
+ *   1. the newest Anthropic model on the list;
+ *   2. `fallback` (the built-in default) when the list is unknown, empty, or
+ *      offers it — without a list there is nothing better to go on;
+ *   3. the first model the runtime listed. Reached only by an account whose
+ *      policy allows no Claude model at all, where `fallback` would be rejected.
+ *      The SDK has no named default to defer to, and leaving the model unset
+ *      would make the screen unable to say what a turn runs on; the runtime's
+ *      own first entry is the closest thing to its choice.
+ */
+export function resolveDefaultModel(
+  models: ReadonlyArray<ModelCandidate> | null,
+  fallback: string,
+): string {
+  if (!models || models.length === 0) return fallback;
+
+  const newest = newestAnthropicModel(models);
+  if (newest) return newest;
+
+  return models.some((model) => model.id === fallback)
+    ? fallback
+    : (models[0]?.id ?? fallback);
+}
+
+/** What a turn runs on, and whether that is still the one somebody chose. */
+export interface ModelChoice {
+  /** The model to run. */
+  model: string;
+  /** What "no choice" resolves to, for the UI to mark as the default. */
+  defaultModel: string;
+  /**
+   * True when an explicit choice is no longer on the user's list, so `model`
+   * is the default instead. Reported rather than hidden: a turn on a different
+   * model than the one on screen is a surprise unless something says so.
+   */
+  unavailable: boolean;
+}
+
+/**
+ * An explicit choice, unless the user's listing says it is gone.
+ *
+ * A choice always wins while the model is still offered. When the list cannot
+ * be read it wins too — we cannot tell a retired model from a failed request,
+ * and overriding someone's choice on a network error would be worse than a turn
+ * the runtime rejects with its own message. Only a list that is known and lacks
+ * the model replaces it, with the default and a flag the UI can show.
+ */
+export function resolveModelChoice(
+  chosen: string | null | undefined,
+  models: ReadonlyArray<ModelCandidate> | null,
+  fallback: string,
+): ModelChoice {
+  const defaultModel = resolveDefaultModel(models, fallback);
+
+  if (!chosen) return { model: defaultModel, defaultModel, unavailable: false };
+
+  const known = Boolean(models && models.length > 0);
+  if (!known || models?.some((model) => model.id === chosen)) {
+    return { model: chosen, defaultModel, unavailable: false };
+  }
+
+  return { model: defaultModel, defaultModel, unavailable: true };
+}
 
 /**
  * How many entries of a turn we are willing to record, by default.

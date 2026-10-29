@@ -122,10 +122,13 @@ export interface ModuleDetailDto {
   terraformRootFolder: string | null;
   isSubmodule: boolean;
   /**
-   * Part of the catalogue Terrablox ships with: shared by every user, owned by
-   * none, and not deletable. Drives the badge and the absent actions menu.
+   * Part of a library Terrablox manages — the shipped catalogue or a per-user
+   * library such as Porsche — so read-only and not deletable. Drives the absent
+   * actions menu.
    */
   isBuiltin: boolean;
+  /** Which library the module belongs to; null for the user's own import. */
+  library?: { id: string; name: string } | null;
   submoduleName: string | null;
   parentModuleId: string | null;
   variables: unknown;

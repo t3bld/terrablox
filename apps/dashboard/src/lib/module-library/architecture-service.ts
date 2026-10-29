@@ -13,7 +13,7 @@
 
 import { resolveModuleLinks } from "@terrablox/terraform/module-link";
 import { database } from "@/lib/database";
-import { visibleToUser } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * Deep enough for the real shapes (root -> wrapper -> service module), shallow
@@ -168,11 +168,13 @@ export async function loadModuleArchitectures(
   const modules: Record<string, ModuleArchitectureRecord> = {};
   if (rootIds.length === 0) return modules;
 
+  const visibility = await visibleModulesForUser(userId);
+
   // Loaded once and reused at every level: link resolution needs the full set
   // of modules the user can see regardless of which level is being expanded.
   const linkCandidates = (
     await database.terraformModule.findMany({
-      where: visibleToUser(userId),
+      where: visibility,
       select: {
         id: true,
         versionTag: true,
@@ -199,7 +201,7 @@ export async function loadModuleArchitectures(
     const batch = await database.terraformModule.findMany({
       // Scoped at every level, not just the roots: a module id reached by
       // traversal is still an id the caller must be allowed to read.
-      where: { id: { in: frontier }, ...visibleToUser(userId) },
+      where: { id: { in: frontier }, ...visibility },
       include: {
         // `url` so a relative `module` source can be resolved against the
         // repository this module came from.

@@ -62,6 +62,8 @@ export interface AgentLibraryModule {
   versionTag: string | null;
   description: string | null;
   tags: string[];
+  /** Display name of the library it comes from (Terrablox, Porsche), or null for an own import. */
+  library?: string | null;
   inputs: AgentPort[];
   outputs: AgentPort[];
 }
@@ -90,6 +92,7 @@ export function toAgentLibrary(
       versionTag: module.versionTag,
       description: module.description ?? null,
       tags: module.tags ?? [],
+      library: module.library?.name ?? null,
       inputs: toInputPorts(parseVariables(module.variables)),
       outputs: toOutputPorts(
         parseOutputs(module.outputs),
@@ -166,6 +169,7 @@ export function summariseLibraryModule(module: AgentLibraryModule): string {
 
   const parts = [
     `${module.name}${module.versionTag ? ` @${module.versionTag}` : ""}`,
+    module.library ? `${module.library} library` : null,
     module.tags.length ? `[${module.tags.join(", ")}]` : null,
     describeShort(module.description),
     `${required} of ${module.inputs.length} inputs required, ${module.outputs.length} output${module.outputs.length === 1 ? "" : "s"}`,

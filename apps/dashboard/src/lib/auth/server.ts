@@ -3,6 +3,7 @@ import "server-only";
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import { nextCookies } from "better-auth/next-js";
+import type { GithubProfile } from "better-auth/social-providers";
 
 import { database } from "@/lib/database";
 
@@ -185,8 +186,18 @@ export const auth = betterAuth({
   //                                        read the repository's secrets
   //   Repository → Actions: Read+Write     list workflow runs, dispatch a run
   //   Repository → Variables: Read+Write   the deployment pipeline's configuration
-  //   Repository → Administration: R+W     creating the project repository
-  //   Account    → Email addresses: Read   so GitHub returns a primary email
+  //
+  // Nothing else, and in particular none of these, which earlier versions asked for:
+  //
+  //   Administration   creating a project's repository. Projects now bind a
+  //                    repository that already exists (lib/projects/bind-repo.ts),
+  //                    so the app never creates, deletes or reconfigures one.
+  //   Secrets          never used: the pipeline's configuration is repository
+  //                    *Variables*, because none of it is secret (lib/projects/deploy.ts).
+  //   Email addresses  see `mapProfileToUser` below.
+  //
+  // Installing on "Only select repositories" is supported and recommended: a project
+  // can only be bound to a repository that is in the selection.
   //
   // The token this yields is a `ghu_` user-to-server token. That is also what the
   // Copilot SDK is handed for the agent (see lib/agent/copilot.ts); GitHub lists
@@ -197,6 +208,31 @@ export const auth = betterAuth({
         github: {
           clientId: githubClientId as string,
           clientSecret: githubClientSecret as string,
+          /**
+           * An email for accounts that do not publish one.
+           *
+           * The app no longer has the *Email addresses* permission, so the
+           * provider's fallback to `/user/emails` is answered with a 403. That does
+           * not throw — the provider reads the result as "no emails" — but a profile
+           * without a public email then reaches the callback with none at all, and
+           * Better Auth refuses the sign-in with `email_not_found`.
+           *
+           * GitHub's own noreply address fills the gap: `{id}+{login}@…` is the form
+           * GitHub itself uses for commits, and the numeric id makes it unique per
+           * account even after a rename. Nothing here sends mail — there is no SMTP —
+           * and the address is only displayed, so a placeholder costs nothing.
+           *
+           * Returned only when GitHub gave no email, and an empty object otherwise,
+           * because the provider spreads this *after* its own `email`: anything
+           * returned here wins. Existing users are unaffected either way — sign-in
+           * finds them by provider and account id, not by email.
+           */
+          mapProfileToUser: (profile: GithubProfile) =>
+            profile.email
+              ? {}
+              : {
+                  email: `${profile.id}+${profile.login}@users.noreply.github.com`,
+                },
         },
       }
     : undefined,

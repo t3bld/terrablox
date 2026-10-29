@@ -1,4 +1,7 @@
-import { FALLBACK_MODELS } from "@terrablox/agent-harness/runtime-options";
+import {
+  FALLBACK_MODELS,
+  resolveDefaultModel,
+} from "@terrablox/agent-harness/runtime-options";
 import { NextResponse } from "next/server";
 import {
   COPILOT_MODEL,
@@ -17,6 +20,9 @@ import {
  * entitlement and nobody else's. When it cannot be listed — no token, no seat, a
  * runtime that will not start — a small known list stands in, so the dropdown
  * offers something real instead of appearing to say there are no models.
+ *
+ * `defaults.model` is the newest Anthropic model on that same list, so the
+ * picker marks as "default" exactly what a turn with no choice would run on.
  */
 export async function GET() {
   const userId = await getCurrentUserId();
@@ -24,13 +30,13 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const defaults = {
-    model: COPILOT_MODEL,
-    reasoningEffort: COPILOT_REASONING_EFFORT,
-  };
-
   const token = await getUserGithubToken();
   const listed = token ? await listCopilotModels(token) : null;
+
+  const defaults = {
+    model: resolveDefaultModel(listed, COPILOT_MODEL),
+    reasoningEffort: COPILOT_REASONING_EFFORT,
+  };
 
   return NextResponse.json({
     defaults,

@@ -9,15 +9,20 @@ import {
   CardHeader,
   CardTitle,
 } from "@terrablox/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@terrablox/ui/dropdown-menu";
 import { Input } from "@terrablox/ui/input";
 import { Label } from "@terrablox/ui/label";
-import { Select } from "@terrablox/ui/select";
 import { TabsNav, tabPanelProps } from "@terrablox/ui/tabs-nav";
 import {
   Check,
+  ChevronDown,
   Copy,
   Plus,
-  Terminal,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -47,6 +52,11 @@ interface TokenSummary {
 }
 
 type Scope = "read" | "write";
+
+const SCOPES: ReadonlyArray<{ value: Scope; label: string }> = [
+  { value: "read", label: "Read only" },
+  { value: "write", label: "Read and change" },
+];
 
 /** The clients we give a ready-made block for. */
 const CLIENTS = [
@@ -248,16 +258,7 @@ export function McpSettings() {
     <div className="space-y-6">
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Terminal className="h-4 w-4" />
-            Editor access
-          </CardTitle>
-          <CardDescription>
-            Lets a coding agent in your editor do what you can do here: read
-            your projects, add modules, wire them up and start a deployment. It
-            acts as you, so give it a token of its own — then you can revoke
-            that token instead of your account when you are done with it.
-          </CardDescription>
+          <CardTitle>Generate Tokens</CardTitle>
         </CardHeader>
 
         <CardContent className="space-y-6">
@@ -274,15 +275,35 @@ export function McpSettings() {
 
             <div className="grid gap-1.5">
               <Label htmlFor="token-scope">Access</Label>
-              <Select
-                className="w-[190px]"
-                id="token-scope"
-                onChange={(event) => setScope(event.target.value as Scope)}
-                value={scope}
-              >
-                <option value="read">Read only</option>
-                <option value="write">Read and change</option>
-              </Select>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    className="w-[190px] justify-between"
+                    id="token-scope"
+                    type="button"
+                    variant="outline"
+                  >
+                    {SCOPES.find((entry) => entry.value === scope)?.label}
+                    <ChevronDown className="h-4 w-4 opacity-60" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-[190px]">
+                  {SCOPES.map((entry) => (
+                    <DropdownMenuItem
+                      className="gap-2"
+                      key={entry.value}
+                      onSelect={() => setScope(entry.value)}
+                    >
+                      {entry.value === scope ? (
+                        <Check className="h-3.5 w-3.5" />
+                      ) : (
+                        <span className="w-3.5" />
+                      )}
+                      {entry.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
 
             <Button
@@ -340,7 +361,7 @@ export function McpSettings() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Your tokens</CardTitle>
+          <CardTitle>Tokens</CardTitle>
           <CardDescription>
             Revoking one takes effect immediately, on the next request that uses
             it.

@@ -31,6 +31,10 @@ const turn = (over: Partial<ProjectLogTurnDto>): ProjectLogTurnDto => ({
   commits: [],
   decisionId: null,
   operations: [],
+  model: "claude-opus-5.5",
+  reasoningEffort: "high",
+  outcome: "completed",
+  telemetry: null,
   ...over,
 });
 

@@ -315,6 +315,7 @@ export function systemPrompt(context: AgentContext): string {
           "`describe_module` — it returns every input with its type and default, every output,",
           "and which of its resources bill by the hour. Guessing an output name writes a",
           "reference that only fails when somebody runs Terraform.",
+          "A module from a named library says so after its name; the rest are the user's own imports.",
           library,
         ]
       : []),

@@ -5,7 +5,9 @@ import {
 import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { isBuiltin, visibleToUser } from "@/lib/module-library/ownership";
+import { type LibraryLabel, libraryOf } from "@/lib/module-library/libraries";
+import { isManaged } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /**
  * Lists modules grouped by repository.
@@ -22,8 +24,9 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const visibility = await visibleModulesForUser(userId);
   const modules = await database.terraformModule.findMany({
-    where: visibleToUser(userId),
+    where: visibility,
     include: { source: true },
   });
 
@@ -65,6 +68,8 @@ export async function GET() {
      * by source, and a source is either shipped or owned, never both.
      */
     isBuiltin: boolean;
+    /** Terrablox, a per-user library such as Porsche, or null for an own import. */
+    library: LibraryLabel | null;
     versions: Version[];
   }
 
@@ -90,7 +95,9 @@ export async function GET() {
         iconMode: mod.source?.iconMode ?? "repo",
         hasIcon: Boolean(mod.source?.iconUrl),
         iconName: mod.source?.iconName ?? null,
-        isBuiltin: isBuiltin(mod),
+        // Managed rather than builtin: a per-user library row is read-only too.
+        isBuiltin: isManaged(mod),
+        library: libraryOf(mod),
         versions: [],
       };
       groups.set(key, group);
@@ -133,6 +140,7 @@ export async function GET() {
         hasIcon: group.hasIcon,
         iconName: group.iconName,
         isBuiltin: group.isBuiltin,
+        library: group.library,
         // The tracked branch rather than the newest tag — see pickDefaultVersion.
         // `versions` stays newest-first, so the switcher still reads as a history.
         defaultVersion: pickDefaultVersion(serialized),

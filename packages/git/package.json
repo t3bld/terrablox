@@ -6,6 +6,7 @@
   "exports": {
     "./actions": "./src/actions.ts",
     "./client": "./src/client.ts",
+    "./discovery": "./src/discovery.ts",
     "./files": "./src/files.ts",
     "./github-provider": "./src/github-provider.ts",
     "./installations": "./src/installations.ts",

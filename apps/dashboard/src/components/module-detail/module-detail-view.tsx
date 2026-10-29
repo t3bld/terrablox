@@ -31,6 +31,7 @@ import { SubmoduleSwitcher } from "@/components/module-detail/submodule-switcher
 import { VariablesTab } from "@/components/module-detail/variables-tab";
 import { VersionSwitcher } from "@/components/module-detail/version-switcher";
 import { ModuleIcon } from "@/components/module-icon";
+import { LibraryBadge } from "@/components/module-overview/library-badge";
 import {
   type ModuleDetailDto,
   type ModuleSubmoduleDto,
@@ -336,6 +337,10 @@ export function ModuleDetailView({
               />
 
               <p className="min-w-0 flex-1 text-sm leading-6 break-words">
+                <LibraryBadge
+                  className="mr-2 align-middle"
+                  library={mod.library}
+                />
                 {mod.isSubmodule ? (
                   <Badge variant="outline" className="mr-2 align-middle">
                     Submodule
@@ -363,6 +368,12 @@ export function ModuleDetailView({
                   <span className="text-muted-foreground">
                     {mod.versionTag ?? "(none)"}
                   </span>
+                )}
+              </InfoField>
+
+              <InfoField label="Library">
+                {mod.library?.name ?? (
+                  <span className="text-muted-foreground">Your import</span>
                 )}
               </InfoField>
 

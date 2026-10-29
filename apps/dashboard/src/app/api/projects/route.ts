@@ -1,13 +1,11 @@
 import { DEFAULT_TURN_TIMEOUT_SECONDS } from "@terrablox/agent-harness/runtime-options";
 import { GithubRequestError } from "@terrablox/git/client";
-import {
-  createRepository,
-  RepoOwnerNotWritableError,
-  verifyOwnerCanHoldNewRepo,
-} from "@terrablox/git/repositories";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { COPILOT_MODEL, COPILOT_REASONING_EFFORT } from "@/lib/agent/copilot";
+import {
+  COPILOT_REASONING_EFFORT,
+  resolveCopilotModel,
+} from "@/lib/agent/copilot";
 import type { AgentOverrides } from "@/lib/agent/effective-settings";
 import {
   asReasoningEffort,
@@ -19,7 +17,7 @@ import {
   requireUserWithLimit,
 } from "@/lib/api/guard";
 import { RATE_LIMITS } from "@/lib/api/rate-limit";
-import { routeError } from "@/lib/api/route-error";
+import { providerError, routeError } from "@/lib/api/route-error";
 import * as schema from "@/lib/api/schemas";
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
@@ -29,6 +27,7 @@ import {
   parseAppRepoInput,
   verifyAppRepoAccess,
 } from "@/lib/projects/app-repo";
+import { bindExistingRepo, RepoBindError } from "@/lib/projects/bind-repo";
 import { toProjectDto } from "@/lib/projects/serialize";
 import { normalizeFolder } from "@/lib/projects/service";
 
@@ -50,44 +49,35 @@ export async function GET(_req: Request) {
 }
 
 /**
- * A project is always created together with a fresh repository.
+ * The import-project request.
  *
- * Adopting an existing one used to be the other half of this endpoint. It is gone
- * on purpose: it forced every caller to also say which folder inside that
- * repository held the root configuration, and a wrong answer there produced an
- * empty graph with no explanation. A repository we create has exactly one
- * possible answer, so there is no question left to get wrong.
- */
-/**
- * The create-project request.
+ * A project is bound to a repository that already exists on GitHub. Creating one
+ * used to be what this endpoint did, and it is gone because of the permission it
+ * needed: *Administration*, which also covers deleting repositories and changing
+ * collaborators, is the one organisations refuse to grant — and a repository the app
+ * creates is outside an installation that was granted *selected repositories* only.
  *
- * `repo.name` and `repo.owner` are the values a GitHub repository is created from, so
- * they get GitHub's own naming rules rather than a trim. `requireRepoName` below still
- * runs — it produces the message the wizard shows — but a shape check here is what
- * stops an unbounded string reaching the API call.
+ * `repo.fullName` gets GitHub's own naming rules rather than a trim, because both
+ * halves become path segments in every request built from it: owners are letters,
+ * digits and hyphens, names add dots and underscores, and `.`/`..` are reserved. The
+ * shape check is what stops an unbounded or traversing string reaching the API; that
+ * the repository is one the user may bind is `bindExistingRepo`'s job.
  *
  * `appRepo` stays `unknown`: `parseAppRepoInput` owns that shape, and it has to,
  * because the project-update route and the agent path both call it.
  */
 const createBody = z.object({
-  name: schema.displayText(200),
   repo: z.object({
-    name: z
+    fullName: z
       .string()
       .trim()
-      .min(1)
-      .max(100)
       .regex(
-        /^[A-Za-z0-9._-]+$/,
-        "A repository name may only contain letters, digits, dots, hyphens and underscores",
-      ),
-    owner: z
-      .string()
-      .trim()
-      .max(100)
-      .regex(/^[A-Za-z0-9-]*$/, "That is not a GitHub owner name")
-      .nullish(),
-    private: z.boolean().optional(),
+        /^[A-Za-z0-9-]{1,100}\/[A-Za-z0-9._-]{1,100}$/,
+        "Expected a GitHub repository as owner/name",
+      )
+      .refine((value) => !/\/\.{1,2}$/.test(value), {
+        message: "Expected a GitHub repository as owner/name",
+      }),
   }),
   branch: schema.gitRef.nullish(),
   terraformEntryFile: schema.relativeFolder.nullish(),
@@ -105,14 +95,26 @@ const createBody = z.object({
  *
  * The values are resolved rather than copied verbatim. A global "no choice" is
  * stored as null, and null in an override means inherit, so copying nulls would
- * pin nothing at all. Writing the concrete model, effort and timeout is what makes
- * this a snapshot.
+ * pin nothing at all. Writing the concrete effort and timeout is what makes this a
+ * snapshot.
+ *
+ * The model is the exception. An explicit global choice that is still on the
+ * user's list is pinned like everything else. "No choice" is not: it is left
+ * unset, so the project keeps following the newest Anthropic model on the user's
+ * list and a new Claude release becomes its default too, instead of the project
+ * staying on whatever was newest the day it was created. A global choice that has
+ * left the list is treated as no choice for the same reason.
  */
-async function snapshotAgentSettings(userId: string): Promise<AgentOverrides> {
+async function snapshotAgentSettings(
+  userId: string,
+  githubToken: string,
+): Promise<AgentOverrides> {
   const global = await getAgentSettings(userId);
+  const choice = await resolveCopilotModel(githubToken, global.model);
+  const model = global.model && !choice.unavailable ? global.model : null;
 
   return {
-    model: global.model ?? COPILOT_MODEL,
+    model,
     reasoningEffort:
       global.reasoningEffort ??
       asReasoningEffort(COPILOT_REASONING_EFFORT) ??
@@ -123,6 +125,30 @@ async function snapshotAgentSettings(userId: string): Promise<AgentOverrides> {
   };
 }
 
+/**
+ * The project's name: the repository's name.
+ *
+ * Nobody types one any more. It still matters, because AWS stack names, the state
+ * key and the state bucket are derived from it, so two of a user's projects must not
+ * share one. A second repository with the same name under another owner is
+ * prefixed with that owner (`other-infra`). Compared case-insensitively, since the
+ * derived names are lower-cased anyway.
+ */
+async function projectNameFor(
+  userId: string,
+  repoFullName: string,
+): Promise<string> {
+  const [owner = "", repoName = repoFullName] = repoFullName.split("/");
+
+  const taken = await database.project.findMany({
+    where: { userId },
+    select: { name: true },
+  });
+  const used = new Set(taken.map((project) => project.name.toLowerCase()));
+
+  return used.has(repoName.toLowerCase()) ? `${owner}-${repoName}` : repoName;
+}
+
 /** Terraform files are `.tf`; anything else could never hold a module block. */
 function normalizeEntryFile(input: string | null | undefined): string {
   const raw = (input ?? "").trim().replace(/^\/+/, "");
@@ -131,17 +157,21 @@ function normalizeEntryFile(input: string | null | undefined): string {
 }
 
 /**
- * Creates a project together with the repository it is bound to.
+ * Imports an existing repository as a project.
  *
  * The binding is mandatory: the graph is a view of the repository, so a project
  * without one would have nothing to show and nowhere to write changes to.
+ *
+ * Nothing is created on GitHub, so nothing can be left behind there: every check runs
+ * before the one write this handler makes, which is the project row.
  */
 export async function POST(req: Request) {
   let userId: string;
   let body: z.infer<typeof createBody>;
   try {
-    // Creating a project creates a *repository* on GitHub, so this is rate limited on
-    // the infrastructure budget rather than the ordinary write one.
+    // Kept on the infrastructure budget even though no repository is created any
+    // more: each attempt lists every installation's repositories and walks a whole
+    // tree on GitHub, and that spends the user's GitHub rate limit, not ours.
     userId = await requireUserWithLimit(
       "project.create",
       RATE_LIMITS.infrastructure,
@@ -151,8 +181,6 @@ export async function POST(req: Request) {
     return routeError("project.create", error);
   }
 
-  const name = body.name;
-
   const token = await getProviderTokenForRequest(req, "github");
   if (!token) {
     return NextResponse.json(
@@ -161,8 +189,8 @@ export async function POST(req: Request) {
     );
   }
 
-  // Parsed *and verified* before the repository is created: a rejected link would
-  // otherwise leave a repository on GitHub for a project that was never stored.
+  // Parsed *and verified* before the project is stored, so a link that cannot be
+  // read is refused here rather than failing in the middle of the first agent turn.
   let appRepo: ReturnType<typeof parseAppRepoInput>;
   try {
     appRepo = parseAppRepoInput(body.appRepo);
@@ -179,37 +207,40 @@ export async function POST(req: Request) {
     );
   }
 
-  // Asked before the repository exists, for the same reason the app-repo link is
-  // verified above: GitHub will create a repository outside the installation's
-  // grant without complaint, and the refusal would then arrive at the first write —
-  // leaving an empty repository behind for a project that was never stored.
+  // The refusals carry their own message because each one has a fix on GitHub —
+  // grant the repository, give it a first commit, pick one without Terraform — and
+  // a generic "invalid repository" would leave the user guessing which.
+  let bound: Awaited<ReturnType<typeof bindExistingRepo>>;
   try {
-    await verifyOwnerCanHoldNewRepo(token, body.repo.owner ?? null);
+    bound = await bindExistingRepo(token, body.repo.fullName, body.branch);
   } catch (e) {
-    if (e instanceof RepoOwnerNotWritableError) {
-      return NextResponse.json({ error: e.message }, { status: 409 });
+    if (e instanceof RepoBindError) {
+      return NextResponse.json({ error: e.message }, { status: e.status });
     }
-    throw e;
+    // Status kept, body dropped: GitHub's own text is about GitHub's API, not about
+    // anything the person in the dialog can change.
+    if (e instanceof GithubRequestError) {
+      return providerError(
+        "project.create",
+        e,
+        "Could not check the repository on GitHub. Try again in a moment.",
+      );
+    }
+    return routeError("project.create", e);
   }
 
   try {
-    const repo = await createRepository(token, {
-      name: requireRepoName(body.repo.name),
-      owner: body.repo.owner ?? null,
-      private: body.repo.private ?? true,
-    });
-
     const project = await database.project.create({
       data: {
         userId,
-        name,
+        name: await projectNameFor(userId, bound.repo.fullName),
         provider: "github",
-        repoFullName: repo.fullName,
-        repoUrl: repo.htmlUrl,
-        repoBranch: body.branch?.trim() || repo.defaultBranch,
-        // A repository we just created holds nothing but a README, so the root
-        // configuration can only be the repository root. Nothing to detect and
-        // nothing to ask.
+        repoFullName: bound.repo.fullName,
+        repoUrl: bound.repo.htmlUrl,
+        repoBranch: bound.branch,
+        // `bindExistingRepo` accepts only repositories without a single `.tf` file,
+        // so the root configuration can only be the repository root. Nothing to
+        // detect and nothing to ask.
         terraformRootFolder: normalizeFolder(null),
         terraformEntryFile: normalizeEntryFile(body.terraformEntryFile),
         ...appRepoColumns(appRepo ?? null),
@@ -217,7 +248,7 @@ export async function POST(req: Request) {
         // `saveAgentOverrides` does it: `AgentOverrides` has optional keys, which
         // its `InputJsonValue` type will not accept.
         agentOverrides: JSON.parse(
-          JSON.stringify(await snapshotAgentSettings(userId)),
+          JSON.stringify(await snapshotAgentSettings(userId, token)),
         ),
       },
     });
@@ -227,24 +258,8 @@ export async function POST(req: Request) {
       { status: 201 },
     );
   } catch (e) {
-    const status = e instanceof GithubRequestError ? e.status : 500;
-    return NextResponse.json(
-      { error: e instanceof Error ? e.message : "Failed to create project" },
-      { status: status === 404 ? 400 : status },
-    );
+    // Through `routeError` rather than echoing `e.message`: what can fail here is
+    // the database, and its error text is not for the browser.
+    return routeError("project.create", e);
   }
-}
-
-function requireRepoName(name: string | undefined): string {
-  const trimmed = name?.trim();
-  if (!trimmed) {
-    throw new GithubRequestError("Missing repository name", 400);
-  }
-  if (!/^[A-Za-z0-9._-]+$/.test(trimmed)) {
-    throw new GithubRequestError(
-      "Repository names may only contain letters, digits, '.', '_' and '-'",
-      400,
-    );
-  }
-  return trimmed;
 }

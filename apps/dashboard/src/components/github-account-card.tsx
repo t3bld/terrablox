@@ -263,9 +263,10 @@ export function GithubAccountCard() {
                   {installations.map((installation) => (
                     <Badge key={installation.login} variant="outline">
                       {installation.login}
-                      {/* The selection matters enough to show: on `selected` a
-                          newly created project repository is outside the grant,
-                          which is refused before anything is created. */}
+                      {/* The selection matters enough to show: on `selected`
+                          only the chosen repositories appear in the project
+                          picker, which is the first thing to check when one is
+                          missing. */}
                       <span className="ml-1 text-muted-foreground">
                         {installation.repositorySelection === "all"
                           ? "all repos"

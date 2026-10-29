@@ -4,6 +4,7 @@ import { database } from "@/lib/database";
 
 import type {
   AgentStep,
+  AgentTurnTelemetry,
   DecisionAlternativeDto,
   DecisionPlanDto,
   ProjectDecisionDto,
@@ -201,6 +202,13 @@ export async function readProjectLog(
       commits: metadata.commits,
       decisionId: decisionOfMessage.get(message.id) ?? null,
       operations: byMessage.get(message.id) ?? [],
+      model: metadata.model,
+      reasoningEffort: metadata.reasoningEffort,
+      // A system row is a turn that failed before it started; absent the explicit
+      // field (older rows), its role is the signal.
+      outcome:
+        metadata.outcome ?? (message.role === "system" ? "error" : "completed"),
+      telemetry: metadata.telemetry,
     });
   }
 
@@ -214,6 +222,10 @@ export async function readProjectLog(
       commits: entry.operation.commitSha ? [entry.operation.commitSha] : [],
       decisionId: null,
       operations: [entry.operation],
+      model: null,
+      reasoningEffort: null,
+      outcome: null,
+      telemetry: null,
     });
   }
 
@@ -234,11 +246,29 @@ export async function readProjectLog(
 function readMetadata(value: unknown): {
   steps: AgentStep[];
   commits: string[];
+  model: string | null;
+  reasoningEffort: string | null;
+  outcome: "completed" | "stopped" | "error" | null;
+  telemetry: AgentTurnTelemetry | null;
 } {
-  const empty = { steps: [], commits: [] };
+  const empty = {
+    steps: [],
+    commits: [],
+    model: null,
+    reasoningEffort: null,
+    outcome: null,
+    telemetry: null,
+  };
   if (!value || typeof value !== "object" || Array.isArray(value)) return empty;
 
-  const record = value as { steps?: unknown; commits?: unknown };
+  const record = value as {
+    steps?: unknown;
+    commits?: unknown;
+    model?: unknown;
+    reasoningEffort?: unknown;
+    outcome?: unknown;
+    telemetry?: unknown;
+  };
 
   const steps = Array.isArray(record.steps)
     ? record.steps.filter((entry): entry is AgentStep => {
@@ -258,7 +288,101 @@ function readMetadata(value: unknown): {
     ? record.commits.filter((sha): sha is string => typeof sha === "string")
     : [];
 
-  return { steps, commits };
+  const model = typeof record.model === "string" ? record.model : null;
+  const reasoningEffort =
+    typeof record.reasoningEffort === "string" ? record.reasoningEffort : null;
+  const outcome =
+    record.outcome === "completed" ||
+    record.outcome === "stopped" ||
+    record.outcome === "error"
+      ? record.outcome
+      : null;
+
+  const telemetry = readTelemetry(record.telemetry);
+
+  return {
+    steps,
+    commits,
+    model,
+    reasoningEffort,
+    outcome,
+    telemetry,
+  };
+}
+
+/** Defensive projection of the raw JSON telemetry stored on a message. */
+function readTelemetry(value: unknown): AgentTurnTelemetry | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.startedAt !== "string") return null;
+
+  const numberOrNull = (candidate: unknown): number | null =>
+    typeof candidate === "number" && Number.isFinite(candidate)
+      ? candidate
+      : null;
+  const stringOrNull = (candidate: unknown): string | null =>
+    typeof candidate === "string" ? candidate : null;
+
+  const rawUsage =
+    row.usage && typeof row.usage === "object" && !Array.isArray(row.usage)
+      ? (row.usage as Record<string, unknown>)
+      : {};
+
+  const toolCalls = Array.isArray(row.toolCalls)
+    ? row.toolCalls.flatMap((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return [];
+        }
+        const call = entry as Record<string, unknown>;
+        if (
+          typeof call.id !== "string" ||
+          typeof call.tool !== "string" ||
+          typeof call.startedAt !== "string"
+        ) {
+          return [];
+        }
+
+        return [
+          {
+            id: call.id,
+            source:
+              call.source === "mcp" ? ("mcp" as const) : ("terrablox" as const),
+            tool: call.tool,
+            server: stringOrNull(call.server),
+            arguments: call.arguments ?? null,
+            result: call.result ?? null,
+            success: typeof call.success === "boolean" ? call.success : null,
+            error: stringOrNull(call.error),
+            startedAt: call.startedAt,
+            finishedAt: stringOrNull(call.finishedAt),
+            durationMs: numberOrNull(call.durationMs),
+          },
+        ];
+      })
+    : [];
+
+  return {
+    startedAt: row.startedAt,
+    finishedAt: stringOrNull(row.finishedAt),
+    agentDurationMs: numberOrNull(row.agentDurationMs),
+    totalDurationMs: numberOrNull(row.totalDurationMs),
+    usage: {
+      modelCalls:
+        typeof rawUsage.modelCalls === "number" &&
+        Number.isFinite(rawUsage.modelCalls)
+          ? rawUsage.modelCalls
+          : 0,
+      inputTokens: numberOrNull(rawUsage.inputTokens),
+      outputTokens: numberOrNull(rawUsage.outputTokens),
+      cacheReadTokens: numberOrNull(rawUsage.cacheReadTokens),
+      cacheWriteTokens: numberOrNull(rawUsage.cacheWriteTokens),
+      reasoningTokens: numberOrNull(rawUsage.reasoningTokens),
+      apiDurationMs: numberOrNull(rawUsage.apiDurationMs),
+      cost: numberOrNull(rawUsage.cost),
+      totalNanoAiu: numberOrNull(rawUsage.totalNanoAiu),
+    },
+    toolCalls,
+  };
 }
 
 function toDecisionDto(row: {

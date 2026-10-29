@@ -21,10 +21,12 @@ export interface RepositoryDto {
   url: string | null;
   provider: string | null;
   /**
-   * Part of the catalogue Terrablox ships with: available to every user, owned
-   * by none, and not removable.
+   * Part of a library Terrablox manages — the shipped catalogue or a per-user
+   * library such as Porsche — so not removable.
    */
   isBuiltin: boolean;
+  /** Which library this repository belongs to; null for the user's own import. */
+  library: { id: string; name: string } | null;
   /** Which icon source to draw from: `repo`, `aws` or `none`. */
   iconMode: string;
   /** True when the repository ships its own icon. */

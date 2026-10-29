@@ -59,6 +59,7 @@ model User {
   apiTokens       ApiToken[]
   harnessCuration HarnessCuration?
   auditEvents     AuditEvent[]
+  moduleLibrarySyncs ModuleLibrarySync[]
 
   @@map("user")
   @@schema("public")
@@ -317,14 +318,106 @@ model Project {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  canvasNodes  CanvasNode[]
-  connections  Connection[]
-  chatMessages ProjectChatMessage[]
-  operations   ProjectOperation[]
-  decisions    ProjectDecision[]
+  canvasNodes     CanvasNode[]
+  connections     Connection[]
+  chatMessages    ProjectChatMessage[]
+  operations      ProjectOperation[]
+  decisions       ProjectDecision[]
+  transformations ProjectTransformation[]
 
   @@index([userId])
   @@map("projects")
+  @@schema("public")
+}
+
+/// One agent turn captured whole, as training data for the harness.
+///
+/// Everything else about a turn is spread across three places and shaped for the
+/// UI: the reply and step trail on a {@link ProjectChatMessage}, the reasoning on
+/// {@link ProjectDecision}, the applied edits on {@link ProjectOperation}. None of
+/// them keeps the graph the turn *started* from, so the before/after pair — the
+/// transformation itself — cannot be reconstructed after the fact. This row is the
+/// one place that holds it: the prompt and the conditions it ran under, the graph
+/// before and after, the trajectory in between, and an outcome signal filled in
+/// once the pipeline has judged the commit.
+///
+/// Written fire-and-forget after the turn commits, so a failure here never costs
+/// the turn. Only turns that changed something are recorded; a pure question has
+/// no transformation to learn from. Users are told their projects are used this
+/// way, so nothing here is redacted.
+model ProjectTransformation {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+
+  /// The assistant message this turn produced, so the record can be joined back
+  /// to the transcript. Null if the message was pruned.
+  chatMessageId String? @map("chat_message_id") @db.Uuid
+
+  /// What the user asked for.
+  prompt String @db.Text
+  /// The assistant's reply.
+  reply  String @db.Text
+
+  /// The conditions the turn ran under: `{ model, reasoningEffort, maxToolCalls,
+  /// maxSteps, allowDestructive, disabledTools, disabledKnowledge, seesRepo,
+  /// seesLibrary, historyChars }`. Kept because the same prompt under a different
+  /// model or budget is a different example.
+  settings Json @default("{}") @db.JsonB
+
+  /// The project graph before the turn: `{ nodes, edges, gaps, resourceCount,
+  /// files, sha, errors }`, the `ProjectGraph` shape. The "ist-zustand".
+  graphBefore Json @default("{}") @map("graph_before") @db.JsonB
+  /// The project graph after every mutation of the turn was applied. The "fertig
+  /// migrierter zustand". Equal to `graphBefore` when nothing committed, which is
+  /// why such turns are not recorded.
+  graphAfter  Json @default("{}") @map("graph_after") @db.JsonB
+
+  /// The trajectory: the complete `AgentStep[]` trail, thoughts and tool calls in
+  /// order, untrimmed. The UI's capped and truncated copy lives on the assistant
+  /// message instead; this one is the faithful record for training.
+  steps     Json @default("[]") @db.JsonB
+  /// The `ProjectGraphMutation[]` the turn queued, in order.
+  mutations Json @default("[]") @db.JsonB
+  /// The decisions the turn recorded: question, choice, reason, alternatives, plan.
+  decisions Json @default("[]") @db.JsonB
+
+  /// What the turn migrated FROM, when its starting state was not the graph.
+  ///
+  /// `{ kind, appRepo?: { fullName, branch, sha }, appRepoReads: [...], mcpCalls:
+  /// [...] }`. `kind` is `greenfield` (empty before-graph, no external source),
+  /// `graph` (built on the existing graph, no external source) or `legacy` (read an
+  /// app repo or an MCP server — a real migration). The app-repo files are captured
+  /// as the agent saw them, capped; MCP calls carry args and, where the SDK allows,
+  /// results. Empty reads with a non-empty before-graph is `graph`; empty reads with
+  /// an empty before-graph is `greenfield`. This is the half a graph-to-graph record
+  /// cannot hold: the on-prem or legacy state a migration actually starts from.
+  migrationSource Json @default("{}") @map("migration_source") @db.JsonB
+
+  /// The commit SHAs the turn produced, oldest first.
+  commits        String[] @default([]) @db.Text
+  /// Mutation errors the turn hit, each a human-readable sentence. Empty is clean.
+  mutationErrors String[] @default([]) @map("mutation_errors") @db.Text
+
+  /// completed | stopped | error. A stopped turn commits nothing and is not
+  /// recorded, so in practice this is `completed`; the column exists so a future
+  /// decision to record partial turns has somewhere to say so.
+  outcome String @default("completed") @db.Text
+
+  /// The verdict the project's pipeline reached on these commits, backfilled on a
+  /// later turn when `readLastCheck` reports on this branch: `success`, `failure`,
+  /// null while unknown. This is the label — did the transformation produce valid
+  /// Terraform — and it is why the record is worth keeping.
+  pipelineConclusion String?   @map("pipeline_conclusion") @db.Text
+  pipelineCheckedAt  DateTime? @map("pipeline_checked_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([userId, createdAt])
+  @@map("project_transformations")
   @@schema("public")
 }
 
@@ -628,12 +721,62 @@ model TerraformModuleSource {
   /// Defaults to `repo`, which is what every row did before this column existed.
   iconMode String @default("repo") @map("icon_mode") @db.Text
 
+  /// The module library this source was synced from, e.g. `terrablox`, `porsche`.
+  ///
+  /// NULL only for a user's own import. A global library row has no `userId` and
+  /// a library; a per-user library row has both (each user's own copy, resolved
+  /// with their own token). A CHECK constraint forbids rows with neither. Library
+  /// rows are managed by the sync and read-only to users, and a library's
+  /// `visible` flag in TERRABLOX_MODULE_LIBRARIES hides them from every read
+  /// path; see lib/module-library/ownership.ts.
+  library String? @db.Text
+
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  versions TerraformModule[]
+  versions   TerraformModule[]
+  librarySync ModuleLibrarySync? @relation("ModuleSourceLibrarySync", fields: [userId, library], references: [userId, library], onDelete: Cascade)
 
+  @@index([userId, library])
   @@map("terraform_module_sources")
+  @@schema("public")
+}
+
+/// Where one person's copy of a per-user module library has got to.
+///
+/// One row per (user, library). Holds staleness, a short lock so two tabs don't
+/// sync at once, and what discovery last learned — enough to show an install hint
+/// without asking GitHub on every page load.
+model ModuleLibrarySync {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  /// Library id from TERRABLOX_MODULE_LIBRARIES, e.g. `porsche`.
+  library        String    @db.Text
+  /// never | available | not-installed | no-repos | error
+  state          String    @default("never") @db.Text
+  /// Text, not Int: GitHub ids are not guaranteed to stay below 2^31.
+  installationId String?   @map("installation_id") @db.Text
+  memberDetected Boolean   @default(false) @map("member_detected")
+  /// `{ [repoFullName]: { branch, branchSha, tag } }` as last imported.
+  repos          Json      @default("{}") @db.JsonB
+  /// Discovery finished but some repos are still waiting to be imported.
+  pending        Boolean   @default(false)
+  /// Fences an expired worker from publishing or clearing a newer worker's sync.
+  lockId         String?   @map("lock_id") @db.Uuid
+  lockedUntil    DateTime? @map("locked_until") @db.Timestamptz(6)
+  lastAttemptAt  DateTime? @map("last_attempt_at") @db.Timestamptz(6)
+  /// Last discovery GitHub answered authoritatively.
+  lastSyncedAt   DateTime? @map("last_synced_at") @db.Timestamptz(6)
+  lastError      String?   @map("last_error") @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user          User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  moduleSources TerraformModuleSource[] @relation("ModuleSourceLibrarySync")
+  modules       TerraformModule[]       @relation("ModuleLibrarySync")
+
+  @@unique([userId, library])
+  @@map("module_library_syncs")
   @@schema("public")
 }
 
@@ -662,10 +805,13 @@ model TerraformModule {
   locals                     Json     @default("[]") @db.JsonB
   isSubmodule                Boolean  @default(false) @map("is_submodule")
   parentModuleId             String?  @map("parent_module_id") @db.Uuid
+  /// Denormalised from the source, like `userId`, so one ownership fragment fits both models.
+  library                    String?  @db.Text
   createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt                  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   source       TerraformModuleSource? @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  librarySync  ModuleLibrarySync?      @relation("ModuleLibrarySync", fields: [userId, library], references: [userId, library], onDelete: Cascade)
   parentModule TerraformModule?       @relation("ModuleHierarchy", fields: [parentModuleId], references: [id], onDelete: SetNull)
   submodules   TerraformModule[]      @relation("ModuleHierarchy")
   resources    ProviderResource[]
@@ -676,6 +822,7 @@ model TerraformModule {
   graphLayouts ModuleGraphLayout[]
 
   @@unique([sourceId, versionTag, terraformRootFolder])
+  @@index([userId, library])
   @@map("terraform_modules")
   @@schema("public")
 }

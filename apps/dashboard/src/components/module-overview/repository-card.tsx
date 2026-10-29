@@ -15,6 +15,7 @@ import { Boxes, ChevronDown, GitBranch, Layers } from "lucide-react";
 import Link from "next/link";
 
 import { ModuleIcon } from "@/components/module-icon";
+import { LibraryBadge } from "./library-badge";
 import type { RepositoryDto } from "./types";
 
 interface RepositoryCardProps {
@@ -79,6 +80,8 @@ export function RepositoryCard({ repository }: RepositoryCardProps) {
             picker is a Button and the rest are Badges; the two components pad
             differently, so left to their defaults the row came out uneven. */}
         <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
+          <LibraryBadge library={repository.library} />
+
           {hasMultipleVersions ? (
             <div className="relative z-10">
               <DropdownMenu>

@@ -6,7 +6,7 @@ import { routeError } from "@/lib/api/route-error";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { parseGraphLayout } from "@/lib/graph-layout";
-import { visibleToUser } from "@/lib/module-library/ownership";
+import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
 /** Shape only; `parseGraphLayout` does the real validation and the node cap. */
 const layoutBody = z.object({ positions: z.unknown() });
@@ -23,8 +23,9 @@ const layoutBody = z.object({ positions: z.unknown() });
  * keep separate rows.
  */
 async function findVisibleModule(userId: string, moduleId: string) {
+  const visibility = await visibleModulesForUser(userId);
   return database.terraformModule.findFirst({
-    where: { id: moduleId, ...visibleToUser(userId) },
+    where: { id: moduleId, ...visibility },
     select: { id: true },
   });
 }

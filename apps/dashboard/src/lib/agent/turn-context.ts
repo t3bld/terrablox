@@ -13,7 +13,11 @@
  */
 
 import type { MCPServerConfig } from "@github/copilot-sdk";
-import type { AgentStep, ProjectGraph } from "@/lib/projects/types";
+import type {
+  AgentStep,
+  AgentTurnTelemetry,
+  ProjectGraph,
+} from "@/lib/projects/types";
 import type { AgentLibraryModule } from "./library-view";
 import type { ReasoningEffortValue } from "./settings-service";
 
@@ -31,6 +35,16 @@ import type { ReasoningEffortValue } from "./settings-service";
 export interface AgentAppRepo {
   fullName: string;
   branch: string;
+  /**
+   * The commit the branch pointed at when the turn started, or null if it could
+   * not be read.
+   *
+   * The reads below use the branch name, so two turns on the same branch can see
+   * different content. Pinning the revision here is what lets a captured read say
+   * which commit it came from — without it a migration's source is "some state of
+   * this branch, at some time", which is not a state anything can be trained on.
+   */
+  sha: string | null;
   /** The provider credential the repository was chosen with. */
   token: string;
 }
@@ -226,6 +240,14 @@ export interface AgentContext {
    * would kill a working turn, so the caller must swallow its own.
    */
   onStep?: (steps: AgentStep[]) => void;
+  /**
+   * Publishes the latest in-memory telemetry snapshot.
+   *
+   * Unlike `onStep`, this is primarily for the route's error path: if the SDK
+   * throws, `runProjectAgent` has no return value, but the system message should
+   * still retain the token usage and tool calls observed before the failure.
+   */
+  onTelemetry?: (telemetry: AgentTurnTelemetry) => void;
 
   /**
    * Fires when the user asked for this turn to stop.
