@@ -11,12 +11,12 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@shikijs/rehype": "1.29.2",
+    "@shikijs/rehype": "4.5.0",
     "@terrablox/catalogue": "workspace:*",
     "@terrablox/graph": "workspace:*",
     "@terrablox/terraform": "workspace:*",
     "@terrablox/ui": "workspace:*",
-    "lucide-react": "^0.562.0",
+    "lucide-react": "^1.61.0",
     "next": "^14.1.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -25,13 +25,13 @@
     "rehype-stringify": "10.0.1",
     "remark-gfm": "4.0.1",
     "remark-parse": "11.0.0",
-    "remark-rehype": "11.1.1",
+    "remark-rehype": "11.1.2",
     "unified": "11.0.5"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.11",
     "@terrablox/tsconfig": "workspace:*",
-    "@types/node": "^20.10.5",
+    "@types/node": "^26.6.5",
     "@types/react": "^18.2.45",
     "@types/react-dom": "^18.2.18",
     "autoprefixer": "^10.4.16",
