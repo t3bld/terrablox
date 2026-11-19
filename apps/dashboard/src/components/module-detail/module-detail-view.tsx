@@ -516,7 +516,12 @@ export function ModuleDetailView({
             ) : null}
 
             {tab === "costs" ? (
-              <CostsTab resources={mod.resources ?? []} variables={variables} />
+              <CostsTab
+                moduleId={mod.id}
+                moduleSourceUrl={mod.source?.url ?? mod.url}
+                resources={mod.resources ?? []}
+                variables={variables}
+              />
             ) : null}
           </div>
         </main>

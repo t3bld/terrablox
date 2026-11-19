@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { canonicalRepoUrl } from "@/lib/module-library/import-from-git";
-import { libraryOf } from "@/lib/module-library/libraries";
+import { moduleLibraryLabels } from "@/lib/module-library/libraries";
+import { libraryOf } from "@/lib/module-library/library-definition";
 import { isManaged } from "@/lib/module-library/ownership";
 import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
@@ -69,7 +70,8 @@ export async function GET(req: Request) {
     sources.find((s) => s.userId === userId && s.library === null) ??
     sources[0];
   const isBuiltin = preferred ? isManaged(preferred) : false;
-  const library = preferred ? libraryOf(preferred) : null;
+  const libraryLabels = await moduleLibraryLabels();
+  const library = preferred ? libraryOf(preferred, libraryLabels) : null;
 
   // Only count root module versions; submodules are imported as a consequence of the version.
   const roots = await database.terraformModule.findMany({

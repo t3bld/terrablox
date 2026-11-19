@@ -27,7 +27,7 @@
  */
 
 import { prisma } from "@/lib/database";
-import { TERRABLOX_LIBRARY_ID } from "@/lib/module-library/libraries";
+import { TERRABLOX_LIBRARY_ID } from "@/lib/module-library/library-definition";
 import { BUILTIN_USER_ID } from "@/lib/module-library/ownership";
 
 /**

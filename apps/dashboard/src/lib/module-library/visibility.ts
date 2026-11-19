@@ -9,6 +9,6 @@ import { visibleToUser } from "@/lib/module-library/ownership";
  * per-user arm joins the module to its sync row and requires a complete successful
  * import, so partial, pending, unavailable, and failed libraries cannot match.
  */
-export function visibleModulesForUser(userId: string) {
+export async function visibleModulesForUser(userId: string) {
   return visibleToUser(userId);
 }

@@ -171,10 +171,16 @@ const nextConfig = {
     // sign-in, which reads as "authentication failed" when nothing about auth is
     // wrong. Keeping it external means its `__dirname` is real and the engine sitting
     // next to it is found.
+    //
+    // `pdf-parse` and the `pdfjs-dist` it wraps ship as ESM that webpack cannot
+    // re-wrap: bundled, the module throws "Object.defineProperty called on
+    // non-object" on load, which takes every route importing the document
+    // extractor down with it (chat, documents, agent runs). Node loads it fine.
     serverComponentsExternalPackages: [
       "@cdktf/hcl2json",
       "@github/copilot-sdk",
       "@prisma/client",
+      "pdf-parse",
     ],
   },
 };

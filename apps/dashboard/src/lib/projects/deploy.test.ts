@@ -1,3 +1,4 @@
+import { formatHcl } from "@terrablox/terraform/hcl-format";
 import { describe, expect, it } from "vitest";
 import { parse, type Scalar } from "yaml";
 
@@ -129,11 +130,24 @@ describe("renderBootstrapTemplate", () => {
       );
     });
 
-    it("admits the environment, so an approval gate keeps working", () => {
+    it("admits every environment, so an approval gate keeps working", () => {
       // A job with `environment:` gets a different subject entirely; without this,
       // turning approvals on would break every apply.
       expect(conditions.StringLike[`${GITHUB_OIDC_PROVIDER}:sub`]).toContain(
-        "repo:t3bld/terrablox-mhp-infrastructure:environment:production",
+        "repo:t3bld/terrablox-mhp-infrastructure:environment:*",
+      );
+    });
+
+    it("admits GitHub's immutable-id subjects as well", () => {
+      // With immutable subjects on, GitHub sends
+      // `repo:owner@<id>/name@<id>:…`, which the classic spelling never matches.
+      const subs: string[] =
+        conditions.StringLike[`${GITHUB_OIDC_PROVIDER}:sub`];
+      expect(subs).toContain(
+        "repo:t3bld@*/terrablox-mhp-infrastructure@*:ref:refs/heads/main",
+      );
+      expect(subs).toContain(
+        "repo:t3bld@*/terrablox-mhp-infrastructure@*:environment:*",
       );
     });
 
@@ -141,12 +155,13 @@ describe("renderBootstrapTemplate", () => {
       // A fork's pull request must never reach a role with these permissions.
       const subs: string[] =
         conditions.StringLike[`${GITHUB_OIDC_PROVIDER}:sub`];
-      expect(subs).toHaveLength(2);
+      expect(subs).toHaveLength(4);
       for (const sub of subs) {
-        expect(sub.startsWith("repo:t3bld/terrablox-mhp-infrastructure:")).toBe(
-          true,
-        );
-        expect(sub).not.toContain("*");
+        expect(
+          sub.startsWith("repo:t3bld/terrablox-mhp-infrastructure:") ||
+            sub.startsWith("repo:t3bld@*/terrablox-mhp-infrastructure@*:"),
+        ).toBe(true);
+        expect(sub).not.toMatch(/:ref:.*\*/);
         expect(sub).not.toContain("pull_request");
       }
     });
@@ -276,7 +291,7 @@ describe("renderBackendFile", () => {
   it("locks, so two applies cannot write the state at once", () => {
     // The one line whose absence is invisible until two runs overlap and the loser's
     // resources become invisible to Terraform.
-    expect(renderBackendFile(CONTEXT)).toContain("use_lockfile   = true");
+    expect(renderBackendFile(CONTEXT)).toMatch(/use_lockfile\s+= true/);
   });
 
   it("encrypts through the project's own key once there is one", () => {
@@ -284,19 +299,28 @@ describe("renderBackendFile", () => {
       ...CONTEXT,
       stateKmsKeyArn: "arn:aws:kms:eu-central-1:545283928770:key/abc",
     });
-    expect(withKey).toContain("encrypt        = true");
+    expect(withKey).toMatch(/encrypt\s+= true/);
     expect(withKey).toContain("kms_key_id");
   });
 
   it("names the key explicitly rather than relying on the bucket default", () => {
     // The bucket default only applies to objects S3 encrypts itself, so a backend
     // falling back to SSE-S3 would look identical here and be a different guarantee.
-    expect(renderBackendFile(CONTEXT)).toContain(
-      `bucket         = "${CONTEXT.stateBucket}"`,
+    expect(renderBackendFile(CONTEXT)).toMatch(
+      new RegExp(`bucket\\s+= "${CONTEXT.stateBucket}"`),
     );
-    expect(renderBackendFile(CONTEXT)).toContain("key            =");
+    expect(renderBackendFile(CONTEXT)).toMatch(/key\s+=/);
   });
 
+  it("is already formatted, so `terraform fmt -check` passes", () => {
+    for (const context of [
+      CONTEXT,
+      { ...CONTEXT, stateKmsKeyArn: "arn:aws:kms:eu-central-1:1:key/abc" },
+    ]) {
+      const file = renderBackendFile(context);
+      expect(formatHcl(file)).toBe(file);
+    }
+  });
   it("renders nothing without a bucket, rather than a backend pointing nowhere", () => {
     expect(renderBackendFile({ ...CONTEXT, stateBucket: null })).toBe("");
   });

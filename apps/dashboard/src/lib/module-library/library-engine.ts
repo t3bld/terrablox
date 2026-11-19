@@ -23,7 +23,7 @@ import {
   type ModuleLibraryDefinition,
   matchesLibrary,
   TERRABLOX_LIBRARY_ID,
-} from "@/lib/module-library/libraries";
+} from "@/lib/module-library/library-definition";
 import { terrabloxDisplayName } from "@/lib/module-library/terrablox-catalogue";
 
 /**

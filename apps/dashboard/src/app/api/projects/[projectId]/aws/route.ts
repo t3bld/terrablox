@@ -8,6 +8,8 @@ import {
 import { RATE_LIMITS } from "@/lib/api/rate-limit";
 import { badRequest, notFound, routeError } from "@/lib/api/route-error";
 import * as schema from "@/lib/api/schemas";
+import { audit } from "@/lib/audit/log";
+import { removeSetupRoles } from "@/lib/aws/credentials";
 import { readProjectAwsState } from "@/lib/aws/project-connection";
 import { database } from "@/lib/database";
 import { findOwnedProject } from "@/lib/projects/service";
@@ -75,7 +77,19 @@ export async function PUT(
     // it, which a lookup by `accountId` alone would allow.
     const connection = await database.awsConnection.findFirst({
       where: { userId, accountId: body.accountId },
-      select: { id: true, region: true },
+      orderBy: [
+        { verifiedAt: { sort: "desc", nulls: "last" } },
+        { createdAt: "desc" },
+      ],
+      select: {
+        id: true,
+        region: true,
+        label: true,
+        credentialMode: true,
+        ssoStartUrl: true,
+        ssoRegion: true,
+        ssoRoleName: true,
+      },
     });
 
     if (!connection) {
@@ -87,6 +101,19 @@ export async function PUT(
       data: {
         awsAccountId: body.accountId,
         ...(region ? { awsRegion: region } : {}),
+        // Remembered on the project, so the next sign-in to this account is one
+        // click: the portal, the permission set and the account's name stay
+        // known after the sign-in itself expired or was disconnected.
+        ...(connection.credentialMode === "sso" &&
+        connection.ssoStartUrl &&
+        connection.ssoRoleName
+          ? {
+              awsSsoStartUrl: connection.ssoStartUrl,
+              awsSsoRegion: connection.ssoRegion,
+              awsSsoRoleName: connection.ssoRoleName,
+              awsAccountLabel: connection.label || null,
+            }
+          : {}),
       },
     });
 
@@ -98,7 +125,20 @@ export async function PUT(
   }
 }
 
-/** Unlinks the account, leaving the sign-in itself alone. */
+/**
+ * Disconnects the account: unlinks the project and removes the stored sign-in.
+ *
+ * It used to unlink only, leaving the SSO session in the database. Signing in
+ * again with another permission set then added a second row beside the first,
+ * and whichever row a lookup happened to pick decided which permissions a stack
+ * was created with. Disconnect has to mean the old session can no longer be used.
+ *
+ * Only SSO sign-ins are removed. An `assume-role` connection is a role in the
+ * customer's account with an external id in its trust policy, and deleting the
+ * row would orphan that setup; it stays manageable from the connections list.
+ * Sign-ins are per account, not per project, so the user's other projects in
+ * this account have to sign in again as well.
+ */
 export async function DELETE(
   _request: Request,
   { params }: { params: { projectId: string } },
@@ -112,9 +152,37 @@ export async function DELETE(
     const project = await findOwnedProject(userId, params.projectId);
     if (!project) return notFound("Project not found");
 
-    const updated = await database.project.update({
-      where: { id: project.id },
-      data: { awsAccountId: null },
+    const accountId = project.awsAccountId;
+
+    // Before the rows go: deleting the setup role needs the sign-in they hold.
+    if (accountId) {
+      await removeSetupRoles(
+        await database.awsConnection.findMany({
+          where: { userId, accountId, credentialMode: "sso" },
+        }),
+      );
+    }
+
+    const updated = await database.$transaction(async (tx) => {
+      const unlinked = await tx.project.update({
+        where: { id: project.id },
+        data: { awsAccountId: null },
+      });
+      // Guarded: without an account, a filter on `userId` alone would remove
+      // every sign-in this user has.
+      if (accountId) {
+        await tx.awsConnection.deleteMany({
+          where: { userId, accountId, credentialMode: "sso" },
+        });
+      }
+      return unlinked;
+    });
+
+    await audit({
+      action: "aws.connection.deleted",
+      userId,
+      subject: project.id,
+      detail: { accountId, via: "project.disconnect" },
     });
 
     return NextResponse.json({

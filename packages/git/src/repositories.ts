@@ -12,7 +12,7 @@
  * this package asks GitHub to create, delete or reconfigure a repository any more.
  */
 
-import { githubRequest } from "./client";
+import { GithubRequestError, githubRequest } from "./client";
 
 export interface RepoSummary {
   fullName: string;
@@ -46,4 +46,35 @@ export async function getRepository(
 ): Promise<RepoSummary> {
   const res = await githubRequest(token, `/repos/${repoFullName}`);
   return toSummary((await res.json()) as RepoResponse);
+}
+
+/**
+ * Whether GitHub explicitly reports that this repository has no commits.
+ *
+ * Only the documented 409 body counts. A missing ref, narrowed installation
+ * grant or unrelated conflict must not be turned into permission to write the
+ * first commit.
+ */
+export async function repositoryIsEmpty(
+  token: string,
+  repoFullName: string,
+): Promise<boolean> {
+  try {
+    await githubRequest(token, `/repos/${repoFullName}/commits?per_page=1`);
+    return false;
+  } catch (error) {
+    if (!(error instanceof GithubRequestError) || error.status !== 409) {
+      throw error;
+    }
+
+    try {
+      const body = JSON.parse(error.responseBody ?? "") as {
+        message?: unknown;
+      };
+      if (body.message === "Git Repository is empty.") return true;
+    } catch {
+      // The status alone is not proof of an empty repository.
+    }
+    throw error;
+  }
 }

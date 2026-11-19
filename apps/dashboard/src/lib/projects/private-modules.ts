@@ -11,7 +11,7 @@
  * Pure: no `server-only`, no I/O.
  */
 
-import type { ModuleLibraryDefinition } from "@/lib/module-library/libraries";
+import type { ModuleLibraryDefinition } from "@/lib/module-library/library-definition";
 
 /** What the pipeline and the checklist need to know about one library. */
 export interface PrivateModuleAccess {

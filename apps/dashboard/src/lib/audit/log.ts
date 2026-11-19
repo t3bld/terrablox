@@ -45,9 +45,17 @@ export type AuditAction =
   | "github.installation.returned"
   // Infrastructure actions with real-world effect
   | "deploy.bootstrap.submitted"
+  | "deploy.teardown.stacks-deleted"
+  | "deploy.teardown.state-deleted"
+  | "deploy.teardown.completed"
   | "deploy.run.started"
   | "deploy.pipeline.written"
   | "project.deleted"
+  // Module-library administration
+  | "module-library.created"
+  | "module-library.updated"
+  | "module-library.archived"
+  | "module-library.restored"
   // Configuration
   | "harness.updated"
   | "agent.settings.updated";

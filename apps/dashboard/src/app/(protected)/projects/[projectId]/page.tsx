@@ -7,7 +7,6 @@ import {
   type ProjectCanvasNode,
   toCanvasModel,
 } from "@terrablox/graph";
-import { ComingLater } from "@terrablox/ui/coming-later";
 import { Dialog, DialogContent, DialogTitle } from "@terrablox/ui/dialog";
 import { SidebarInset, SidebarProvider } from "@terrablox/ui/sidebar";
 import { Skeleton } from "@terrablox/ui/skeleton";
@@ -24,7 +23,6 @@ import {
   Layers,
   Network,
   PanelLeftOpen,
-  PanelRightOpen,
   Rocket,
   ScrollText,
   Wallet,
@@ -36,7 +34,6 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
 import { ProjectActionsMenu } from "@/components/project-actions/project-actions-menu";
 import { AwsProjectStrip } from "@/components/project-detail/aws-project-strip";
-import { ChatPanel } from "@/components/project-detail/chat-panel";
 import { DeployPanel } from "@/components/project-detail/deploy-panel";
 import { DeploySetupWizard } from "@/components/project-detail/deploy-setup-wizard";
 import { LocalInspector } from "@/components/project-detail/local-inspector";
@@ -44,6 +41,8 @@ import { LogPanel } from "@/components/project-detail/log-panel";
 import { ModuleInspector } from "@/components/project-detail/module-inspector";
 import { ModuleLibrary } from "@/components/project-detail/module-library";
 import { ProjectArchitectureView } from "@/components/project-detail/project-architecture-view";
+import { ProjectAssistant } from "@/components/project-detail/project-assistant";
+import { ProjectCostsPanel } from "@/components/project-detail/project-costs-panel";
 import { StatePanel } from "@/components/project-detail/state-panel";
 import { useProjectAws } from "@/lib/aws/use-project-aws";
 import { canvasNodeId } from "@/lib/projects/locals";
@@ -81,35 +80,32 @@ function tabFromHash(hash: string): ProjectTab {
  */
 type GraphLevel = "detail" | "architecture";
 
-const GRAPH_LEVELS: {
+const GRAPH_LEVELS: Array<{
   value: GraphLevel;
   label: string;
   icon: typeof Workflow;
   hint: string;
-}[] = [
+  enabled: boolean;
+}> = [
   {
     value: "architecture",
     label: "Architecture",
     icon: Network,
     hint: "The AWS services these modules deploy, and how they connect",
+    enabled: true,
   },
   {
     value: "detail",
     label: "Details",
     icon: Workflow,
     hint: "Module blocks, their inputs and the wires between them",
+    // Kept behind one switch rather than deleted: the implementation remains
+    // available if the module-level editor is needed again.
+    enabled: false,
   },
 ];
 
-/**
- * The tab stays, the feature does not exist yet.
- *
- * Costs used to be priced through Infracost with each user's own key. That
- * integration is gone for now, and the tab is kept locked rather than removed so
- * the gap is visible: a tab that disappears reads as a feature that was never
- * there, which is the one thing that is not true here.
- */
-const COSTS_REASON = "Cost estimates are not available yet";
+const AVAILABLE_GRAPH_LEVELS = GRAPH_LEVELS.filter((level) => level.enabled);
 
 export default function ProjectDetailPage({
   params,
@@ -200,7 +196,6 @@ export default function ProjectDetailPage({
       position: { x: number; y: number } | null;
     }>
   >([]);
-  const [panelOpen, setPanelOpen] = useState(true);
   /** The module library, collapsed the same way the agent panel is. */
   const [libraryOpen, setLibraryOpen] = useState(true);
   const [graphLevel, setGraphLevel] = useState<GraphLevel>("architecture");
@@ -222,22 +217,18 @@ export default function ProjectDetailPage({
    */
   const awsAccountId = aws?.connected ? aws.accountId : null;
 
-  // Deploy and State are never locked: connecting AWS now happens inside them,
-  // so a lock would hide the only place the connection can be made. Costs is
-  // locked unconditionally — there is nothing to connect, the feature is simply
-  // not built yet.
+  /** How this project signed in last, so signing in again is one click. */
+  const awsSignIn = aws?.signIn ?? null;
+
+  // Deploy, State and Costs are never locked. Each panel owns its prerequisite
+  // state and is the place that explains how to satisfy it; locking a tab would
+  // hide the only useful explanation.
   const tabs = useMemo<TabDefinition<ProjectTab>[]>(
     () => [
       { value: "code", label: "Architecture", icon: Workflow },
       { value: "deploy", label: "Deploy", icon: Rocket },
       { value: "state", label: "State", icon: Layers },
-      {
-        value: "costs",
-        label: "Costs",
-        icon: Wallet,
-        locked: true,
-        lockedReason: COSTS_REASON,
-      },
+      { value: "costs", label: "Costs", icon: Wallet },
       // Last, because it is read after the fact. It replaces the History tab
       // that was hidden here: the same operations, under the decision that
       // produced them and the reason it was made.
@@ -581,6 +572,7 @@ export default function ProjectDetailPage({
             <DeployPanel
               awsAccountId={awsAccountId}
               onAttachAws={attachAws}
+              awsSignIn={awsSignIn}
               project={project}
               projectId={projectId}
             />
@@ -606,6 +598,7 @@ export default function ProjectDetailPage({
             ) : (
               <DeploySetupWizard
                 onAttachAws={attachAws}
+                awsSignIn={awsSignIn}
                 projectId={projectId}
               />
             )}
@@ -615,15 +608,7 @@ export default function ProjectDetailPage({
             {...tabPanelProps("project", "costs")}
             className="min-h-0 flex-1 overflow-y-auto"
           >
-            <ComingLater
-              explanation="Pricing a project needs a real plan to price, and the estimator that produced one has been taken out again. Until it is back, the module library is where cost drivers are visible."
-              feature="Cost estimates"
-              planned={[
-                "The monthly estimate for what this project would run",
-                "Per-module and per-resource pricing",
-                "Re-pricing after a change, so the effect of an edit is visible before it ships",
-              ]}
-            />
+            <ProjectCostsPanel projectId={projectId} />
           </div>
         ) : tab === "log" ? (
           // No scroll here: the panel splits into a list and a detail column that
@@ -681,26 +666,29 @@ export default function ProjectDetailPage({
 
             <main className="relative min-w-0 flex-1 p-3">
               {/* Sits on the canvas rather than above it: the level belongs to
-                  the drawing, and the drawing already owns the whole area. */}
-              <div className="absolute top-5 left-5 z-10 flex items-center rounded-lg border bg-background/95 p-0.5 shadow-sm backdrop-blur">
-                {GRAPH_LEVELS.map((level) => (
-                  <button
-                    key={level.value}
-                    type="button"
-                    aria-pressed={graphLevel === level.value}
-                    onClick={() => setGraphLevel(level.value)}
-                    title={level.hint}
-                    className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-xs transition-colors ${
-                      graphLevel === level.value
-                        ? "bg-secondary text-foreground"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    <level.icon className="h-3.5 w-3.5 shrink-0" />
-                    {level.label}
-                  </button>
-                ))}
-              </div>
+                  the drawing, and the drawing already owns the whole area. With
+                  only one enabled level there is no choice to show. */}
+              {AVAILABLE_GRAPH_LEVELS.length > 1 ? (
+                <div className="absolute top-5 left-5 z-10 flex items-center rounded-lg border bg-background/95 p-0.5 shadow-sm backdrop-blur">
+                  {AVAILABLE_GRAPH_LEVELS.map((level) => (
+                    <button
+                      key={level.value}
+                      type="button"
+                      aria-pressed={graphLevel === level.value}
+                      onClick={() => setGraphLevel(level.value)}
+                      title={level.hint}
+                      className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 font-medium text-xs transition-colors ${
+                        graphLevel === level.value
+                          ? "bg-secondary text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <level.icon className="h-3.5 w-3.5 shrink-0" />
+                      {level.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
 
               {loading ? (
                 <Skeleton className="h-full w-full" />
@@ -734,40 +722,6 @@ export default function ProjectDetailPage({
                 />
               )}
             </main>
-
-            {/* The agent keeps the whole column. A module used to take the top
-                half of it, which left both cramped: the conversation lost half
-                its height exactly when a module was open to ask about, and the
-                module got a 384px column to lay out a dozen inputs in. */}
-            <aside
-              className={`hidden shrink-0 border-l lg:block ${
-                panelOpen ? "w-96" : "w-10"
-              }`}
-            >
-              {/* Stays mounted while collapsed: a half-written message to the
-                  agent must survive a detour to a module. */}
-              <div className={panelOpen ? "h-full" : "hidden"}>
-                <ChatPanel
-                  projectId={projectId}
-                  onGraphChanged={setGraph}
-                  onCollapse={() => setPanelOpen(false)}
-                />
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setPanelOpen(true)}
-                className={`h-full w-full flex-col items-center gap-2 py-3 text-muted-foreground hover:bg-muted hover:text-foreground ${
-                  panelOpen ? "hidden" : "flex"
-                }`}
-                aria-label="Expand agent panel"
-              >
-                <PanelRightOpen className="h-4 w-4 shrink-0" />
-                <span className="truncate text-xs [writing-mode:vertical-rl]">
-                  Agent
-                </span>
-              </button>
-            </aside>
           </div>
         )}
 
@@ -835,6 +789,15 @@ export default function ProjectDetailPage({
             ) : null}
           </DialogContent>
         </Dialog>
+
+        {/* Outside the tab panels so it stays mounted: switching tabs must not
+            cost a half-written message or the mission being watched. Shown only
+            next to the architecture it works on. */}
+        <ProjectAssistant
+          projectId={projectId}
+          onGraphChanged={setGraph}
+          visible={tab === "code"}
+        />
       </SidebarInset>
     </SidebarProvider>
   );

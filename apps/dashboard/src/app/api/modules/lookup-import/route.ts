@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
 import { canonicalRepoUrl } from "@/lib/module-library/import-from-git";
-import { libraryOf } from "@/lib/module-library/libraries";
+import { moduleLibraryLabels } from "@/lib/module-library/libraries";
+import { libraryOf } from "@/lib/module-library/library-definition";
 import { isManaged } from "@/lib/module-library/ownership";
 import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
@@ -107,10 +108,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ exists: false, source });
   }
 
+  const libraryLabels = await moduleLibraryLabels();
   return NextResponse.json({
     exists: true,
     isBuiltin: isManaged(module),
-    library: libraryOf(module),
+    library: libraryOf(module, libraryLabels),
     source,
     module,
   });

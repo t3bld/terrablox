@@ -783,5 +783,93 @@ export function coerceHclValue(input: string): string {
 
   if (isExpression) return value;
 
-  return JSON.stringify(value);
+  // Already a heredoc: an expression in its own right. Quoting it used to turn a
+  // whole script into one string literal with every newline escaped.
+  if (HEREDOC_HEADER.test(value)) return value;
+
+  // Text over several lines reads better, and stays valid, as a heredoc.
+  if (/\r?\n/.test(value)) return renderHeredoc(value);
+
+  return quoteHclString(value);
+}
+
+const HEREDOC_HEADER = /^<<-?[A-Za-z_][A-Za-z0-9_]*[ \t]*\r?\n/;
+
+/**
+ * A heredoc holding `text` verbatim, under a marker that does not occur in it.
+ *
+ * Interpolations stay live, the same as in a quoted string.
+ */
+function renderHeredoc(text: string): string {
+  const lines = text.split(/\r?\n/);
+  let marker = "EOT";
+  for (let n = 1; lines.some((line) => line.trim() === marker); n++) {
+    marker = `EOT_${n}`;
+  }
+  return `<<${marker}\n${text}\n${marker}`;
+}
+
+/**
+ * `text` as a quoted HCL string.
+ *
+ * Not `JSON.stringify`, which escapes every `"` including those inside `${…}`.
+ * HCL reads an interpolation as an expression, where `\"` is not a character the
+ * language has, so `"${split(\"/\", x)}"` fails to parse. Template sequences are
+ * copied as written; only the literal text around them is escaped. An unclosed
+ * `${` is escaped to `$${`, which HCL reads as the two characters themselves.
+ */
+function quoteHclString(text: string): string {
+  let out = '"';
+  let i = 0;
+
+  while (i < text.length) {
+    const ch = text[i] as string;
+
+    if ((ch === "$" || ch === "%") && text[i + 1] === "{") {
+      const end = templateSequenceEnd(text, i + 2);
+      if (end === -1) {
+        out += `${ch}${ch}{`;
+        i += 2;
+        continue;
+      }
+      out += text.slice(i, end + 1);
+      i = end + 1;
+      continue;
+    }
+
+    if (ch === "\\") out += "\\\\";
+    else if (ch === '"') out += '\\"';
+    else if (ch === "\n") out += "\\n";
+    else if (ch === "\r") out += "\\r";
+    else if (ch === "\t") out += "\\t";
+    else out += ch;
+    i++;
+  }
+
+  return `${out}"`;
+}
+
+/** Index of the `}` closing a template sequence opened before `start`, or -1. */
+function templateSequenceEnd(text: string, start: number): number {
+  let depth = 1;
+  let i = start;
+
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      // A string inside the expression, which may hold braces of its own.
+      i++;
+      while (i < text.length && text[i] !== '"') {
+        i += text[i] === "\\" ? 2 : 1;
+      }
+    } else if (ch === "{") {
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0) return i;
+    }
+    i++;
+  }
+
+  return -1;
 }

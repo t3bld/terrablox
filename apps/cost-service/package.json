@@ -1,0 +1,12 @@
+{
+  "name": "@terrablox/cost-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs Infracost scans for the Terrablox dashboard.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

@@ -22,6 +22,8 @@ const MAX_BODY = 300;
 
 export class GithubRequestError extends Error {
   readonly status: number;
+  /** Raw response body, retained for callers that must classify one exact API state. */
+  readonly responseBody: string | null;
 
   /**
    * What the token may do, and what the endpoint wanted, when GitHub said.
@@ -54,10 +56,12 @@ export class GithubRequestError extends Error {
       granted: null,
       required: null,
     },
+    responseBody: string | null = null,
   ) {
     super(message);
     this.status = status;
     this.scopes = scopes;
+    this.responseBody = responseBody;
     this.name = "GithubRequestError";
   }
 }
@@ -137,6 +141,7 @@ export async function githubRequest(
       describeFailure(res.status, res.statusText, body, granted, required),
       res.status,
       { granted, required },
+      body,
     );
   }
 

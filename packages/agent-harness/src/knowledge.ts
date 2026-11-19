@@ -30,6 +30,9 @@ export const KNOWLEDGE_PROJECT_REPO = "project-repo";
  */
 export const KNOWLEDGE_APP_REPO = "app-repo";
 
+/** Requirements and migration documents uploaded to a project. */
+export const KNOWLEDGE_PROJECT_DOCUMENTS = "project-documents";
+
 export interface KnowledgeSource {
   /** Stable identifier, stored per user. Renaming one silently re-enables it. */
   id: string;
@@ -56,6 +59,12 @@ export const AGENT_KNOWLEDGE: KnowledgeSource[] = [
     name: "Application repository",
     description:
       "The linked application's own repository, which the agent may read to see how the application is built. Read-only, and only when a project has one linked.",
+  },
+  {
+    id: KNOWLEDGE_PROJECT_DOCUMENTS,
+    name: "Project documents",
+    description:
+      "Uploaded requirements, assessments and application documentation. The agent may read their extracted text; originals remain available to download.",
   },
 ];
 

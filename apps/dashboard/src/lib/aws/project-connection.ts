@@ -17,8 +17,23 @@ import { database } from "@/lib/database";
  * projects deploying into two accounts must not be able to borrow each other's
  * sign-in.
  */
+/**
+ * The Identity Center sign-in a project was set up with.
+ *
+ * Everything but the device confirmation: the portal, the account and the
+ * permission set. A finished setup keeps using exactly these, so asking for them
+ * again on every expired session would only offer chances to pick wrong.
+ */
+export interface PreviousSignIn {
+  startUrl: string;
+  ssoRegion: string | null;
+  accountId: string;
+  accountName: string;
+  roleName: string;
+}
+
 export type ProjectAwsState =
-  | { connected: false; reason: "none" }
+  | { connected: false; reason: "none"; signIn: PreviousSignIn | null }
   | {
       connected: false;
       reason: "unverified" | "expired";
@@ -27,6 +42,8 @@ export type ProjectAwsState =
       label: string;
       credentialMode: string;
       expiresAt: string | null;
+      /** How this project last signed in, so signing in again is one click. */
+      signIn: PreviousSignIn | null;
     }
   | {
       connected: true;
@@ -40,20 +57,29 @@ export type ProjectAwsState =
        * is no session to keep alive — Terrablox assumes the role per request.
        */
       expiresAt: string | null;
+      signIn: PreviousSignIn | null;
     };
 
 export async function readProjectAwsState(
   userId: string,
   project: Project,
 ): Promise<ProjectAwsState> {
-  if (!project.awsAccountId) return { connected: false, reason: "none" };
+  const signIn = previousSignIn(project);
+  if (!project.awsAccountId)
+    return { connected: false, reason: "none", signIn };
 
   const connection = await database.awsConnection.findFirst({
     where: { userId, accountId: project.awsAccountId },
-    orderBy: { createdAt: "desc" },
+    // The same choice `resolveProjectAwsSession` makes: the most recent sign-in.
+    // `verifiedAt` rather than `createdAt`, because signing in again with the same
+    // permission set refreshes the existing row instead of creating a new one.
+    orderBy: [
+      { verifiedAt: { sort: "desc", nulls: "last" } },
+      { createdAt: "desc" },
+    ],
   });
 
-  if (!connection) return { connected: false, reason: "none" };
+  if (!connection) return { connected: false, reason: "none", signIn };
 
   const shared = {
     accountId: connection.accountId ?? project.awsAccountId,
@@ -61,6 +87,17 @@ export async function readProjectAwsState(
     label: connection.label || connection.roleArn,
     credentialMode: connection.credentialMode,
     expiresAt: connection.ssoExpiresAt?.toISOString() ?? null,
+    // The project's own record first; the sign-in fills in what an older
+    // project did not record yet.
+    signIn:
+      signIn ??
+      previousSignIn({
+        ...project,
+        awsSsoStartUrl: connection.ssoStartUrl,
+        awsSsoRegion: connection.ssoRegion,
+        awsSsoRoleName: connection.ssoRoleName,
+        awsAccountLabel: connection.label || null,
+      }),
   };
 
   if (!connection.verifiedAt) {
@@ -89,4 +126,28 @@ export async function readProjectAwsState(
   }
 
   return { connected: true, reason: "ok", ...shared };
+}
+
+/**
+ * How the project signed in last, from what it recorded.
+ *
+ * The account comes from the project, or from its deployment role when it was
+ * disconnected since: the role lives in that account, and a finished setup
+ * keeps it.
+ */
+function previousSignIn(project: Project): PreviousSignIn | null {
+  const accountId =
+    project.awsAccountId ??
+    project.awsRoleArn?.match(/^arn:aws[\w-]*:iam::(\d{12}):/)?.[1] ??
+    null;
+  if (!project.awsSsoStartUrl || !project.awsSsoRoleName || !accountId) {
+    return null;
+  }
+  return {
+    startUrl: project.awsSsoStartUrl,
+    ssoRegion: project.awsSsoRegion,
+    accountId,
+    accountName: project.awsAccountLabel || accountId,
+    roleName: project.awsSsoRoleName,
+  };
 }

@@ -203,7 +203,7 @@ export function deployStepsView(input: DeployStepsInput): DeployStepsView {
   const done: Record<StepId, boolean> = {
     account: connection?.connected ?? false,
     // Both halves of the step: the role exists, and the pipeline can find it.
-    role: setup.roleReady && setup.variablesReady,
+    role: setup.roleReady && setup.roleVariablesReady,
     state: setup.stateReady,
     pipeline: setup.pipelineReady,
   };

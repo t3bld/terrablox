@@ -53,6 +53,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GraphDetailPanel } from "@/components/module-detail/graph-detail-panel";
 import { AppRepoPicker } from "@/components/projects/app-repo-picker";
+import { ContextDocumentManager } from "@/components/projects/context-document-manager";
 
 import {
   type AgentContextView,
@@ -1388,6 +1389,43 @@ export function AgentHarness({
               <p className="text-muted-foreground text-xs">
                 A repository is linked per project, on that project's own
                 harness.
+              </p>
+            )}
+          </div>
+        );
+      }
+
+      case "project-documents": {
+        const source = knowledgeFor(element);
+        const documents = view.contextDocuments ?? [];
+
+        return (
+          <div className="space-y-3">
+            {source ? (
+              <ToggleRow
+                description={source.description}
+                disabled={busy === source.id}
+                label={source.enabled ? "Readable" : "Withheld"}
+                on={source.enabled}
+                onToggle={() => void toggleKnowledge(source.id, source.enabled)}
+              />
+            ) : null}
+
+            {isProject ? (
+              <ContextDocumentManager
+                documents={documents}
+                onChange={(next) => {
+                  setContext((current) =>
+                    current ? { ...current, contextDocuments: next } : current,
+                  );
+                  onChanged?.();
+                }}
+                projectId={projectId}
+              />
+            ) : (
+              <p className="text-muted-foreground text-xs">
+                Documents belong to a project and are uploaded on that project's
+                own harness.
               </p>
             )}
           </div>

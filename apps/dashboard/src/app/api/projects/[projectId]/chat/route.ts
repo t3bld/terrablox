@@ -9,6 +9,7 @@ export const maxDuration = 300; // seconds — matches SEND_AND_WAIT_TIMEOUT_MS
 
 import {
   KNOWLEDGE_MODULE_LIBRARY,
+  KNOWLEDGE_PROJECT_DOCUMENTS,
   KNOWLEDGE_PROJECT_REPO,
   knowledgeEnabled,
 } from "@terrablox/agent-harness/knowledge";
@@ -50,6 +51,7 @@ import {
   getUserGithubToken,
 } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
+import { readContextDocumentSlice } from "@/lib/projects/context-documents";
 import { activeDecisions, recordDecision } from "@/lib/projects/decisions";
 import { toChatMessageDto } from "@/lib/projects/serialize";
 import {
@@ -430,6 +432,7 @@ export async function POST(
       lastCheck,
       application,
       decisions,
+      contextDocuments,
     ] = await Promise.all([
       loadProjectGraph(token, project),
       readModuleLibrary(userId),
@@ -442,6 +445,16 @@ export async function POST(
       readLastCheck(token, project.repoFullName, project.repoBranch),
       resolveAppRepo(token, project),
       activeDecisions(project.id),
+      database.projectContextDocument.findMany({
+        where: { projectId: project.id, userId },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          originalName: true,
+          mediaType: true,
+          characterCount: true,
+        },
+      }),
     ]);
 
     // The pipeline's verdict on the previous turn is now a fact — `readLastCheck`
@@ -462,6 +475,10 @@ export async function POST(
     const seesLibrary = knowledgeEnabled(
       settings.disabledKnowledge,
       KNOWLEDGE_MODULE_LIBRARY,
+    );
+    const seesDocuments = knowledgeEnabled(
+      settings.disabledKnowledge,
+      KNOWLEDGE_PROJECT_DOCUMENTS,
     );
 
     // The composer's pick, else the project's stored one, checked against the
@@ -487,6 +504,18 @@ export async function POST(
         ? { fullName: project.appRepoFullName }
         : null,
       appRepoProblem: application.problem,
+      contextDocuments: seesDocuments
+        ? contextDocuments.map((document) => ({
+            id: document.id,
+            name: document.originalName,
+            mediaType: document.mediaType,
+            characterCount: document.characterCount,
+          }))
+        : [],
+      readContextDocument: seesDocuments
+        ? (documentId, offset) =>
+            readContextDocumentSlice(project.id, documentId, offset)
+        : undefined,
       graph: seesRepo ? graph : blindGraph(graph.sha),
       userId,
       projectId: project.id,

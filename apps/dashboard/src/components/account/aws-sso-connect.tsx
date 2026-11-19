@@ -62,13 +62,21 @@ type Stage =
 export function AwsSsoConnect({
   onConnected,
   usesSessionOnly = false,
+  defaultStartUrl = null,
 }: {
   onConnected: (connection: ConnectionView) => void;
+  /** The portal this project was signed in through before, filled in for the user. */
+  defaultStartUrl?: string | null;
   /** True when the app has no AWS identity and will keep this sign-in instead. */
   usesSessionOnly?: boolean;
 }) {
   const [stage, setStage] = useState<Stage>({ name: "idle" });
-  const [startUrl, setStartUrl] = useState("");
+  const [startUrl, setStartUrl] = useState(defaultStartUrl ?? "");
+  // The project's AWS state may arrive after the form: fill the field then, but
+  // never over something the user already typed.
+  useEffect(() => {
+    if (defaultStartUrl) setStartUrl((current) => current || defaultStartUrl);
+  }, [defaultStartUrl]);
   /**
    * Empty means "work it out". The server reads the region off the portal and
    * falls back to a default, so this is only ever filled in by a user whose
@@ -203,7 +211,7 @@ export function AwsSsoConnect({
 
       onConnected(body.connection);
       setStage({ name: "idle" });
-      setStartUrl("");
+      setStartUrl(defaultStartUrl ?? "");
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "Could not connect that account",

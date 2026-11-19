@@ -102,7 +102,7 @@ const SESSION_DURATION_SECONDS = 900;
  * the damage of a customer who attached AdministratorAccess to the role and of
  * any future bug in this app that calls a mutating API by mistake.
  */
-const READ_ONLY_POLICY_ARN = "arn:aws:iam::aws:policy/ReadOnlyAccess";
+export const READ_ONLY_POLICY_ARN = "arn:aws:iam::aws:policy/ReadOnlyAccess";
 
 const ROLE_ARN_PATTERN =
   /^arn:aws(-[a-z]+)*:iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;

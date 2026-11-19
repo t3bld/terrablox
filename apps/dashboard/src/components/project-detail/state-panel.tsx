@@ -183,14 +183,6 @@ export function StatePanel({ projectId }: StatePanelProps) {
                   ))}
                 </ul>
               ) : null}
-
-              {/* Only identifiers ever leave the server, which is worth saying
-                  here rather than only in the code that enforces it. */}
-              <p className="text-muted-foreground text-xs">
-                Terraform state can contain generated passwords. Terrablox reads
-                only resource identifiers and non-sensitive outputs from it —
-                attribute values are never sent to the browser.
-              </p>
             </CardContent>
           </Card>
 

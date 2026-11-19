@@ -21,7 +21,17 @@ import {
   workingDirectory,
 } from "./deploy";
 
-export type TemplateId = "plan" | "apply";
+export type TemplateId = "plan" | "apply" | "destroy";
+
+/**
+ * The `workflow_dispatch` input a destroy run must be started with.
+ *
+ * Holds the repository's name, typed back. The workflow checks it before it
+ * reaches AWS, so a destroy started by a stray click in the Actions tab stops
+ * at the first step. Terrablox fills it in only after the user has typed the
+ * project's name in its own dialog.
+ */
+export const DESTROY_CONFIRM_INPUT = "confirm";
 
 /**
  * What a project decides about its workflows.
@@ -60,6 +70,24 @@ export interface WorkflowTemplate {
   required: boolean;
   /** Why a template might not be usable yet, e.g. a missing repository secret. */
   requires: string | null;
+  /**
+   * Whether a run changes real infrastructure. The Deploy tab asks for a second
+   * click before starting one of these, and names the account it will change.
+   */
+  changesInfrastructure: boolean;
+  /**
+   * Whether a run removes infrastructure. Stronger than
+   * {@link changesInfrastructure}: the Deploy tab asks for the project's name
+   * rather than a second click, and the run route refuses without it.
+   */
+  destroysInfrastructure: boolean;
+  /**
+   * Runs that share a lock never overlap; runs without one may run alongside
+   * anything. Plan and apply both take Terraform's state lock, so they share
+   * `terraform-state`. A future workflow that does not touch the state (a lint,
+   * a cost estimate) leaves this null and runs in parallel with them.
+   */
+  lock: string | null;
   render: (context: PipelineContext, config: ResolvedTemplateConfig) => string;
 }
 
@@ -263,6 +291,96 @@ ${terraformInit(context)}
 `;
 }
 
+/**
+ * Removes everything the configuration manages.
+ *
+ * Plans the destroy and then applies exactly that plan, rather than
+ * `terraform destroy -auto-approve`. The run summary then shows the list of
+ * what was removed, and the apply cannot remove anything the published plan
+ * did not name.
+ *
+ * Shares the apply's concurrency group, so an apply and a destroy queue behind
+ * each other instead of racing for the state lock.
+ */
+function renderDestroy(
+  context: PipelineContext,
+  config: ResolvedTemplateConfig,
+): string {
+  const dir = workingDirectory(context.rootFolder);
+
+  return `${GENERATED_HEADER}
+name: Terraform Destroy
+
+# Started by hand only, with the repository's name typed back as a second step.
+on:
+  workflow_dispatch:
+    inputs:
+      ${DESTROY_CONFIRM_INPUT}:
+        description: Type the repository name to confirm. This removes every resource the configuration manages.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-apply-${context.branch}
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${dir}
+    steps:
+      # First, before the job can reach AWS. Read through env rather than
+      # interpolated into the script, so the input cannot inject shell.
+      - name: Check the confirmation
+        env:
+          CONFIRM: \${{ inputs.${DESTROY_CONFIRM_INPUT} }}
+          EXPECTED: \${{ github.event.repository.name }}
+        run: |
+          if [ "$CONFIRM" != "$EXPECTED" ]; then
+            echo "::error::Not confirmed. Start the run again and type the repository name ($EXPECTED) to destroy."
+            exit 1
+          fi
+        working-directory: .
+
+      - uses: actions/checkout@v4
+
+${awsCredentialsStep(context)}
+
+${setupTerraform(config)}
+
+${terraformInit(context)}
+
+      - name: Plan the destroy
+        id: plan
+        run: terraform plan -destroy -no-color -input=false -out=destroy.tfplan
+
+      - name: Publish the plan
+        if: always() && steps.plan.conclusion != 'skipped'
+        env:
+          PLAN: \${{ steps.plan.outputs.stdout }}
+        run: |
+          {
+            echo '### Terraform destroy plan'
+            echo ''
+            echo '\`\`\`terraform'
+            printf '%s\\n' "\${PLAN:0:60000}"
+            echo '\`\`\`'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Exactly the plan above, so nothing is removed that it did not list.
+      - run: terraform apply -input=false destroy.tfplan
+`;
+}
+
+/** The lock every workflow that reads or writes the Terraform state shares. */
+export const TERRAFORM_STATE_LOCK = "terraform-state";
+
 export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   {
     id: "plan",
@@ -272,6 +390,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       "Formats, validates and plans, then puts the diff in the run summary. Changes nothing in AWS.",
     required: true,
     requires: null,
+    changesInfrastructure: false,
+    destroysInfrastructure: false,
+    lock: TERRAFORM_STATE_LOCK,
     render: renderPlan,
   },
   {
@@ -282,9 +403,67 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       "Validates and then applies. Queued rather than parallel, so two runs cannot fight over the state lock.",
     required: true,
     requires: null,
+    changesInfrastructure: true,
+    destroysInfrastructure: false,
+    lock: TERRAFORM_STATE_LOCK,
     render: renderApply,
   },
+  // Required, because it is the only way out that keeps Terraform's record
+  // straight. Without it, removing a project's infrastructure meant deleting it
+  // by hand in the console, or deleting the setup and leaving it running with
+  // nothing tracking it.
+  {
+    id: "destroy",
+    path: `${WORKFLOW_DIR}/terraform-destroy.yml`,
+    name: "Terraform Destroy",
+    summary:
+      "Plans the destroy, publishes the list in the run summary, then removes exactly that. Needs the repository name typed back.",
+    required: true,
+    requires: null,
+    changesInfrastructure: true,
+    destroysInfrastructure: true,
+    lock: TERRAFORM_STATE_LOCK,
+    render: renderDestroy,
+  },
 ];
+
+/**
+ * Whether a run of this template may start, given what the caller typed back.
+ *
+ * Destroying asks for the project's exact name, the way GitHub asks before it
+ * deletes a repository; everything else needs no confirmation here. Checked on
+ * the server as well as in the dialog, so a second tab or a script cannot skip
+ * it.
+ */
+export function runConfirmed(
+  template: WorkflowTemplate,
+  projectName: string,
+  confirm: string | null | undefined,
+): boolean {
+  return !template.destroysInfrastructure || confirm === projectName;
+}
+
+/**
+ * The `workflow_dispatch` inputs a run is started with.
+ *
+ * Only the destroy has any: the repository's name, which its first step
+ * compares against `github.event.repository.name`. Passed only once
+ * {@link runConfirmed} has held.
+ */
+export function dispatchInputs(
+  template: WorkflowTemplate,
+  repoFullName: string,
+): Record<string, string> | undefined {
+  if (!template.destroysInfrastructure) return undefined;
+  return {
+    [DESTROY_CONFIRM_INPUT]: repoFullName.split("/").pop() ?? repoFullName,
+  };
+}
+
+/** Whether a string from a request names a template in the catalogue. */
+export function isWorkflowTemplateId(value: unknown): value is TemplateId {
+  return isTemplateId(value);
+}
 
 export function findTemplate(id: TemplateId): WorkflowTemplate | undefined {
   return WORKFLOW_TEMPLATES.find((template) => template.id === id);
@@ -319,11 +498,9 @@ export function resolveTemplateConfig(raw: unknown): ResolvedTemplateConfig {
 
   return {
     disabled,
-    terraformVersion:
-      typeof record.terraformVersion === "string" &&
-      /^\d+\.\d+\.\d+$/.test(record.terraformVersion)
-        ? record.terraformVersion
-        : TEMPLATE_DEFAULTS.terraformVersion,
+    // Always the newest supported version. A version pinned by an earlier
+    // version of the wizard is ignored rather than migrated, like the keys below.
+    terraformVersion: TEMPLATE_DEFAULTS.terraformVersion,
     // `requireApproval` and `scheduleRefresh` used to be read here. A project that
     // still has them in its stored JSON is not migrated: dropping a key that is no
     // longer asked about is what "absent means whatever the catalogue says" is for,

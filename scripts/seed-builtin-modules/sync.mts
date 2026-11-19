@@ -32,11 +32,11 @@
 // packages that depend on it, and `scripts/` depends on nothing.
 import { prisma } from "@/lib/database";
 import type { ImportTimings } from "@/lib/module-library/import-from-git";
+import { moduleLibraries } from "@/lib/module-library/libraries";
 import {
   type ModuleLibraryDefinition,
-  moduleLibraries,
   TERRABLOX_LIBRARY_ID,
-} from "@/lib/module-library/libraries";
+} from "@/lib/module-library/library-definition";
 import { syncGlobalLibrary } from "@/lib/module-library/library-engine";
 import {
   SERVICE_NAMES,
@@ -209,14 +209,14 @@ async function syncOne(
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const all = moduleLibraries();
+  const all = await moduleLibraries();
   const global = all.filter((library) => library.scope === "global");
 
   for (const id of options.ids) {
     const def = all.find((library) => library.id === id);
     if (!def) {
       console.error(
-        `Unknown library '${id}'. Configured: ${all.map((l) => l.id).join(", ")}`,
+        `Unknown library '${id}'. Active: ${all.map((l) => l.id).join(", ")}`,
       );
       process.exit(2);
     }

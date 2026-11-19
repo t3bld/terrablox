@@ -10,7 +10,7 @@ import {
   isSyncLocked,
   isSyncStale,
   type ModuleLibraryDefinition,
-} from "@/lib/module-library/libraries";
+} from "@/lib/module-library/library-definition";
 import {
   consoleLog,
   discoverLibrary,
@@ -45,12 +45,17 @@ export interface LibraryStatusDto {
   name: string;
   org: string;
   topics: string[];
+  scope: "global" | "user";
   state: LibrarySyncState;
   /** True only after the complete latest import pass succeeded. */
   ready: boolean;
   syncing: boolean;
   stale: boolean;
+  /** Imported root-module versions; submodules are counted separately. */
   moduleCount: number;
+  submoduleCount: number;
+  /** Distinct GitHub repositories represented by this library. */
+  repositoryCount: number;
   lastSyncedAt: string | null;
   hint:
     | null
@@ -68,6 +73,8 @@ export interface LibrarySyncResult {
 
 const LOCK_MS = 10 * 60_000;
 const DEFAULT_BUDGET_MS = 20_000;
+/** Branch rows shown in account counts; tagged versions stay out. */
+const DEFAULT_BRANCH_REFS = ["main", "master"] as const;
 
 const KNOWN_STATES = new Set<LibrarySyncState>([
   "never",
@@ -114,22 +121,42 @@ export async function libraryStatus(
   def: ModuleLibraryDefinition,
   now: Date = new Date(),
 ): Promise<LibraryStatusDto> {
-  const [row, moduleCount] = await Promise.all([
-    database.moduleLibrarySync.findUnique({
-      where: { userId_library: { userId, library: def.id } },
-    }),
-    database.terraformModuleSource.count({
-      where: { userId, library: def.id },
-    }),
-  ]);
+  const [row, moduleCount, submoduleCount, repositoryCount] = await Promise.all(
+    [
+      database.moduleLibrarySync.findUnique({
+        where: { userId_library: { userId, library: def.id } },
+      }),
+      database.terraformModule.count({
+        where: {
+          userId,
+          library: def.id,
+          isSubmodule: false,
+          versionTag: { in: [...DEFAULT_BRANCH_REFS] },
+        },
+      }),
+      database.terraformModule.count({
+        where: {
+          userId,
+          library: def.id,
+          isSubmodule: true,
+          versionTag: { in: [...DEFAULT_BRANCH_REFS] },
+        },
+      }),
+      database.terraformModuleSource.count({
+        where: { userId, library: def.id },
+      }),
+    ],
+  );
 
-  return toDto(def, row, moduleCount, now);
+  return toDto(def, row, moduleCount, submoduleCount, repositoryCount, now);
 }
 
 function toDto(
   def: ModuleLibraryDefinition,
   row: ModuleLibrarySync | null,
   moduleCount: number,
+  submoduleCount: number,
+  repositoryCount: number,
   now: Date,
 ): LibraryStatusDto {
   const state = asState(row?.state);
@@ -149,11 +176,14 @@ function toDto(
     name: def.name,
     org: def.org,
     topics: def.topics,
+    scope: "user",
     state,
     ready: state === "available" && !row?.pending,
     syncing: isSyncLocked(row, now),
     stale: isSyncStale(row, now),
     moduleCount,
+    submoduleCount,
+    repositoryCount,
     lastSyncedAt: row?.lastSyncedAt?.toISOString() ?? null,
     hint,
   };
@@ -330,7 +360,10 @@ export async function syncModuleLibrary(params: {
         token,
         repos: discovery.matched,
         progress,
-        mode: "changed",
+        // A definition edit resets the sync to `never`. Re-import every known
+        // ref once so structural changes such as submoduleContainer cannot be
+        // reported as synced merely because the branch SHA stayed the same.
+        mode: existing.state === "never" ? "all" : "changed",
         budgetMs: Math.max(0, budgetMs - (Date.now() - startedAt)),
         log,
         assertCurrent: renewOwned,
@@ -385,4 +418,58 @@ export async function syncModuleLibrary(params: {
 
   // After the lock is released, so the status does not report "syncing".
   return finish(outcome);
+}
+
+/** Read-only status for a globally managed library. */
+export async function globalLibraryStatus(
+  def: ModuleLibraryDefinition,
+): Promise<LibraryStatusDto> {
+  if (def.scope !== "global") {
+    throw new Error(`Library '${def.id}' is not global`);
+  }
+
+  const [moduleCount, submoduleCount, repositoryCount, latest] =
+    await Promise.all([
+      database.terraformModule.count({
+        where: {
+          userId: null,
+          library: def.id,
+          isSubmodule: false,
+          versionTag: { in: [...DEFAULT_BRANCH_REFS] },
+        },
+      }),
+      database.terraformModule.count({
+        where: {
+          userId: null,
+          library: def.id,
+          isSubmodule: true,
+          versionTag: { in: [...DEFAULT_BRANCH_REFS] },
+        },
+      }),
+      database.terraformModuleSource.count({
+        where: { userId: null, library: def.id },
+      }),
+      database.terraformModule.findFirst({
+        where: { userId: null, library: def.id },
+        orderBy: { updatedAt: "desc" },
+        select: { updatedAt: true },
+      }),
+    ]);
+
+  return {
+    id: def.id,
+    name: def.name,
+    org: def.org,
+    topics: def.topics,
+    scope: "global",
+    state: moduleCount > 0 ? "available" : "never",
+    ready: moduleCount > 0,
+    syncing: false,
+    stale: false,
+    moduleCount,
+    submoduleCount,
+    repositoryCount,
+    lastSyncedAt: latest?.updatedAt.toISOString() ?? null,
+    hint: null,
+  };
 }

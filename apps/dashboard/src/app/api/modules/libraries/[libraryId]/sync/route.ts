@@ -4,10 +4,8 @@ import { RATE_LIMITS } from "@/lib/api/rate-limit";
 import { notFound, routeError } from "@/lib/api/route-error";
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import {
-  LIBRARY_ID_PATTERN,
-  visibleLibraries,
-} from "@/lib/module-library/libraries";
+import { visibleLibraries } from "@/lib/module-library/libraries";
+import { LIBRARY_ID_PATTERN } from "@/lib/module-library/library-definition";
 import { syncModuleLibrary } from "@/lib/module-library/library-sync";
 
 /**
@@ -30,7 +28,9 @@ export async function POST(
     // Explicit refresh is available only after this account completed an import.
     // First-time discovery goes through the metadata-free automatic sync route.
     const library = LIBRARY_ID_PATTERN.test(params.libraryId)
-      ? visibleLibraries("user").find((def) => def.id === params.libraryId)
+      ? (await visibleLibraries("user")).find(
+          (def) => def.id === params.libraryId,
+        )
       : undefined;
     const previouslyAvailable = library
       ? await database.moduleLibrarySync.findFirst({

@@ -9,8 +9,10 @@
     "./github-oidc": "./src/github-oidc.ts",
     "./regions": "./src/regions.ts",
     "./session": "./src/session.ts",
+    "./setup-role": "./src/setup-role.ts",
     "./sso": "./src/sso.ts",
-    "./state-backend": "./src/state-backend.ts"
+    "./state-backend": "./src/state-backend.ts",
+    "./teardown": "./src/teardown.ts"
   },
   "scripts": {
     "lint": "biome check .",
@@ -20,6 +22,7 @@
   "dependencies": {
     "@aws-sdk/client-cloudformation": "^3.1108.0",
     "@aws-sdk/client-iam": "^3.1108.0",
+    "@aws-sdk/client-kms": "^3.1108.0",
     "@aws-sdk/client-s3": "^3.1108.0",
     "@aws-sdk/client-sso": "^3.1108.0",
     "@aws-sdk/client-sso-oidc": "^3.1108.0",

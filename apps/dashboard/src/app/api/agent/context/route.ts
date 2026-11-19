@@ -73,12 +73,25 @@ export async function GET(request: Request) {
       );
     }
 
-    const [settings, moduleCount, projectCount, githubToken] =
+    const [settings, moduleCount, projectCount, githubToken, documents] =
       await Promise.all([
         getEffectiveAgentSettings(userId, projectId),
         database.terraformModule.count({ where: visibility }),
         database.project.count({ where: { userId } }),
         getUserGithubToken(),
+        database.projectContextDocument.findMany({
+          where: { projectId, userId },
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            projectId: true,
+            originalName: true,
+            mediaType: true,
+            byteSize: true,
+            characterCount: true,
+            createdAt: true,
+          },
+        }),
       ]);
 
     return NextResponse.json(
@@ -97,6 +110,15 @@ export async function GET(request: Request) {
               branch: project.appRepoBranch,
             }
           : null,
+        contextDocuments: documents.map((document) => ({
+          id: document.id,
+          name: document.originalName,
+          mediaType: document.mediaType,
+          byteSize: document.byteSize,
+          characterCount: document.characterCount,
+          createdAt: document.createdAt.toISOString(),
+          downloadUrl: `/api/projects/${projectId}/documents/${document.id}`,
+        })),
       }),
     );
   }
@@ -118,8 +140,10 @@ export async function GET(request: Request) {
       scope: "global",
       overrides: {},
       overridden: [],
-      // A link belongs to one project, so the defaults view has none to report.
+      // A link and documents belong to one project, so the defaults view has
+      // neither to report.
       appRepo: null,
+      contextDocuments: [],
     }),
   );
 }
@@ -154,6 +178,16 @@ function view(input: {
   overridden: string[];
   /** The linked application repository, in the project scope only. */
   appRepo: { fullName: string; branch: string | null } | null;
+  /** Uploaded source material, metadata only; extracted text stays server-side. */
+  contextDocuments: Array<{
+    id: string;
+    name: string;
+    mediaType: string;
+    byteSize: number;
+    characterCount: number;
+    createdAt: string;
+    downloadUrl: string | null;
+  }>;
 }) {
   const { settings } = input;
 
@@ -203,6 +237,7 @@ function view(input: {
     // source off and having nothing linked look identical from the prompt and are
     // fixed on two different screens.
     appRepo: input.appRepo,
+    contextDocuments: input.contextDocuments,
     // Instructions are global by design: they are the user's standing
     // preferences, not a property of one project.
     instructions: settings.instructions,

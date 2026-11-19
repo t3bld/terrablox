@@ -5,7 +5,11 @@ import {
 import { NextResponse } from "next/server";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { database } from "@/lib/database";
-import { type LibraryLabel, libraryOf } from "@/lib/module-library/libraries";
+import { moduleLibraryLabels } from "@/lib/module-library/libraries";
+import {
+  type LibraryLabel,
+  libraryOf,
+} from "@/lib/module-library/library-definition";
 import { isManaged } from "@/lib/module-library/ownership";
 import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
@@ -25,10 +29,13 @@ export async function GET() {
   }
 
   const visibility = await visibleModulesForUser(userId);
-  const modules = await database.terraformModule.findMany({
-    where: visibility,
-    include: { source: true },
-  });
+  const [modules, libraryLabels] = await Promise.all([
+    database.terraformModule.findMany({
+      where: visibility,
+      include: { source: true },
+    }),
+    moduleLibraryLabels(),
+  ]);
 
   const submoduleCountByParent = new Map<string, number>();
   for (const mod of modules) {
@@ -97,7 +104,7 @@ export async function GET() {
         iconName: mod.source?.iconName ?? null,
         // Managed rather than builtin: a per-user library row is read-only too.
         isBuiltin: isManaged(mod),
-        library: libraryOf(mod),
+        library: libraryOf(mod, libraryLabels),
         versions: [],
       };
       groups.set(key, group);

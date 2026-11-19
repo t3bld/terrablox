@@ -1,9 +1,100 @@
+import type { TemplateId } from "./workflow-templates";
+
 /**
  * Shapes exchanged between the project API and the project UI.
  *
  * Free of `server-only` imports so the canvas and the chat panel can type their
  * props against the same definitions the route handlers produce.
  */
+
+export interface ProjectContextDocumentDto {
+  id: string;
+  name: string;
+  mediaType: string;
+  byteSize: number;
+  characterCount: number;
+  createdAt: string;
+  downloadUrl: string | null;
+}
+
+export interface ProjectCostComponentDto {
+  name: string;
+  unit: string | null;
+  price: string | null;
+  quantity: string | null;
+  monthlyCost: string | null;
+  usageBased: boolean;
+  usageUnknown: boolean;
+}
+
+export interface ProjectCostResourceDto {
+  address: string;
+  type: string;
+  service: string;
+  icon: string | null;
+  modulePath: string;
+  supported: boolean;
+  free: boolean;
+  monthlyCost: string | null;
+  components: ProjectCostComponentDto[];
+}
+
+export interface ProjectCostSnapshotDto {
+  id: string;
+  sourceSha: string;
+  region: string;
+  currency: string;
+  totalMonthlyCost: string | null;
+  resourceCount: number;
+  costedResources: number;
+  freeResources: number;
+  estimatorVersion: string;
+  resources: ProjectCostResourceDto[];
+  diagnostics: Array<{
+    severity: string;
+    message: string;
+    location: string | null;
+  }>;
+  createdAt: string;
+}
+
+export interface ProjectCostUsageFieldDto {
+  key: string;
+  label: string;
+  unit: string;
+  steps: number[];
+  low: number;
+  expected: number;
+  high: number;
+  value: number;
+}
+
+export interface ProjectCostUsageResourceDto {
+  address: string;
+  resourceType: string;
+  service: string;
+  icon: string | null;
+  fields: ProjectCostUsageFieldDto[];
+}
+
+export interface ProjectCostsDto {
+  configured: boolean;
+  binaryAvailable: boolean;
+  configurationProblem: string | null;
+  /** Currency the active cost engine will use for the next estimate. */
+  estimateCurrency: string;
+  currentSourceSha: string;
+  latest: ProjectCostSnapshotDto | null;
+  history: Array<{
+    id: string;
+    sourceSha: string;
+    totalMonthlyCost: string | null;
+    currency: string;
+    createdAt: string;
+  }>;
+  usage: ProjectCostUsageResourceDto[];
+  hasSavedUsageAssumptions: boolean;
+}
 
 export interface ProjectDto {
   id: string;
@@ -419,6 +510,12 @@ export interface WorkflowTemplateDto {
   required: boolean;
   /** What the template needs before it can work, e.g. a repository secret. */
   requires: string | null;
+  /** Starting it changes infrastructure, so the Deploy tab asks to confirm. */
+  changesInfrastructure: boolean;
+  /** Starting it removes infrastructure, so the project's name is typed back. */
+  destroysInfrastructure: boolean;
+  /** Runs sharing a lock never overlap; null runs alongside anything. */
+  lock: string | null;
   enabled: boolean;
 }
 
@@ -482,6 +579,17 @@ export interface DeploySetupState {
   roleReady: boolean;
   /** The repository variables match what this project would deploy with. */
   variablesReady: boolean;
+  /**
+   * The role step's half of the variables: the role ARN and the region.
+   *
+   * Split from the bucket because each step writes only its own. The bucket name
+   * is pinned before either stack runs, so a role step that wrote all three made
+   * the state step report its variable as "already set" for a bucket that did
+   * not exist yet.
+   */
+  roleVariablesReady: boolean;
+  /** The state step's half: the bucket name, once the state stack created it. */
+  stateVariablesReady: boolean;
   /** The state bucket and its encryption key exist. */
   stateReady: boolean;
   /** The workflow files are committed and current. */
@@ -518,7 +626,8 @@ export interface ProjectDeployState {
 }
 
 /** The workflows Terrablox can start on the user's behalf. */
-export type DeployRunKind = "plan" | "apply";
+/** A workflow template id: whatever the catalogue offers, not a fixed pair. */
+export type DeployRunKind = TemplateId;
 
 /** One private module library a project's pipeline needs a secret for. */
 export interface PrivateModuleAccessDto {

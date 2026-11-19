@@ -12,9 +12,18 @@ import { routeError } from "@/lib/api/route-error";
 import { audit } from "@/lib/audit/log";
 import { getProviderTokenForRequest } from "@/lib/auth/server-helpers";
 import { missingDeploySettings } from "@/lib/projects/deploy";
+import { blockerFor } from "@/lib/projects/deploy-runs";
+import { templateConfig } from "@/lib/projects/deploy-service";
+import { runPreflightRefusal } from "@/lib/projects/run-preflight";
 import { findOwnedProject } from "@/lib/projects/service";
 import type { DeployRunKind } from "@/lib/projects/types";
-import { findTemplate } from "@/lib/projects/workflow-templates";
+import {
+  activeTemplates,
+  dispatchInputs,
+  findTemplate,
+  isWorkflowTemplateId,
+  runConfirmed,
+} from "@/lib/projects/workflow-templates";
 
 /** Just the runs, so the UI can follow a job without re-reading the repository. */
 export async function GET(
@@ -91,11 +100,22 @@ export async function POST(
   }
 
   let kind: DeployRunKind;
+  let confirm: string | undefined;
   try {
     const body = await parseJsonBody(
       req,
-      z.object({ workflow: z.enum(["plan", "apply"]) }),
+      z.object({
+        workflow: z.string().max(64),
+        confirm: z.string().max(256).optional(),
+      }),
     );
+    confirm = body.confirm;
+    if (!isWorkflowTemplateId(body.workflow)) {
+      return NextResponse.json(
+        { error: "That workflow is not in the catalogue." },
+        { status: 400 },
+      );
+    }
     kind = body.workflow;
   } catch (e) {
     return routeError("deploy.run", e);
@@ -106,6 +126,25 @@ export async function POST(
     return NextResponse.json(
       { error: "That workflow is not in the catalogue." },
       { status: 400 },
+    );
+  }
+
+  if (!runConfirmed(template, project.name, confirm)) {
+    return NextResponse.json(
+      {
+        error: `${template.name} removes infrastructure. Type the project's name ("${project.name}") to confirm.`,
+      },
+      { status: 400 },
+    );
+  }
+
+  // Only what the project chose in the setup: a turned-off workflow has no file
+  // in the repository, so dispatching it would fail on GitHub's side anyway.
+  const enabled = activeTemplates(templateConfig(project));
+  if (!enabled.some((entry) => entry.id === template.id)) {
+    return NextResponse.json(
+      { error: `${template.name} is turned off for this project.` },
+      { status: 409 },
     );
   }
 
@@ -134,11 +173,43 @@ export async function POST(
     );
   }
 
+  // Values AWS would reject part-way through an apply. See runPreflightRefusal.
+  const refusal = await runPreflightRefusal(token, project, template);
+  if (refusal) {
+    return NextResponse.json({ error: refusal }, { status: 409 });
+  }
+
+  // Never alongside a run it shares a lock with, or a second copy of itself.
+  // The tab locks its buttons, but a second tab must not be able to queue a plan
+  // behind an apply that is still holding the state lock. Best-effort: if the
+  // list cannot be read, the apply workflow's `concurrency` group still queues.
+  try {
+    const blocker = blockerFor(template, {
+      runs: await listWorkflowRuns(token, {
+        repoFullName: project.repoFullName,
+      }),
+      workflows: enabled,
+    });
+    if (blocker?.kind === "run") {
+      const { run } = blocker;
+      return NextResponse.json(
+        {
+          error: `${run.name} is still ${run.status === "queued" ? "queued" : "running"}. Wait for it to finish before starting ${template.name}.`,
+          activeRun: run,
+        },
+        { status: 409 },
+      );
+    }
+  } catch {
+    // Fall through to the dispatch.
+  }
+
   try {
     await dispatchWorkflow(token, {
       repoFullName: project.repoFullName,
       workflowFile: template.path,
       ref: project.repoBranch,
+      inputs: dispatchInputs(template, project.repoFullName),
     });
 
     // Recorded after the dispatch succeeded, so the trail says "a job was started"

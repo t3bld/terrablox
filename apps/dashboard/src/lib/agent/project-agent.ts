@@ -4,6 +4,7 @@ import { type CopilotSession, defineTool } from "@github/copilot-sdk";
 import {
   KNOWLEDGE_APP_REPO,
   KNOWLEDGE_MODULE_LIBRARY,
+  KNOWLEDGE_PROJECT_DOCUMENTS,
   knowledgeEnabled,
 } from "@terrablox/agent-harness/knowledge";
 import {
@@ -21,6 +22,10 @@ import { PROJECT_AGENT_TOOLS } from "@terrablox/agent-harness/tool-catalogue";
 import { GithubRequestError } from "@terrablox/git/client";
 import { listRepoTree, readRepoFile } from "@terrablox/git/files";
 import { checkValueAgainstType } from "@terrablox/terraform/type-check";
+import {
+  describeAwsValueProblems,
+  moduleArgumentProblems,
+} from "@/lib/projects/aws-value-guard";
 import { isValidLocalName } from "@/lib/projects/locals";
 import type {
   AgentStep,
@@ -418,7 +423,10 @@ export async function runProjectAgent(
       sessionId: `terrablox-${context.userId}-${context.projectId}-${Date.now()}`,
       model: context.model || COPILOT_MODEL,
       gitHubToken: context.githubToken,
-      tools: buildTools(context, mutations, decisions, record, appRepoReads),
+      tools: [
+        ...buildTools(context, mutations, decisions, record, appRepoReads),
+        ...(context.extraTools ?? []),
+      ],
       ...(usesMcp ? { mcpServers } : {}),
       // Omitted rather than defaulted: a model that does not support the
       // setting rejects the session, so "leave it alone" has to mean absent.
@@ -739,6 +747,17 @@ function buildTools(
   if (!appRepo) {
     disabled.add("list_app_files");
     disabled.add("read_app_file");
+  }
+
+  const contextDocuments = knowledgeEnabled(
+    context.disabledKnowledge,
+    KNOWLEDGE_PROJECT_DOCUMENTS,
+  )
+    ? (context.contextDocuments ?? [])
+    : [];
+  if (contextDocuments.length === 0 || !context.readContextDocument) {
+    disabled.add("list_context_documents");
+    disabled.add("read_context_document");
   }
 
   if (!knowledgeEnabled(context.disabledKnowledge, KNOWLEDGE_MODULE_LIBRARY)) {
@@ -1185,6 +1204,17 @@ function buildTools(
           if (mismatch) {
             return refuse("edit_module", `${name}.${entry.input} ${mismatch}`);
           }
+
+          // Values AWS rejects at apply time, which no type check can see.
+          const rejected = await moduleArgumentProblems(
+            name,
+            entry.input,
+            entry.value,
+            (module?.inputs ?? []).map((port) => port.name),
+          );
+          if (rejected.length > 0) {
+            return refuse("edit_module", describeAwsValueProblems(rejected));
+          }
         }
 
         // Arguments first: after a rename they would have to name the module by
@@ -1485,6 +1515,62 @@ function buildTools(
         }
       },
     }),
+    defineTool<Record<string, never>>("list_context_documents", {
+      ...spec("list_context_documents"),
+      handler: async () => {
+        record({
+          kind: "tool",
+          tool: "list_context_documents",
+          summary: `Listed ${contextDocuments.length} project context document${contextDocuments.length === 1 ? "" : "s"}`,
+          ok: true,
+        });
+        return {
+          documents: contextDocuments.map((document) => ({
+            id: document.id,
+            name: document.name,
+            mediaType: document.mediaType,
+            characters: document.characterCount,
+          })),
+        };
+      },
+    }),
+    defineTool<{ documentId: string; offset?: number }>(
+      "read_context_document",
+      {
+        ...spec("read_context_document"),
+        handler: async ({ documentId, offset }) => {
+          const known = contextDocuments.find(
+            (document) => document.id === documentId,
+          );
+          if (!known || !context.readContextDocument) {
+            return refuse(
+              "read_context_document",
+              `No project context document ${documentId}. Call list_context_documents for the available ids.`,
+            );
+          }
+
+          const start =
+            typeof offset === "number" && Number.isFinite(offset)
+              ? Math.max(0, Math.floor(offset))
+              : 0;
+          const result = await context.readContextDocument(documentId, start);
+          if (!result) {
+            return refuse(
+              "read_context_document",
+              `The document ${known.name} is no longer available.`,
+            );
+          }
+
+          record({
+            kind: "tool",
+            tool: "read_context_document",
+            summary: `Read ${known.name} at character ${result.offset}${result.nextOffset === null ? " to the end" : `–${result.nextOffset}`}`,
+            ok: true,
+          });
+          return result;
+        },
+      },
+    ),
     defineTool<{
       question: string;
       context: string;

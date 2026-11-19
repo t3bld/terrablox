@@ -9,8 +9,8 @@
  *   per-user library such as Porsche. Only they see it; read-only to them too.
  * - `userId = <user>, library = NULL`: the user's own import. Theirs to change.
  *
- * Which libraries are admitted at all is decided by their `visible` flag in
- * `TERRABLOX_MODULE_LIBRARIES`. Per-user callers must additionally pass only library
+ * Which libraries are admitted is decided by active database definitions and
+ * their `visible` flags. Per-user callers must additionally pass only library
  * ids whose sync completed successfully.
  *
  * The two ideas get two separate helpers on purpose. They read almost the same
@@ -19,16 +19,14 @@
  * user the power to delete the shipped catalogue. Keeping them apart makes that
  * mistake require deleting a name that says what it protects.
  *
- * No `server-only`: the CLI scripts import it too. Nothing here touches the
- * database or any secret — it returns query fragments and reads environment
- * variables.
+ * Server-only because visibility and managed-row labels read definitions from
+ * the database. The returned ownership fragments remain ordinary Prisma input.
  */
 
-import {
-  findModuleLibrary,
-  TERRABLOX_LIBRARY_ID,
-  visibleLibraryIds,
-} from "./libraries";
+import "server-only";
+
+import { findModuleLibrary, visibleLibraryIds } from "./libraries";
+import { TERRABLOX_LIBRARY_ID } from "./library-definition";
 
 /**
  * The owner of every global library row.
@@ -56,9 +54,11 @@ export const BUILTIN_USER_ID = null;
  * buggy writer stored with a NULL owner under a per-user library id — one
  * person's private module — is visible to nobody, rather than to everybody.
  */
-export function visibleToUser(userId: string) {
-  const perUser = visibleLibraryIds("user");
-  const global = visibleLibraryIds("global");
+export async function visibleToUser(userId: string) {
+  const [perUser, global] = await Promise.all([
+    visibleLibraryIds("user"),
+    visibleLibraryIds("global"),
+  ]);
 
   return {
     OR: [
@@ -110,15 +110,15 @@ export function isManaged(row: {
 }
 
 /** Why a managed row cannot be deleted, or null when it can. */
-export function deleteRefusal(row: {
+export async function deleteRefusal(row: {
   userId: string | null;
   library?: string | null;
-}): string | null {
+}): Promise<string | null> {
   if (!isManaged(row)) return null;
 
   // A global row always has a library (a CHECK constraint says so).
   const id = row.library ?? TERRABLOX_LIBRARY_ID;
-  const name = findModuleLibrary(id)?.name ?? id;
+  const name = (await findModuleLibrary(id))?.name ?? id;
 
   if (isBuiltin(row)) {
     return id === TERRABLOX_LIBRARY_ID

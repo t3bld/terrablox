@@ -20,9 +20,17 @@
  */
 
 import { GithubRequestError } from "@terrablox/git/client";
-import { getBranchHead, listRepoTree } from "@terrablox/git/files";
+import {
+  createInitialRepoFile,
+  getBranchHead,
+  listRepoTree,
+} from "@terrablox/git/files";
 import { listAccessibleRepos } from "@terrablox/git/installations";
-import { getRepository, type RepoSummary } from "@terrablox/git/repositories";
+import {
+  getRepository,
+  type RepoSummary,
+  repositoryIsEmpty,
+} from "@terrablox/git/repositories";
 
 /**
  * A repository that cannot be bound, with a message written for the person who has
@@ -51,7 +59,7 @@ export class RepoNotGrantedError extends RepoBindError {
   }
 }
 
-/** The repository has no commits, or not on the branch that was asked for. */
+/** The explicitly requested branch does not exist. */
 export class RepoNotInitialisedError extends RepoBindError {
   constructor(message: string) {
     super(message, 409);
@@ -86,9 +94,9 @@ const LISTED_TF_FILES = 3;
  *      given — a member of an organisation reads its repositories with their own
  *      access — and the first commit to one of those would fail with a 404 that
  *      reads like a deleted repository.
- *   2. No commits, or no such branch. Commits go through the Git Data API, which
- *      builds on top of an existing branch head; an empty repository has none, and
- *      creating the first commit through that API is not possible.
+ *   2. Missing explicit branch. A genuinely empty repository on its default
+ *      branch is initialized through GitHub's Contents API, then checked through
+ *      the same branch/tree path as every other repository.
  *   3. Terraform already present, anywhere in the tree. See the module comment.
  *
  * Anything else GitHub answers — an expired token, a rate limit, an outage — is
@@ -128,20 +136,51 @@ export async function bindExistingRepo(
     throw error;
   }
 
-  const target = branch?.trim() || repo.defaultBranch;
-  const head = await getBranchHead(token, {
+  const requestedBranch = branch?.trim() || null;
+  const target = requestedBranch ?? repo.defaultBranch;
+  let head = await getBranchHead(token, {
     repoFullName: repo.fullName,
     branch: target,
   });
 
   if (!head) {
-    // A repository with any commit has its default branch, so a missing default
-    // branch means a repository with nothing in it.
-    throw new RepoNotInitialisedError(
-      target === repo.defaultBranch
-        ? `${repo.fullName} has no commits yet. Terrablox commits on top of an existing branch, so the repository needs a first commit: on GitHub, add a README (or create the repository with "Add a README file" ticked), then try again.`
-        : `${repo.fullName} has no branch named ${target}. Create it on GitHub, or leave the branch empty to use ${repo.defaultBranch}. An empty repository needs a first commit too — create it with a README.`,
-    );
+    // A named non-default branch is a real choice. Never initialize another
+    // branch and then bind the project to one that still does not exist.
+    if (requestedBranch && target !== repo.defaultBranch) {
+      throw new RepoNotInitialisedError(
+        `${repo.fullName} has no branch named ${target}. Create it on GitHub, or leave the branch empty to use ${repo.defaultBranch}.`,
+      );
+    }
+
+    // `getBranchHead` also returns null for a missing ref. Only GitHub's exact
+    // documented empty-repository response licenses the first write.
+    const empty = await repositoryIsEmpty(token, repo.fullName);
+    if (!empty) {
+      throw new RepoNotInitialisedError(
+        `${repo.fullName} has no branch named ${target}. Check its default branch on GitHub, then try again.`,
+      );
+    }
+
+    const repositoryName = repo.fullName.split("/").pop() ?? "Infrastructure";
+    await createInitialRepoFile(token, {
+      repoFullName: repo.fullName,
+      path: "README.md",
+      message: "Initialize repository for Terrablox",
+      content: `# ${repositoryName}\n\nInfrastructure managed with Terrablox.\n`,
+    });
+
+    // Re-read rather than trusting the create response: every later edit starts
+    // from this exact branch lookup, so initialization is complete only when the
+    // ordinary commit path can see it.
+    head = await getBranchHead(token, {
+      repoFullName: repo.fullName,
+      branch: target,
+    });
+    if (!head) {
+      throw new RepoNotInitialisedError(
+        `${repo.fullName} was initialized, but GitHub still reports no ${target} branch. Try importing it again.`,
+      );
+    }
   }
 
   const tree = await listRepoTree(token, {
@@ -160,7 +199,7 @@ export async function bindExistingRepo(
     throw new RepoHasTerraformError(
       `${repo.fullName} already contains Terraform (${named}${
         more > 0 ? ` and ${more} more` : ""
-      }). Terrablox writes a project's Terraform at the repository root and only binds repositories without .tf files, so it never has to guess where existing configuration lives. Choose an empty repository, or create a new one on GitHub with a README.`,
+      }). Terrablox writes a project's Terraform at the repository root and only binds repositories without .tf files, so it never has to guess where existing configuration lives. Choose a repository without Terraform.`,
     );
   }
 
@@ -169,7 +208,7 @@ export async function bindExistingRepo(
   // avoid. A repository this large is not a fresh infrastructure repository anyway.
   if (tree.truncated) {
     throw new RepoHasTerraformError(
-      `${repo.fullName} is too large for GitHub to list in one go, so Terrablox cannot confirm it holds no Terraform. Choose an empty repository, or create a new one on GitHub with a README.`,
+      `${repo.fullName} is too large for GitHub to list in one go, so Terrablox cannot confirm it holds no Terraform. Choose a repository without Terraform.`,
     );
   }
 

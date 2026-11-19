@@ -3,8 +3,10 @@
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { AlertCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import type { PreviousSignIn } from "@/lib/aws/project-connection";
 
 import type { ProjectDeployState } from "@/lib/projects/types";
+import { AwsReconnectCard } from "./aws-reconnect-card";
 import { DeployWizard, WIZARD_COLUMN } from "./deploy-wizard";
 
 /**
@@ -23,9 +25,12 @@ import { DeployWizard, WIZARD_COLUMN } from "./deploy-wizard";
 export function DeploySetupWizard({
   projectId,
   onAttachAws,
+  awsSignIn = null,
 }: {
   projectId: string;
   onAttachAws: (accountId: string) => Promise<void>;
+  /** How the project signed in last, for a one-click sign-in. */
+  awsSignIn?: PreviousSignIn | null;
 }) {
   const [state, setState] = useState<ProjectDeployState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,9 +69,19 @@ export function DeploySetupWizard({
     );
   }
 
+  // Already set up: only the session lapsed, so only the sign-in is asked for.
+  if (state.setup.complete) {
+    return (
+      <div className={WIZARD_COLUMN}>
+        <AwsReconnectCard onAttach={onAttachAws} signIn={awsSignIn} />
+      </div>
+    );
+  }
+
   return (
     <div className={WIZARD_COLUMN}>
       <DeployWizard
+        defaultStartUrl={awsSignIn?.startUrl ?? null}
         onAttach={onAttachAws}
         onChanged={load}
         projectId={projectId}

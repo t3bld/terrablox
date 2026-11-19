@@ -15,6 +15,7 @@ import {
   Bot,
   ChevronDown,
   LayoutGrid,
+  Library,
   Search,
   Wallet,
 } from "lucide-react";
@@ -23,6 +24,7 @@ import {
   type HarnessCurationView,
   HarnessEditor,
 } from "@/components/admin/harness-editor";
+import { ModuleLibrariesPanel } from "@/components/admin/module-libraries-panel";
 import { AppSidebar } from "@/components/app-sidebar";
 import { PageHeader } from "@/components/layout/page-header";
 import { useHashTab } from "@/lib/use-hash-tab";
@@ -35,23 +37,23 @@ import { useHashTab } from "@/lib/use-hash-tab";
  * where someone can act on it. As one shared card at the top it was a summary of
  * two unrelated things that the reader then had to carry to the right tab.
  */
-type AdminTab = "cost" | "architecture" | "agent" | "conventions";
+type AdminTab = "cost" | "architecture" | "agent" | "conventions" | "libraries";
 
 const ADMIN_TABS: readonly AdminTab[] = [
   "cost",
   "architecture",
   "agent",
   "conventions",
+  "libraries",
 ];
 
 /**
  * What Terrablox knows because somebody wrote it down.
  *
- * Reachable at `/admin`, and linked from the user menu for every signed-in user
- * — there is no role check behind it. That is acceptable only because there is
- * nothing here but classification tables that also ship in the source; the
- * moment this page shows another tenant's data, it needs a real gate. The one
- * write surface, the harness editor, already carries its own scope.
+ * Reachable at `/admin`, and linked from the user menu for every signed-in user.
+ * Curation remains caller-scoped. The Module Libraries tab is different: every
+ * request behind it checks the instance-level admin role before reading or
+ * changing shared configuration.
  *
  * The coverage figures are the reason it exists. A curated table looks complete
  * in the source and is only ever as good as its overlap with what people
@@ -113,6 +115,11 @@ export default function AdminPage() {
         icon: BookMarked,
         count: data?.conventions.conventionalLabels.length,
       },
+      {
+        value: "libraries",
+        label: "Libraries",
+        icon: Library,
+      },
     ],
     [data],
   );
@@ -129,14 +136,16 @@ export default function AdminPage() {
             content. */}
         <TabsNav
           idPrefix="admin"
-          label="Curation categories"
+          label="Admin settings categories"
           onChange={setTab}
           tabs={tabs}
           value={tab}
         />
 
         <main {...tabPanelProps("admin", tab)} className="flex-1 space-y-6 p-6">
-          {error ? (
+          {tab === "libraries" ? (
+            <ModuleLibrariesPanel />
+          ) : error ? (
             <p className="text-sm text-destructive">{error}</p>
           ) : !data ? (
             <>

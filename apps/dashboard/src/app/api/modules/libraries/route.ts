@@ -2,7 +2,10 @@ import { NextResponse } from "next/server";
 import { routeError, unauthorized } from "@/lib/api/route-error";
 import { getCurrentUserId } from "@/lib/auth/server-helpers";
 import { visibleLibraries } from "@/lib/module-library/libraries";
-import { libraryStatus } from "@/lib/module-library/library-sync";
+import {
+  globalLibraryStatus,
+  libraryStatus,
+} from "@/lib/module-library/library-sync";
 
 // Per user and per request. Without this, the try/catch below swallows the
 // signal Next uses to detect `headers()` and the route is prerendered once.
@@ -14,26 +17,40 @@ export const dynamic = "force-dynamic";
  * automatic sync endpoint discovers them without exposing their name, organisation,
  * topics, or status to the browser first.
  *
- * Global libraries are imported by an operator and have no per-user status.
+ * With `?includeGlobal=1`, globally managed libraries are prepended as
+ * read-only status cards for the account page. Other callers keep the per-user
+ * list only, so their synchronization behavior does not change.
  *
  * Database only — no GitHub call — so it is cheap enough for every page load.
  * The client decides from `stale` whether to ask for a sync.
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const userId = await getCurrentUserId();
     if (!userId) return unauthorized();
 
     const now = new Date();
-    const libraries = (
+    const includeGlobal =
+      new URL(request.url).searchParams.get("includeGlobal") === "1";
+    const [definitions, globalDefinitions] = await Promise.all([
+      visibleLibraries("user"),
+      includeGlobal ? visibleLibraries("global") : Promise.resolve([]),
+    ]);
+    const personal = (
       await Promise.all(
-        visibleLibraries("user").map((library) =>
-          libraryStatus(userId, library, now),
-        ),
+        definitions.map((library) => libraryStatus(userId, library, now)),
       )
-    ).filter((library) => library.ready);
+    ).filter(
+      (library) =>
+        library.ready ||
+        library.hint !== null ||
+        (library.state === "error" && library.lastSyncedAt !== null),
+    );
+    const global = await Promise.all(
+      globalDefinitions.map(globalLibraryStatus),
+    );
 
-    return NextResponse.json({ libraries });
+    return NextResponse.json({ libraries: [...global, ...personal] });
   } catch (e) {
     return routeError("modules.libraries", e);
   }

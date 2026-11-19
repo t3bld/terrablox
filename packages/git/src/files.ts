@@ -73,6 +73,41 @@ export interface CommitResult {
 }
 
 /**
+ * Creates the root commit of a repository through GitHub's Contents API.
+ *
+ * Ordinary edits stay on {@link commitFiles}; this endpoint is reserved for the
+ * one state where that Git Data flow cannot work because no branch head exists.
+ * `sha` is deliberately absent from the body, making this create-only.
+ */
+export async function createInitialRepoFile(
+  token: string,
+  params: {
+    repoFullName: string;
+    path: string;
+    message: string;
+    content: string;
+  },
+): Promise<{ sha: string }> {
+  const response = await githubRequest(
+    token,
+    `/repos/${params.repoFullName}/contents/${encodeRepoPath(params.path)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: params.message,
+        content: Buffer.from(params.content, "utf8").toString("base64"),
+      }),
+    },
+  );
+  const body = (await response.json()) as { commit?: { sha?: string } };
+  if (!body.commit?.sha) {
+    throw new GithubRequestError("GitHub created no initial commit", 502);
+  }
+  return { sha: body.commit.sha };
+}
+
+/**
  * Commits several files as one revision through the Git data API.
  *
  * The contents API can only write one file per commit, and a graph edit

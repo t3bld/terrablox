@@ -149,7 +149,7 @@ export async function describeBootstrapStack(
     if (/does not exist/i.test(errorMessage(error))) return null;
     if (errorName(error) === "AccessDenied") {
       throw new AwsConnectionError(
-        "The connected role may not read CloudFormation stacks.",
+        "The connected role may not read CloudFormation stacks (cloudformation:DescribeStacks). Setting up deployment needs CloudFormation and IAM in the same role or SSO permission set, for example AdministratorAccess. A set that only covers IAM, or one like PowerUser that excludes it, is not enough.",
         "denied",
       );
     }
@@ -204,6 +204,22 @@ async function firstFailureReason(
   } catch {
     return null;
   }
+}
+
+/**
+ * Why a stack that has already been rolled back and deleted failed.
+ *
+ * Takes the stack *ARN*, not the name. A deleted stack no longer answers to its
+ * name, but CloudFormation keeps answering to its ARN for 90 days, events
+ * included. That matters because the wizard polls every five seconds while
+ * `OnFailure: DELETE` takes about three to remove a failed stack, so the reason
+ * is usually gone by name before any poll has seen it.
+ */
+export async function deletedStackFailureReason(
+  session: ProjectAwsSession,
+  stackId: string,
+): Promise<string | null> {
+  return firstFailureReason(session, stackId);
 }
 
 /** The audience the role's trust policy requires, and the provider must accept. */
@@ -371,7 +387,7 @@ export async function applyBootstrapStack(
 function toApplyError(error: unknown): AwsConnectionError {
   if (errorName(error) === "AccessDenied") {
     return new AwsConnectionError(
-      "The connected role may not create this stack. It needs permission for IAM, S3 and CloudFormation.",
+      "The connected role may not create this stack. It needs CloudFormation, IAM, S3 and KMS in the same role or SSO permission set, for example AdministratorAccess.",
       "denied",
     );
   }

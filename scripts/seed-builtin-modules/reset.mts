@@ -22,18 +22,16 @@
 import { createInterface } from "node:readline/promises";
 
 import { prisma } from "@/lib/database";
-import {
-  moduleLibraries,
-  TERRABLOX_LIBRARY_ID,
-} from "@/lib/module-library/libraries";
+import { moduleLibraries } from "@/lib/module-library/libraries";
+import { TERRABLOX_LIBRARY_ID } from "@/lib/module-library/library-definition";
 import { BUILTIN_USER_ID } from "@/lib/module-library/ownership";
 
 const flag = process.argv.indexOf("--library");
 const libraryId =
   flag >= 0 ? (process.argv[flag + 1] ?? "") : TERRABLOX_LIBRARY_ID;
-const library = moduleLibraries().find((def) => def.id === libraryId);
+const library = (await moduleLibraries()).find((def) => def.id === libraryId);
 
-// Unconfigured ids are allowed, so rows of a removed library can be cleaned up;
+// Inactive or removed ids are allowed so their rows can be cleaned up;
 // per-user ones are not, because their rows belong to users.
 if (library?.scope === "user") {
   console.error(

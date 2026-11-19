@@ -55,6 +55,7 @@
 import {
   KNOWLEDGE_APP_REPO,
   KNOWLEDGE_MODULE_LIBRARY,
+  KNOWLEDGE_PROJECT_DOCUMENTS,
   KNOWLEDGE_PROJECT_REPO,
 } from "./knowledge";
 import {
@@ -328,6 +329,7 @@ export type HarnessSetting =
   | "appRepoFileChars"
   | "disabledKnowledge"
   | "appRepo"
+  | "projectDocuments"
   | "disabledTools"
   | "mcpServers"
   | "allowDestructive"
@@ -444,6 +446,19 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     setting: "appRepo",
     knowledgeId: KNOWLEDGE_APP_REPO,
     source: "project-agent.ts → appRepo, knowledge.ts → app-repo",
+  },
+  {
+    id: "project-documents",
+    plane: "context",
+    label: "Project documents",
+    brief: "Requirements and migration material, read on demand.",
+    description:
+      "PDF, DOCX, text and Markdown files supplied for this project. Terrablox retains the original and extracts plain text; the agent receives a manifest and reads relevant sections through bounded, read-only tools. Documents belong to one project and can be withheld independently of the application repository.",
+    enforcement: "capability",
+    setting: "projectDocuments",
+    knowledgeId: KNOWLEDGE_PROJECT_DOCUMENTS,
+    source:
+      "context-documents.ts → list_context_documents, read_context_document",
   },
   {
     id: "app-repo-reads",
@@ -592,6 +607,16 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
     source: "project-agent.ts → checkInput, checkOutput; type-check.ts",
   },
   {
+    id: "aws-values",
+    plane: "guardrails",
+    label: "Values AWS rejects checked on arrival",
+    brief: "A value AWS would refuse mid-apply is refused now, with a fix.",
+    description:
+      "Some values are valid Terraform and still fail in AWS: a security group or rule description may only use letters, digits, spaces and . _ - : / ( ) # , @ [ ] + = & ; { } ! $ *, at most 255 characters. An apostrophe passes `validate` and `plan` and stops the apply half-way, with everything before it already created. Edit Module checks these values when it is called and refuses with the offending characters and a corrected value, so the model fixes it in the same turn. Covers security group descriptions only — the one such constraint that has bitten so far — not every limit AWS has.",
+    enforcement: "mediated",
+    source: "aws-value-guard.ts → moduleArgumentProblems",
+  },
+  {
     id: "projection",
     plane: "guardrails",
     label: "Queued edits projected",
@@ -610,6 +635,17 @@ export const HARNESS_ELEMENTS: readonly HarnessElement[] = [
       "An operation does not change anything. It queues an edit, and the app applies the queue after the turn as the same mutation a manual canvas edit makes, then commits once. That commit is the only moment anything the agent did reaches your Git repository, and it is an ordinary commit: readable, revertible, indistinguishable from a manual canvas edit. The privilege sits in our code, never in the model's hands.",
     enforcement: "mediated",
     source: "chat/route.ts → applyProjectMutation after the turn",
+  },
+  {
+    id: "commit-checks",
+    plane: "guardrails",
+    label: "Checked again before commit",
+    brief: "Each edit must still parse and carry no value AWS rejects.",
+    description:
+      "The last check, on the one commit path the canvas, the chat, agent runs and MCP share. Every file an edit changed must still parse, and the edit may not introduce a value AWS rejects at apply time; an edit failing either is not committed and its reason is shown in the turn's steps. A problem that was already in the repository does not block an unrelated edit. Stricter than the check on arrival because it reads the file as written rather than the argument as sent, so it also catches a value that reached the file some other way.",
+    enforcement: "mediated",
+    source:
+      "service.ts → assertStillParses; parse-guard.ts, aws-value-guard.ts",
   },
 
   // --- Agent loop ----------------------------------------------------------
@@ -807,7 +843,7 @@ export const TURN_LOOP: readonly TurnStep[] = [
     label: "We check the call",
     actor: "ours",
     detail:
-      "Our handler runs before anything happens: arguments and ports validated against the project as the queue will leave it, an edit queued rather than applied, an MCP call counted and recorded. A refusal is handed back as the result, so the model can correct itself on the next pass. This is the step that repeats — every guardrail we have sits here.",
+      "Our handler runs before anything happens: arguments and ports validated against the project as the queue will leave it, values AWS would reject at apply time refused, an edit queued rather than applied, an MCP call counted and recorded. A refusal is handed back as the result, so the model can correct itself on the next pass. This is the step that repeats — every guardrail we have sits here.",
     plane: "guardrails",
   },
   {
@@ -856,7 +892,7 @@ export const TURN_AFTER: readonly TurnStep[] = [
     label: "The queue is applied",
     actor: "ours",
     detail:
-      "Each queued edit is applied as the same mutation a manual canvas edit makes, then committed once. This is the only point in the turn where anything reaches your repository.",
+      "Each queued edit is applied as the same mutation a manual canvas edit makes, checked once more — it must still parse and carry no value AWS rejects — and then committed. This is the only point in the turn where anything reaches your repository; an edit refused here is reported in the steps and the rest still commit.",
     plane: "guardrails",
   },
   {

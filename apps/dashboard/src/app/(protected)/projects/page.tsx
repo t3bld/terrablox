@@ -115,7 +115,7 @@ export default function ProjectsPage() {
                 </div>
                 <h3 className="text-lg font-semibold mb-1">No projects yet</h3>
                 <p className="text-muted-foreground text-center mb-4">
-                  Import an existing, empty repository to start.
+                  Import an existing repository without Terraform to start.
                 </p>
                 <Button onClick={() => setDialogOpen(true)}>
                   <Download className="h-4 w-4 mr-2" />

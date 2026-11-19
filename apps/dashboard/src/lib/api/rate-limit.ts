@@ -77,6 +77,10 @@ export interface RateLimit {
 export const RATE_LIMITS = {
   /** Anything that forks the Copilot CLI or spends the user's model quota. */
   agentTurn: { max: 10, windowSeconds: 60 },
+  /** Debounced interactive module scenarios sent to the isolated cost service. */
+  costScenario: { max: 30, windowSeconds: 60 },
+  /** Backend cost scans spawn Infracost and may fetch private modules. */
+  costEstimate: { max: 10, windowSeconds: 60 },
   /** Anything that reaches a customer's AWS account or starts a pipeline. */
   infrastructure: { max: 20, windowSeconds: 60 },
   /** Writes that only touch our own database. */

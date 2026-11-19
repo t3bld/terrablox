@@ -633,10 +633,13 @@ async function resolveSubmoduleFolders(params: {
  * Refuses an owner/library pairing that would put rows where they don't belong.
  *
  * The one write-side rule that keeps private modules private: rows without an
- * owner are shared with every user, so only a library *configured as global*
- * may write them. A per-user library always writes one person's rows.
+ * owner are shared with every user, so only an active global definition may
+ * write them. A per-user library always writes one person's rows.
  */
-function assertLibraryOwner(userId: string | null, library: string | null) {
+async function assertLibraryOwner(
+  userId: string | null,
+  library: string | null,
+): Promise<void> {
   if (library === null) {
     if (userId === null) {
       throw new Error("A shared module must belong to a global library");
@@ -644,7 +647,7 @@ function assertLibraryOwner(userId: string | null, library: string | null) {
     return;
   }
 
-  const def = findModuleLibrary(library);
+  const def = await findModuleLibrary(library);
   if (!def) throw new Error(`Unknown module library '${library}'`);
 
   if (def.scope === "global" && userId !== null) {
@@ -670,7 +673,7 @@ export async function importModuleFromGit(
   const startedAt = performance.now();
   const { userId, token, repoFullName, refName } = input;
   const library = input.library ?? null;
-  assertLibraryOwner(userId, library);
+  await assertLibraryOwner(userId, library);
 
   const defaultName = repoFullName.split("/").pop() ?? repoFullName;
 

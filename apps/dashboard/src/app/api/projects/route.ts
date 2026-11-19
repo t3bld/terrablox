@@ -83,6 +83,14 @@ const createBody = z.object({
   terraformEntryFile: schema.relativeFolder.nullish(),
   /** Optional link to the application this infrastructure is for. */
   appRepo: z.unknown().optional(),
+  /** Pending uploads to claim atomically when the project row is created. */
+  contextDocumentIds: z
+    .array(z.string().uuid())
+    .max(10)
+    .default([])
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: "Document ids must be unique",
+    }),
 });
 
 /**
@@ -149,6 +157,15 @@ async function projectNameFor(
   return used.has(repoName.toLowerCase()) ? `${owner}-${repoName}` : repoName;
 }
 
+class ContextDocumentClaimError extends Error {
+  constructor() {
+    super(
+      "One or more context documents expired or no longer belong to this import. Upload them again.",
+    );
+    this.name = "ContextDocumentClaimError";
+  }
+}
+
 /** Terraform files are `.tf`; anything else could never hold a module block. */
 function normalizeEntryFile(input: string | null | undefined): string {
   const raw = (input ?? "").trim().replace(/^\/+/, "");
@@ -162,8 +179,10 @@ function normalizeEntryFile(input: string | null | undefined): string {
  * The binding is mandatory: the graph is a view of the repository, so a project
  * without one would have nothing to show and nowhere to write changes to.
  *
- * Nothing is created on GitHub, so nothing can be left behind there: every check runs
- * before the one write this handler makes, which is the project row.
+ * The binding may create one harmless README commit when GitHub explicitly
+ * reports a repository has no commits. That write happens before the database
+ * transaction: if a later database write fails, retrying the import sees the
+ * README and continues normally. Nothing is deleted or rolled back on GitHub.
  */
 export async function POST(req: Request) {
   let userId: string;
@@ -208,8 +227,8 @@ export async function POST(req: Request) {
   }
 
   // The refusals carry their own message because each one has a fix on GitHub —
-  // grant the repository, give it a first commit, pick one without Terraform — and
-  // a generic "invalid repository" would leave the user guessing which.
+  // grant the repository, choose an existing branch, pick one without Terraform —
+  // and a generic "invalid repository" would leave the user guessing which.
   let bound: Awaited<ReturnType<typeof bindExistingRepo>>;
   try {
     bound = await bindExistingRepo(token, body.repo.fullName, body.branch);
@@ -230,27 +249,52 @@ export async function POST(req: Request) {
   }
 
   try {
-    const project = await database.project.create({
-      data: {
-        userId,
-        name: await projectNameFor(userId, bound.repo.fullName),
-        provider: "github",
-        repoFullName: bound.repo.fullName,
-        repoUrl: bound.repo.htmlUrl,
-        repoBranch: bound.branch,
-        // `bindExistingRepo` accepts only repositories without a single `.tf` file,
-        // so the root configuration can only be the repository root. Nothing to
-        // detect and nothing to ask.
-        terraformRootFolder: normalizeFolder(null),
-        terraformEntryFile: normalizeEntryFile(body.terraformEntryFile),
-        ...appRepoColumns(appRepo ?? null),
-        // Round-tripped through JSON so Prisma sees a plain value, the same way
-        // `saveAgentOverrides` does it: `AgentOverrides` has optional keys, which
-        // its `InputJsonValue` type will not accept.
-        agentOverrides: JSON.parse(
-          JSON.stringify(await snapshotAgentSettings(userId, token)),
-        ),
-      },
+    // Resolve everything external before opening the transaction. It then holds
+    // only the project insert and document claims, which either both commit or
+    // neither does.
+    const [name, agentOverrides] = await Promise.all([
+      projectNameFor(userId, bound.repo.fullName),
+      snapshotAgentSettings(userId, token),
+    ]);
+
+    const project = await database.$transaction(async (tx) => {
+      const created = await tx.project.create({
+        data: {
+          userId,
+          name,
+          provider: "github",
+          repoFullName: bound.repo.fullName,
+          repoUrl: bound.repo.htmlUrl,
+          repoBranch: bound.branch,
+          // `bindExistingRepo` accepts only repositories without a single `.tf` file,
+          // so the root configuration can only be the repository root. Nothing to
+          // detect and nothing to ask.
+          terraformRootFolder: normalizeFolder(null),
+          terraformEntryFile: normalizeEntryFile(body.terraformEntryFile),
+          ...appRepoColumns(appRepo ?? null),
+          // Round-tripped through JSON so Prisma sees a plain value, the same way
+          // `saveAgentOverrides` does it: `AgentOverrides` has optional keys, which
+          // its `InputJsonValue` type will not accept.
+          agentOverrides: JSON.parse(JSON.stringify(agentOverrides)),
+        },
+      });
+
+      if (body.contextDocumentIds.length > 0) {
+        const claimed = await tx.projectContextDocument.updateMany({
+          where: {
+            id: { in: body.contextDocumentIds },
+            userId,
+            projectId: null,
+            expiresAt: { gt: new Date() },
+          },
+          data: { projectId: created.id, expiresAt: null },
+        });
+        if (claimed.count !== body.contextDocumentIds.length) {
+          throw new ContextDocumentClaimError();
+        }
+      }
+
+      return created;
     });
 
     return NextResponse.json(
@@ -258,6 +302,9 @@ export async function POST(req: Request) {
       { status: 201 },
     );
   } catch (e) {
+    if (e instanceof ContextDocumentClaimError) {
+      return NextResponse.json({ error: e.message }, { status: 409 });
+    }
     // Through `routeError` rather than echoing `e.message`: what can fail here is
     // the database, and its error text is not for the browser.
     return routeError("project.create", e);

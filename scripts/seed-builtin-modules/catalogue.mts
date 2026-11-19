@@ -12,11 +12,7 @@
  */
 
 import { pickLatest } from "@terrablox/terraform/versions";
-import {
-  DEFAULT_TERRABLOX_LIBRARY,
-  findModuleLibrary,
-  TERRABLOX_LIBRARY_ID,
-} from "@/lib/module-library/libraries";
+import { DEFAULT_TERRABLOX_LIBRARY } from "@/lib/module-library/library-definition";
 import {
   serviceSlug as catalogueServiceSlug,
   SERVICE_NAMES,
@@ -26,14 +22,11 @@ import {
 export { SERVICE_NAMES };
 
 /**
- * Which repositories make up the catalogue: the `terrablox` entry of
- * TERRABLOX_MODULE_LIBRARIES, so the sync, the website snapshot and the
- * dashboard can never disagree. The default entry stands in where the list has
- * none — the website build has no reason to configure the dashboard.
+ * Static catalogue coordinates. Snapshot generation deliberately has no
+ * database, while operational sync receives its DB-backed definition directly.
  */
-const library = findModuleLibrary(TERRABLOX_LIBRARY_ID);
-export const ORG = library?.org ?? DEFAULT_TERRABLOX_LIBRARY.org;
-export const PREFIX = library?.prefix ?? DEFAULT_TERRABLOX_LIBRARY.prefix;
+export const ORG = DEFAULT_TERRABLOX_LIBRARY.org;
+export const PREFIX = DEFAULT_TERRABLOX_LIBRARY.prefix;
 
 /**
  * Where submodules live in these repositories.

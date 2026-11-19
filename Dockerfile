@@ -59,6 +59,58 @@ RUN corepack enable && corepack prepare pnpm@8.15.0 --activate
 
 WORKDIR /app
 
+# --- Infracost --------------------------------------------------------------
+#
+# Cost estimates run inside Terrablox, never in a repository workflow. The
+# binary is pinned and its reviewed release digest is checked here so a release
+# asset changing underneath the tag fails the image build rather than silently
+# changing every estimate.
+FROM base AS infracost
+
+ARG TARGETARCH
+ARG INFRACOST_VERSION=2.18.3
+
+RUN apt-get update \
+	&& apt-get install --no-install-recommends -y curl \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& case "$TARGETARCH" in \
+		amd64) sha256="0950674d6e19eee5c492e59b415f3078c7c6b72421f940543c6cfa884692874e" ;; \
+		arm64) sha256="8aae48dde9d0c3cb2e555306ff4e01eb624a704ebefd576e4fce1c8e6071ec9a" ;; \
+		*) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+	esac \
+	&& asset="infracost-linux-${TARGETARCH}.tar.gz" \
+	&& url="https://github.com/infracost/cli/releases/download/v${INFRACOST_VERSION}/${asset}" \
+	&& curl -fsSL "$url" -o "/tmp/${asset}" \
+	&& echo "${sha256}  /tmp/${asset}" | sha256sum -c - \
+	&& mkdir -p /opt/infracost \
+	&& tar -xzf "/tmp/${asset}" -C /opt/infracost infracost \
+	&& chmod 0755 /opt/infracost/infracost \
+	&& rm "/tmp/${asset}" \
+	&& /opt/infracost/infracost version >/dev/null
+
+# A small HTTP sidecar around the CLI. It is a separate target so local Next on
+# the host and the production dashboard container use the same execution path.
+FROM infracost AS cost-service
+
+ENV NODE_ENV=production
+ENV PORT=8090
+ENV INFRACOST_BINARY=/opt/infracost/infracost
+ENV INFRACOST_CLI_PLUGIN_AUTO_UPDATE=false
+
+WORKDIR /app
+COPY --chown=node:node apps/cost-service/server.mjs /app/server.mjs
+RUN mkdir -p /home/node/.cache/infracost \
+	&& chown -R node:node /home/node
+ENV HOME=/home/node
+USER node
+
+EXPOSE 8090
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+	CMD node -e "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "/app/server.mjs"]
+
 # --- dependencies ------------------------------------------------------------
 
 FROM base AS deps
@@ -67,6 +119,7 @@ FROM base AS deps
 # source edit and is rebuilt only when a dependency actually changes.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/dashboard/package.json apps/dashboard/
+COPY apps/cost-service/package.json apps/cost-service/
 # Neither the marketing site nor the MCP server is built into this image — the
 # runtime stage below copies only apps/dashboard. Their manifests are here so the
 # workspace pnpm sees matches the one the lockfile was written against.
@@ -77,9 +130,13 @@ COPY apps/dashboard/package.json apps/dashboard/
 # rather than in packages/, despite being a library in most other respects.
 COPY apps/website/package.json apps/website/
 COPY apps/mcp-server/package.json apps/mcp-server/
+COPY packages/agent-harness/package.json packages/agent-harness/
 COPY packages/auth/package.json packages/auth/
+COPY packages/aws/package.json packages/aws/
 COPY packages/database/package.json packages/database/
+COPY packages/git/package.json packages/git/
 COPY packages/graph/package.json packages/graph/
+COPY packages/terraform/package.json packages/terraform/
 COPY packages/tsconfig/package.json packages/tsconfig/
 COPY packages/ui/package.json packages/ui/
 
@@ -115,6 +172,11 @@ ARG NEXT_PUBLIC_APP_URL=""
 ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 
 ENV NODE_ENV=production
+# Build-only placeholder. This stage is not the runtime image and no session is
+# created while prerendering; the runner still requires the real secret from its
+# environment. Without a value, importing an authenticated route aborts `next
+# build` before it can collect page data.
+ENV BETTER_AUTH_SECRET=build-only-not-a-runtime-secret-000000000000
 
 RUN pnpm --filter @terrablox/dashboard build
 
@@ -181,6 +243,8 @@ FROM base AS runner
 ENV NODE_ENV=production
 ENV PORT=3001
 ENV HOST=0.0.0.0
+ENV INFRACOST_BINARY=/opt/infracost/infracost
+ENV INFRACOST_CLI_PLUGIN_AUTO_UPDATE=false
 
 # Deliberately not HOSTNAME, which Docker already sets to the container id -
 # passing that to `next start -H` binds the server to a name nothing resolves.
@@ -196,6 +260,7 @@ COPY --from=builder --chown=node:node /app/apps/dashboard/next.config.mjs ./apps
 COPY --from=builder --chown=node:node /app/apps/dashboard/.next ./apps/dashboard/.next
 COPY --from=builder --chown=node:node /app/apps/dashboard/public ./apps/dashboard/public
 COPY --from=builder /app/.copilot-cli-dist /app/.copilot-cli-dist
+COPY --from=infracost /opt/infracost /opt/infracost
 
 # packages/ comes across whole rather than pruned: it carries prisma/migrations,
 # which is what lets this same image run `prisma migrate deploy` as a one-off

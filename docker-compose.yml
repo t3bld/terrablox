@@ -94,6 +94,40 @@ services:
           memory: 512m
           cpus: "1.0"
 
+  cost-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: cost-service
+    image: terrablox/cost-service:${TERRABLOX_VERSION:-latest}
+    container_name: terrablox-cost-service
+    restart: unless-stopped
+    environment:
+      COST_SERVICE_TOKEN: ${COST_SERVICE_TOKEN:?set COST_SERVICE_TOKEN in .env}
+      INFRACOST_CLI_AUTHENTICATION_TOKEN: ${INFRACOST_CLI_AUTHENTICATION_TOKEN:-}
+      INFRACOST_CLI_CURRENCY: ${INFRACOST_CLI_CURRENCY:-EUR}
+      INFRACOST_CLI_PRICING_ENDPOINT: ${INFRACOST_CLI_PRICING_ENDPOINT:-}
+      INFRACOST_CLI_PRICING_API_KEY: ${INFRACOST_CLI_PRICING_API_KEY:-}
+    read_only: true
+    volumes:
+      - terrablox-cost-cache:/home/node/.cache/infracost
+    tmpfs:
+      - /tmp:size=512m,mode=1777,exec
+      - /home/node/.config:size=32m,mode=0700,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - internal
+      - egress
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+          pids: 384
+
   dashboard:
     build:
       context: .
@@ -106,6 +140,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      cost-service:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-terrablox}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-terrablox}
       # `:?` here and not only on the migrate service. Compose interpolates the whole
@@ -126,9 +162,8 @@ services:
       # install page. Only wrong values are harmful: they lead to a 404 at the
       # moment somebody is trying to grant access.
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-terrablox}
-      # Module libraries as one JSON array (docs/quickstart.md). Empty means the
-      # default: Terrablox + Porsche, both visible.
-      TERRABLOX_MODULE_LIBRARIES: ${TERRABLOX_MODULE_LIBRARIES:-}
+      COST_SERVICE_URL: http://cost-service:8090
+      COST_SERVICE_TOKEN: ${COST_SERVICE_TOKEN:?set COST_SERVICE_TOKEN in .env}
       # Off unless a proxy in front overwrites X-Forwarded-For. Left on without one,
       # the audit trail records whatever a caller put in the header, which is worse
       # than recording nothing.
@@ -195,3 +230,4 @@ networks:
 
 volumes:
   terrablox-data:
+  terrablox-cost-cache:

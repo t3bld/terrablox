@@ -105,7 +105,7 @@ middle of a deployment, as a `404` that reads like a deleted repository.
 | Permission | Level | Why |
 | --- | --- | --- |
 | Repository → Metadata | Read | repository details, branches |
-| Repository → Contents | Read and write | read Terraform, commit the graph |
+| Repository → Contents | Read and write | read Terraform, initialize a completely empty repository, commit the graph |
 | Repository → Workflows | Read and write | commits touching `.github/workflows/` are refused without it, *on top of* Contents |
 | Repository → Actions | Read and write | start a deployment run and follow it |
 | Repository → Variables | Read and write | the pipeline's configuration |
@@ -137,11 +137,53 @@ what grants access to repositories. Terrablox links to the install page wherever
 repository list is empty, and on the account screen under *Repository access*.
 
 Choose *Only select repositories* — it is supported and recommended. Terrablox does
-not create repositories: a project is imported from one that already exists. To start
-a project, create an empty repository on GitHub with a README (the first commit is what
-Terrablox commits on top of), add it to the installation's selection, and pick it in
-*Import project*. The project is named after the repository. Only repositories without any `.tf` file are accepted, so the
-Terraform root is always the repository root and there is nothing to configure.
+not create repositories: a project is imported from one that already exists. Create
+one on GitHub, add it to the installation's selection, and pick it in *Import
+project*. It may be completely empty; Terrablox then creates the initial `README.md`
+commit on its default branch. The project is named after the repository. Only
+repositories without any `.tf` file are accepted, so the Terraform root is always
+the repository root and there is nothing to configure.
+
+## Cost estimates
+
+The project Costs tab runs the open-source Infracost CLI in a private Cost
+Service container. It does not create a GitHub workflow, run Terraform, commit a
+snapshot or need AWS credentials. The CLI parses the repository's HCL and
+Terrablox stores the result against the source commit, so opening the tab again
+spends no Infracost run until the code changes or someone explicitly refreshes
+prices.
+
+Create a personal or service-account token in Infracost under *Org Settings → API
+tokens*, then add these values to the root `.env`:
+
+```bash
+COST_SERVICE_TOKEN=<openssl rand -base64 32>
+COST_SERVICE_URL=http://127.0.0.1:8090
+INFRACOST_CLI_AUTHENTICATION_TOKEN=...
+INFRACOST_CLI_CURRENCY=USD
+```
+
+For local development, start PostgreSQL and the Cost Service together before the
+host-run dashboard:
+
+```bash
+pnpm services:up
+pnpm dev:dashboard
+```
+
+They can also be managed independently with `pnpm db:up`, `pnpm cost:up`,
+`pnpm db:down` and `pnpm cost:down`. Production `docker compose up -d --build`
+starts the same Cost Service on the private Compose network; its port is not
+published. Without the service or an Infracost token, the tab remains available
+and classifies recurring, usage-based and no-charge resources; only monetary
+estimates are disabled.
+
+A self-hosted pricing API can be used instead of the hosted token:
+
+```bash
+INFRACOST_CLI_PRICING_ENDPOINT=https://pricing.example.com
+INFRACOST_CLI_PRICING_API_KEY=...
+```
 
 ## Module libraries
 
@@ -149,42 +191,55 @@ Terrablox keeps *module libraries* in sync: sets of Terraform module repositorie
 users build projects from, next to the modules they import themselves. Every module
 shows which library it comes from, and the modules page can filter by library.
 
-All libraries are configured in one JSON array in `.env`, `TERRABLOX_MODULE_LIBRARIES`
-(one line). Unset, it holds the two defaults:
-
-```bash
-TERRABLOX_MODULE_LIBRARIES=[{"id":"terrablox","name":"Terrablox","scope":"global","visible":true,"org":"terrablox","prefix":"terrablox-aws-","submoduleContainer":"modules"},{"id":"porsche","name":"Porsche","scope":"user","visible":true,"org":"porsche-code","topics":["aws","cbbac"]}]
-```
+Library definitions are stored in PostgreSQL and managed under **Admin Settings →
+Libraries**. The initial migration creates the Terrablox and Porsche definitions;
+subsequent changes take effect without editing `.env` or restarting the dashboard.
 
 | Field | |
 | --- | --- |
-| `id` | Slug stored on every row, e.g. `terrablox`. Required. |
-| `name` | Label shown on every module. Required. |
-| `scope` | `global` or `user` (see below). Required. |
-| `visible` | `false` hides the library everywhere without touching its rows. Default `true`. |
-| `org` | GitHub org or user. Required. |
-| `prefix`, `topics` | Repository name prefix and/or topics, all of which must match. At least one is required. |
-| `publicOnly` | Global only: list public repositories only. Default `true`. |
-| `submoduleContainer` | Pinned submodule folder, e.g. `modules`. Default: detected. |
-| `pipelineSecret` | Repository secret generated pipelines read for private modules. Default `TERRABLOX_<ID>_MODULES_TOKEN`. |
+| `id` | Stable slug stored on imported rows, e.g. `terrablox`. It cannot change later. |
+| `name` | Label shown on every module. |
+| `scope` | `global` or `user`. It cannot change later. |
+| `visible` | Hides the library everywhere without deleting imported rows. |
+| `org` | GitHub organisation or user. |
+| `prefix`, `topics` | Repository prefix and/or topics, all of which must match. At least one is required. |
+| `publicOnly` | Global only: list public repositories only. |
+| `submoduleContainer` | Pinned submodule folder, e.g. `modules`. Empty means auto-detect. |
+| `pipelineSecret` | Repository secret name generated pipelines use for private modules. |
 
-Adding an entry adds a library without any code change. `[]` means no libraries. An
-invalid entry is skipped and logged. If the JSON is invalid as a whole, only the
-public Terrablox entry is used.
-There are two kinds:
-
-- **Global** (`"scope": "global"`): one shared copy that every user sees, such as the
-  **Terrablox** catalogue of AWS modules. An operator imports it with a token from
-  the shell.
-- **Per-user** (`"scope": "user"`): private repositories, such as **Porsche**. Each user's copy is read
-  with that user's own GitHub token (see below).
-
-Importing the Terrablox catalogue takes a GitHub token and a few minutes, so the
-quickstart asks first. To import it later:
+Every account currently starts with the instance-level `admin` role, so every
+signed-in user can configure module libraries. The role check remains in place so
+a stricter assignment model can be introduced later without reopening the API.
+If an account was manually demoted, an operator can restore access explicitly:
 
 ```bash
-GITHUB_TOKEN=$(gh auth token) pnpm db:builtin:sync    # = db:library:sync --library terrablox
-GITHUB_TOKEN=$(gh auth token) pnpm db:library:sync    # every global library
+pnpm db:user:promote --email you@example.com
+```
+
+For an existing installation that used a custom environment value, apply the
+migration and import that value once before deleting it:
+
+```bash
+pnpm db:migrate
+pnpm db:module-libraries:import-env
+```
+
+The application never reads `TERRABLOX_MODULE_LIBRARIES` at runtime; the command
+exists only to preserve an older installation's settings during this upgrade.
+
+There are two kinds:
+
+- **Global** (`scope: global`): one shared copy that every user sees, such as the
+  **Terrablox** catalogue. An operator imports it with a token from the shell.
+- **Per-user** (`scope: user`): each user's copy is discovered and imported with
+  that user's own GitHub token and repository grants.
+
+Importing a global catalogue takes a GitHub token and can take a few minutes. It is
+never part of dashboard or container startup:
+
+```bash
+GITHUB_TOKEN=$(gh auth token) pnpm db:builtin:sync    # Terrablox only
+GITHUB_TOKEN=$(gh auth token) pnpm db:library:sync    # every active global library
 pnpm db:library:status                                # rows and visibility per library
 ```
 
@@ -195,13 +250,9 @@ analysis.
 - `--prune` removes repositories the org no longer lists. Pruning is opt-in, because
   removing a shared module also removes it from every user's canvas.
 
-Container startup never imports anything: a sync takes minutes and needs a token.
-
-**Visibility is separate from importing.** `"visible": false` on an entry hides that
-library from every list, picker, agent and API, without deleting any rows. Switching
-it back on is instant, and a hidden library can still be imported in advance. While it's hidden, or before it has
-been imported, a project whose Terraform calls one of its modules shows that call as a
-node with no inputs or outputs.
+Archiving or hiding a library keeps its imported rows. Restoring it is therefore
+reversible. Changing repository selection invalidates per-user sync state so old
+private contents stay hidden until the next successful sync.
 
 ## Private module libraries (Porsche)
 
@@ -231,8 +282,8 @@ member of the org, the page links to the install page. GitHub only reveals publi
 memberships to the app. With a private membership you get no hint, so make the
 membership public or ask an owner.
 
-A per-user library is an entry with `"scope": "user"` in `TERRABLOX_MODULE_LIBRARIES`.
-To hide it without touching anyone's rows, set `"visible": false` on it.
+A per-user library is created with `scope: user` under **Admin Settings →
+Libraries**. Hide or archive it there without deleting anyone's imported rows.
 
 ### Pipelines that use Porsche modules
 

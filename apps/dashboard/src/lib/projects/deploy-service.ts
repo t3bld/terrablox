@@ -9,10 +9,8 @@ import {
   listRepoTree,
   readRepoFile,
 } from "@terrablox/git/files";
-import {
-  moduleLibraries,
-  needsPipelineToken,
-} from "@/lib/module-library/libraries";
+import { moduleLibraries } from "@/lib/module-library/libraries";
+import { needsPipelineToken } from "@/lib/module-library/library-definition";
 import {
   AWS_REGION_VARIABLE,
   AWS_ROLE_VARIABLE,
@@ -131,9 +129,9 @@ export async function privateModulesFor(
   token: string,
   project: Project,
 ): Promise<PrivateModuleAccess[]> {
-  // Every configured private library, visible or not: hiding a library in
+  // Every active private library, visible or not: hiding a library in
   // the UI does not change what `terraform init` has to clone.
-  const libraries = moduleLibraries().filter(needsPipelineToken);
+  const libraries = (await moduleLibraries()).filter(needsPipelineToken);
   if (libraries.length === 0) return [];
 
   try {
@@ -289,12 +287,19 @@ export async function readDeployState(
 
   // Compared against the project rather than merely present, so a role that was
   // replaced after the first setup shows as unfinished instead of done.
-  const variablesReady =
+  const roleVariablesReady =
     variables.error === null &&
     variables.role !== null &&
     variables.role === project.awsRoleArn &&
-    variables.region === project.awsRegion &&
+    variables.region === project.awsRegion;
+  // Only once the stack has produced the key: before that the bucket name is a
+  // reservation, not a bucket, and the role step no longer writes it.
+  const stateVariablesReady =
+    variables.error === null &&
+    project.stateKmsKeyArn !== null &&
+    variables.stateBucket !== null &&
     variables.stateBucket === project.stateBucket;
+  const variablesReady = roleVariablesReady && stateVariablesReady;
 
   return {
     settings,
@@ -310,12 +315,17 @@ export async function readDeployState(
         summary: template.summary,
         required: template.required,
         requires: template.requires,
+        changesInfrastructure: template.changesInfrastructure,
+        destroysInfrastructure: template.destroysInfrastructure,
+        lock: template.lock,
         enabled: template.required || !config.disabled.includes(template.id),
       })),
     },
     setup: {
       roleReady: project.awsRoleArn !== null,
       variablesReady,
+      roleVariablesReady,
+      stateVariablesReady,
       stateReady:
         project.stateBucket !== null && project.stateKmsKeyArn !== null,
       pipelineReady,

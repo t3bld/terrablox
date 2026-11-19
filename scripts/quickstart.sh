@@ -297,60 +297,7 @@ step "Applying database migrations"
 pnpm db:migrate
 ok "schema is up to date"
 
-# --- 5b. built-in module catalogue ------------------------------------------
-
-# Terrablox ships with ~50 standard AWS modules (terraform-aws-modules forks).
-# They need a GitHub token (no scopes required for public repos) and a few
-# minutes to import. The user gets to decide.
-step "Built-in module catalogue"
-
-if [ ! -t 0 ]; then
-	# Non-interactive (CI, piped): import automatically if token available.
-	builtin_token="${TERRABLOX_SEED_GITHUB_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
-	if [ -z "$builtin_token" ] && command -v gh >/dev/null 2>&1; then
-		builtin_token="$(gh auth token 2>/dev/null || true)"
-	fi
-	if [ -z "$builtin_token" ]; then
-		warn "no GitHub token found - skipping built-in modules"
-		info "run later: GITHUB_TOKEN=\$(gh auth token) pnpm db:builtin:sync"
-	else
-		info "importing the terrablox-aws-* catalogue..."
-		if GITHUB_TOKEN="$builtin_token" pnpm db:builtin:sync; then
-			ok "built-in modules are available to every user"
-		else
-			warn "the catalogue did not import cleanly - re-run: pnpm db:builtin:sync"
-		fi
-	fi
-else
-	# Interactive terminal: ask the user.
-	printf '\n'
-	printf '    %sImport Terrablox best practice terraform modules catalogue? [Y/n]%s ' "$BOLD" "$RESET"
-	read -r answer </dev/tty || answer=""
-	case "$answer" in
-		[nN]|[nN][oO])
-			muted "skipping - import later with: GITHUB_TOKEN=\$(gh auth token) pnpm db:builtin:sync"
-			;;
-		*)
-			builtin_token="${TERRABLOX_SEED_GITHUB_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
-			if [ -z "$builtin_token" ] && command -v gh >/dev/null 2>&1; then
-				builtin_token="$(gh auth token 2>/dev/null || true)"
-			fi
-			if [ -z "$builtin_token" ]; then
-				warn "no GitHub token found - gh CLI not logged in?"
-				info "run: gh auth login && GITHUB_TOKEN=\$(gh auth token) pnpm db:builtin:sync"
-			else
-				info "importing..."
-				if GITHUB_TOKEN="$builtin_token" pnpm db:builtin:sync; then
-					ok "built-in modules are available to every user"
-				else
-					warn "the catalogue did not import cleanly - re-run: pnpm db:builtin:sync"
-				fi
-			fi
-			;;
-	esac
-fi
-
-# --- 5c. configuration summary ----------------------------------------------
+# --- 5b. configuration summary ----------------------------------------------
 
 # Every variable the code actually reads, with what its absence costs. Built by
 # grepping for `process.env.` rather than from memory, because a list maintained

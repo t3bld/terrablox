@@ -65,7 +65,13 @@ export async function listWorkflowRuns(
  */
 export async function dispatchWorkflow(
   token: string,
-  params: { repoFullName: string; workflowFile: string; ref: string },
+  params: {
+    repoFullName: string;
+    workflowFile: string;
+    ref: string;
+    /** The workflow's `workflow_dispatch` inputs, e.g. a destroy confirmation. */
+    inputs?: Record<string, string>;
+  },
 ): Promise<void> {
   const file = params.workflowFile.split("/").pop() ?? params.workflowFile;
 
@@ -77,7 +83,11 @@ export async function dispatchWorkflow(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ref: params.ref }),
+      body: JSON.stringify(
+        params.inputs
+          ? { ref: params.ref, inputs: params.inputs }
+          : { ref: params.ref },
+      ),
     },
   );
 }

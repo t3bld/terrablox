@@ -14,7 +14,7 @@ import { layoutArchitecture } from "@terrablox/terraform/architecture-layout";
 import { createScope } from "@terrablox/terraform/evaluate";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { LayoutGrid } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ProjectGraph } from "@/lib/projects/types";
 
 /**
@@ -43,13 +43,6 @@ interface NestedModule {
   }[];
 }
 
-/**
- * Beyond this many boxes a diagram stops being readable, so deeper levels stay
- * folded until the reader opens them. The project's own blocks are always
- * opened — showing them closed would just be the canvas again.
- */
-const AUTO_EXPAND_BUDGET = 40;
-
 interface ProjectArchitectureViewProps {
   projectId: string;
   graph: ProjectGraph | null;
@@ -68,16 +61,19 @@ export function ProjectArchitectureView({
     null,
   );
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(
+  /**
+   * Module frames the user opened or closed by hand, against the default.
+   *
+   * The default is open for a VPC and closed for everything else: the VPC is the
+   * frame the other services are drawn inside, so folded it hides where they sit.
+   */
+  const [toggled, setToggled] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
   const [positions, setPositions] = useState<
     Record<string, { x: number; y: number }>
   >({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  // Auto-expansion runs until nothing more fits, then hands control over: a
-  // module the reader closed must not spring open again on the next render.
-  const autoExpandSettled = useRef(false);
 
   const moduleIds = useMemo(() => {
     const ids = new Set<string>();
@@ -97,7 +93,6 @@ export function ProjectArchitectureView({
 
     const controller = new AbortController();
     setLoading(true);
-    autoExpandSettled.current = false;
 
     void (async () => {
       try {
@@ -211,45 +206,40 @@ export function ProjectArchitectureView({
     [graph],
   );
 
+  // Root-level calls whose module declares a VPC. Their path is `module.<name>`,
+  // the same key the builder checks.
+  const vpcPaths = useMemo(() => {
+    const paths = new Set<string>();
+    for (const call of moduleCalls) {
+      const contents = call.moduleId ? modules?.[call.moduleId] : null;
+      if (contents?.resources.some((r) => r.resourceType === "aws_vpc")) {
+        paths.add(`module.${call.name}`);
+      }
+    }
+    return paths;
+  }, [moduleCalls, modules]);
+
+  const expanded = useMemo(() => {
+    const open = new Set<string>();
+    for (const path of vpcPaths) if (!toggled.has(path)) open.add(path);
+    for (const path of toggled) if (!vpcPaths.has(path)) open.add(path);
+    return open;
+  }, [vpcPaths, toggled]);
+
   const architecture = useMemo(
     () =>
       buildArchitecture(
         [],
         references,
         moduleCalls,
-        { expanded: expanded as Set<string>, moduleFor },
+        { expanded, moduleFor },
         projectScope,
       ),
     [references, moduleCalls, expanded, moduleFor, projectScope],
   );
 
-  useEffect(() => {
-    if (loading || autoExpandSettled.current) return;
-
-    let budget = AUTO_EXPAND_BUDGET - architecture.nodes.length;
-    const next = new Set(expanded);
-    let opened = false;
-
-    for (const node of architecture.nodes) {
-      if (!node.expandable || !node.path || node.expanded) continue;
-      // The project's own blocks open regardless of budget: their contents are
-      // the whole point of this level.
-      const isProjectBlock = !node.path.includes("/");
-      const cost = node.expandableCount ?? 0;
-      if (!isProjectBlock && cost > budget) continue;
-
-      budget -= cost;
-      next.add(node.path);
-      opened = true;
-    }
-
-    if (opened) setExpanded(next);
-    else autoExpandSettled.current = true;
-  }, [loading, architecture, expanded]);
-
   const toggleExpand = useCallback((path: string) => {
-    autoExpandSettled.current = true;
-    setExpanded((current) => {
+    setToggled((current) => {
       const next = new Set(current);
       if (!next.delete(path)) next.add(path);
       return next;
@@ -276,6 +266,11 @@ export function ProjectArchitectureView({
           icon: node.icon,
           count: node.addresses.length,
           zone: node.zone,
+          attachments: node.attachments?.map((attachment) => ({
+            service: attachment.service,
+            icon: attachment.icon,
+            count: attachment.addresses.length,
+          })),
           moduleCall: node.isModuleCall,
           expandPath: node.expandable ? node.path : undefined,
           expandableCount: node.expandableCount,
@@ -310,8 +305,8 @@ export function ProjectArchitectureView({
         <LayoutGrid className="h-8 w-8 text-muted-foreground" />
         <p className="font-medium text-sm">Nothing to draw yet</p>
         <p className="max-w-md text-muted-foreground text-xs">
-          Add modules on the detail level; this view then shows the AWS services
-          they deploy and how they connect.
+          Add modules from the Modules panel; this view then shows the AWS
+          services they deploy and how they connect.
         </p>
       </div>
     );

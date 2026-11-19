@@ -22,7 +22,6 @@ import {
   CardGridSkeleton,
   PageSkeleton,
 } from "@/components/layout/page-skeleton";
-import { LibraryAccessHint } from "@/components/module-overview/library-access-hint";
 import { RepositoryCard } from "@/components/module-overview/repository-card";
 import type { RepositoryDto } from "@/components/module-overview/types";
 import { useModuleLibraries } from "@/components/module-overview/use-module-libraries";
@@ -318,10 +317,6 @@ export default function ModulesPage() {
               ) : null}
             </div>
           </div>
-
-          {libraries.map((library) => (
-            <LibraryAccessHint key={library.id} library={library} />
-          ))}
 
           {libraries.some(
             (library) =>

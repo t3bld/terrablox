@@ -28,6 +28,9 @@ model User {
   email         String   @unique @db.Text
   emailVerified Boolean  @default(false)
   image         String?  @db.Text
+  /// Instance-level authorization role. Every account starts as `admin`; the
+  /// role remains explicit so a stricter assignment model can be added later.
+  systemRole    String   @default("admin") @map("system_role") @db.Text
   createdAt     DateTime @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
@@ -60,6 +63,8 @@ model User {
   harnessCuration HarnessCuration?
   auditEvents     AuditEvent[]
   moduleLibrarySyncs ModuleLibrarySync[]
+  contextDocuments   ProjectContextDocument[]
+  agentRuns          AgentRun[]
 
   @@map("user")
   @@schema("public")
@@ -282,6 +287,16 @@ model Project {
   awsAccountId   String? @map("aws_account_id") @db.Text
   awsRegion      String  @default("eu-central-1") @map("aws_region") @db.Text
   awsRoleArn     String? @map("aws_role_arn") @db.Text
+  /// How this project signs in to AWS through IAM Identity Center: the portal,
+  /// its region, the permission set and the account's display name.
+  ///
+  /// Kept on the project rather than only on the sign-in, which is deleted when
+  /// the project is disconnected and expires on its own. A finished setup keeps
+  /// using exactly these, so signing in again only needs the device code.
+  awsSsoStartUrl   String? @map("aws_sso_start_url") @db.Text
+  awsSsoRegion     String? @map("aws_sso_region") @db.Text
+  awsSsoRoleName   String? @map("aws_sso_role_name") @db.Text
+  awsAccountLabel  String? @map("aws_account_label") @db.Text
   /// S3 backend for the Terraform state. Without one, every pipeline run starts
   /// from an empty state and tries to create the whole stack again.
   stateBucket    String? @map("state_bucket") @db.Text
@@ -315,6 +330,11 @@ model Project {
   /// same as an empty value.
   deployTemplates Json? @map("deploy_templates") @db.JsonB
 
+  /// Project-level Infracost usage inputs keyed by resource address and usage key.
+  /// Kept separate from snapshots: these are the user's current assumptions;
+  /// every snapshot stores the exact copy it was calculated with.
+  costUsage Json? @map("cost_usage") @db.JsonB
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -324,9 +344,76 @@ model Project {
   operations      ProjectOperation[]
   decisions       ProjectDecision[]
   transformations ProjectTransformation[]
+  contextDocuments ProjectContextDocument[]
+  costSnapshots     ProjectCostSnapshot[]
+  agentRuns         AgentRun[]
 
   @@index([userId])
   @@map("projects")
+  @@schema("public")
+}
+
+/// One immutable backend cost calculation for a project revision.
+///
+/// The normalized breakdown is JSON because estimator schemas evolve; the fields
+/// used for cache lookup and history stay scalar. Money remains decimal text so a
+/// JavaScript float cannot change a provider price while serializing it.
+model ProjectCostSnapshot {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+
+  sourceSha        String @map("source_sha") @db.Text
+  region           String @db.Text
+  currency         String @db.Text
+  totalMonthlyCost String? @map("total_monthly_cost") @db.Text
+  resourceCount    Int    @map("resource_count")
+  costedResources  Int    @map("costed_resources")
+  freeResources    Int    @map("free_resources")
+  estimatorVersion String @map("estimator_version") @db.Text
+  assumptionsHash   String @default("") @map("assumptions_hash") @db.Text
+  usageAssumptions  Json   @default("{}") @map("usage_assumptions") @db.JsonB
+  breakdown        Json   @default("[]") @db.JsonB
+  diagnostics      Json   @default("[]") @db.JsonB
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([projectId, sourceSha, region, estimatorVersion, assumptionsHash])
+  @@map("project_cost_snapshots")
+  @@schema("public")
+}
+
+/// A document supplied as source material for one project's infrastructure.
+///
+/// The original is retained so extraction can be improved without asking the
+/// user to upload it again. `extractedText` is the deterministic, plain-text copy
+/// the agent reads. A null `projectId` is a staged upload from the import dialog;
+/// it expires unless the create-project transaction claims it.
+model ProjectContextDocument {
+  id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String  @map("user_id") @db.Uuid
+  projectId String? @map("project_id") @db.Uuid
+
+  originalName  String @map("original_name") @db.Text
+  mediaType     String @map("media_type") @db.Text
+  byteSize      Int    @map("byte_size")
+  sha256        String @db.Text
+  content       Bytes  @db.ByteA
+  extractedText String @map("extracted_text") @db.Text
+  characterCount Int   @map("character_count")
+
+  /// Set only while the upload is waiting for a project import to claim it.
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId, projectId])
+  @@index([expiresAt])
+  @@map("project_context_documents")
   @@schema("public")
 }
 
@@ -587,6 +674,12 @@ model AwsConnection {
   ssoAccessTokenCiphertext String? @map("sso_access_token_ciphertext") @db.Text
 
   ssoExpiresAt DateTime? @map("sso_expires_at") @db.Timestamptz(6)
+  /// Set only in `sso` mode, when the permission set may manage IAM but not use
+  /// CloudFormation. Terrablox then creates this role (see
+  /// `@terrablox/aws/setup-role`) and assumes it with the sign-in for every call,
+  /// because the deployment setup needs IAM, CloudFormation, S3 and KMS in one
+  /// session. Null means the sign-in is used as it is.
+  ssoSetupRoleArn String? @map("sso_setup_role_arn") @db.Text
 
   /// Null until the role could actually be assumed. A connection is only
   /// trusted for reads once this is set.
@@ -726,9 +819,9 @@ model TerraformModuleSource {
   /// NULL only for a user's own import. A global library row has no `userId` and
   /// a library; a per-user library row has both (each user's own copy, resolved
   /// with their own token). A CHECK constraint forbids rows with neither. Library
-  /// rows are managed by the sync and read-only to users, and a library's
-  /// `visible` flag in TERRABLOX_MODULE_LIBRARIES hides them from every read
-  /// path; see lib/module-library/ownership.ts.
+  /// rows are managed by the sync and read-only to users. The matching active
+  /// definition in `module_library_definitions` controls read visibility; see
+  /// lib/module-library/ownership.ts.
   library String? @db.Text
 
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -742,6 +835,34 @@ model TerraformModuleSource {
   @@schema("public")
 }
 
+/// A normalized module-library definition read by dashboard and CLI paths.
+///
+/// Module/source rows intentionally keep the definition id as plain text rather
+/// than a foreign key. Removing or disabling a definition leaves imported rows
+/// inert and recoverable instead of cascading into user projects.
+model ModuleLibraryDefinition {
+  id                 String   @id @db.Text
+  name               String   @db.Text
+  /// global | user
+  scope              String   @db.Text
+  visible            Boolean  @default(true)
+  active             Boolean  @default(true)
+  org                String   @db.Text
+  topics             String[] @default([]) @db.Text
+  prefix             String?  @db.Text
+  publicOnly         Boolean  @default(true) @map("public_only")
+  submoduleContainer String?  @map("submodule_container") @db.Text
+  /// Secret name only. Secret values remain outside Terrablox.
+  pipelineSecret     String   @map("pipeline_secret") @db.Text
+  sortOrder          Int      @default(0) @map("sort_order")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([active, sortOrder, id])
+  @@map("module_library_definitions")
+  @@schema("public")
+}
+
 /// Where one person's copy of a per-user module library has got to.
 ///
 /// One row per (user, library). Holds staleness, a short lock so two tabs don't
@@ -750,7 +871,8 @@ model TerraformModuleSource {
 model ModuleLibrarySync {
   id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId         String    @map("user_id") @db.Uuid
-  /// Library id from TERRABLOX_MODULE_LIBRARIES, e.g. `porsche`.
+  /// Stable id from `module_library_definitions`, e.g. `porsche`. Deliberately
+  /// not a foreign key so disabled or removed definitions do not delete imports.
   library        String    @db.Text
   /// never | available | not-installed | no-repos | error
   state          String    @default("never") @db.Text
@@ -1260,5 +1382,118 @@ model AgentMcpServer {
   @@unique([userId, name])
   @@index([userId])
   @@map("agent_mcp_servers")
+  @@schema("public")
+}
+
+// =============================================================================
+// Agent mode - long-running missions on a branch of their own
+// =============================================================================
+
+/// One mission handed to the agent in Agent mode.
+///
+/// A run is a sequence of agent turns ("iterations") driven by the server rather
+/// than by chat messages: the agent plans the mission into tasks, works through
+/// them on `branch`, and hands the result over as a pull request against
+/// `baseBranch`. The project branch itself is never written to, which is what
+/// keeps the chat, the canvas and the Logs working exactly as they do without it.
+model AgentRun {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  projectId       String    @map("project_id") @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  /// What the user asked for, verbatim.
+  mission         String    @db.Text
+  /// `supervised` waits for the plan to be approved, `autonomous` does not.
+  autonomy        String    @default("supervised") @db.Text
+  /// planning | awaiting_approval | running | awaiting_input | paused |
+  /// completed | failed | stopped
+  status          String    @default("planning") @db.Text
+  /// The planner's own summary of how it reads the mission.
+  planSummary     String?   @map("plan_summary") @db.Text
+  /// Assumptions the plan rests on, as strings the user can correct.
+  assumptions     Json      @default("[]") @db.JsonB
+  baseBranch      String    @map("base_branch") @db.Text
+  baseSha         String?   @map("base_sha") @db.Text
+  branch          String    @db.Text
+  /// Agent turns this run may spend, and has spent.
+  maxIterations   Int       @default(20) @map("max_iterations")
+  iterations      Int       @default(0)
+  /// Commit shas the run pushed to `branch`, oldest first.
+  commits         Json      @default("[]") @db.JsonB
+  /// Guidance from the user not yet handed to the agent, oldest first.
+  pendingGuidance Json      @default("[]") @map("pending_guidance") @db.JsonB
+  /// What the run is waiting on when `status` is `awaiting_input`.
+  question        String?   @db.Text
+  /// The current iteration's trail, for the UI while it runs.
+  liveSteps       Json?     @map("live_steps") @db.JsonB
+  model           String?   @db.Text
+  prNumber        Int?      @map("pr_number")
+  prUrl           String?   @map("pr_url") @db.Text
+  /// The closing summary once the run completed.
+  outcome         String?   @db.Text
+  error           String?   @db.Text
+  /// Touched while an iteration is in flight, so a run whose process died can be told apart from one that is thinking.
+  heartbeatAt     DateTime? @map("heartbeat_at") @db.Timestamptz(6)
+  startedAt       DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt      DateTime? @map("finished_at") @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks   AgentRunTask[]
+  events  AgentRunEvent[]
+
+  @@index([projectId, createdAt])
+  @@index([status])
+  @@map("agent_runs")
+  @@schema("public")
+}
+
+/// One step of a run's plan.
+model AgentRunTask {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId      String    @map("run_id") @db.Uuid
+  /// The planner's own short id, which `dependsOn` refers to.
+  key        String    @db.Text
+  position   Int
+  /// discover | assess | design | build | verify | handover
+  phase      String    @db.Text
+  title      String    @db.Text
+  detail     String    @default("") @db.Text
+  dependsOn  Json      @default("[]") @map("depends_on") @db.JsonB
+  /// pending | in_progress | done | failed | skipped
+  status     String    @default("pending") @db.Text
+  attempts   Int       @default(0)
+  /// What the agent reported when it finished the task.
+  summary    String?   @db.Text
+  startedAt  DateTime? @map("started_at") @db.Timestamptz(6)
+  finishedAt DateTime? @map("finished_at") @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, key])
+  @@index([runId, position])
+  @@map("agent_run_tasks")
+  @@schema("public")
+}
+
+/// The run's timeline: what happened, in order.
+model AgentRunEvent {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId     String   @map("run_id") @db.Uuid
+  taskId    String?  @map("task_id") @db.Uuid
+  /// status | plan | task_started | task_done | task_failed | iteration | commit |
+  /// check | decision | guidance | question | approval | pull_request | error
+  kind      String   @db.Text
+  title     String   @db.Text
+  body      String?  @db.Text
+  data      Json     @default("{}") @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, createdAt])
+  @@map("agent_run_events")
   @@schema("public")
 }

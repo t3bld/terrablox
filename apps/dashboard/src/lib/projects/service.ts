@@ -26,14 +26,19 @@ import {
   setLocalsEntry,
   uniqueBlockLabel,
 } from "@terrablox/terraform/hcl-edit";
+import { formatHcl } from "@terrablox/terraform/hcl-format";
 import { resolveModuleLink } from "@terrablox/terraform/module-link";
 import { database } from "@/lib/database";
 import { analyzeTerraformFiles } from "@/lib/module-library/analyze";
-import { libraryOf } from "@/lib/module-library/libraries";
+import { moduleLibraryLabels } from "@/lib/module-library/libraries";
+import { libraryOf } from "@/lib/module-library/library-definition";
 import { isManaged } from "@/lib/module-library/ownership";
 import { parseOutputs, parseVariables } from "@/lib/module-library/types";
 import { visibleModulesForUser } from "@/lib/module-library/visibility";
-
+import {
+  describeAwsValueProblems,
+  newAwsValueProblems,
+} from "./aws-value-guard";
 import {
   buildProjectGraph,
   type LibraryModule,
@@ -41,6 +46,7 @@ import {
   usedModuleLabels,
 } from "./graph";
 import { isValidLocalName, localNodeId, localReference } from "./locals";
+import { assertEditParses, UnparseableEditError } from "./parse-guard";
 import type {
   OperationOrigin,
   ProjectGraph,
@@ -159,10 +165,13 @@ export async function readModuleLibrary(
   userId: string,
 ): Promise<LibraryModule[]> {
   const visibility = await visibleModulesForUser(userId);
-  const rows = await database.terraformModule.findMany({
-    where: visibility,
-    include: { source: true },
-  });
+  const [rows, libraryLabels] = await Promise.all([
+    database.terraformModule.findMany({
+      where: visibility,
+      include: { source: true },
+    }),
+    moduleLibraryLabels(),
+  ]);
 
   // Managed rows (the catalogue, a per-user library) before personal imports,
   // stably. Link resolution takes the first exact match, so a `porsche-code`
@@ -192,7 +201,7 @@ export async function readModuleLibrary(
     // only guess at.
     description: mod.source?.description ?? null,
     tags: mod.source?.tags ?? [],
-    library: libraryOf(mod),
+    library: libraryOf(mod, libraryLabels),
   }));
 }
 
@@ -460,6 +469,15 @@ export interface MutationProvenance {
   chatMessageId?: string;
   /** Decision this edit implements, when one was recorded. */
   decisionId?: string;
+  /**
+   * Commit to this branch instead of the project's own.
+   *
+   * Agent mode builds on a branch of its own and proposes the result as a pull
+   * request. The project row and the Logs describe the project branch, so an edit
+   * committed elsewhere leaves both alone: no sync sha, no layout, no operation.
+   * They arrive with the merge, like any other change made outside the canvas.
+   */
+  branch?: string;
 }
 
 /**
@@ -476,10 +494,23 @@ export async function applyProjectMutation(
   provenance: MutationProvenance = {},
 ): Promise<ProjectMutationResult> {
   const origin = provenance.origin ?? "canvas";
+
+  if (provenance.branch && provenance.branch !== project.repoBranch) {
+    return applyMutationToBranch(
+      token,
+      { ...project, repoBranch: provenance.branch },
+      mutation,
+      origin,
+      provenance.decisionId,
+    );
+  }
+
   const { files, sha: parentSha } = await readProjectFiles(token, project);
   const next = new Map(files);
 
   const { message, addedLabel } = await mutate(next, project, mutation);
+  formatChangedFiles(files, next);
+  await assertStillParses(files, next);
 
   const changes: FileChange[] = [];
   for (const [path, content] of next) {
@@ -572,6 +603,101 @@ export async function applyProjectMutation(
       ? { sha: commit.sha, path: commit.paths[0] ?? "", message }
       : null,
   };
+}
+
+/**
+ * The same edit, committed to a branch other than the project's own.
+ *
+ * Only the repository is written. `branchProject` is the project with its branch
+ * swapped, used to read and commit; nothing about it is persisted.
+ */
+async function applyMutationToBranch(
+  token: string,
+  branchProject: Project,
+  mutation: ProjectGraphMutation,
+  origin: OperationOrigin,
+  decisionId: string | undefined,
+): Promise<ProjectMutationResult> {
+  const { files } = await readProjectFiles(token, branchProject);
+  const next = new Map(files);
+
+  const { message } = await mutate(next, branchProject, mutation);
+  formatChangedFiles(files, next);
+  await assertStillParses(files, next);
+
+  const changes: FileChange[] = [];
+  for (const [path, content] of next) {
+    if (files.get(path) !== content) changes.push({ path, content });
+  }
+  for (const path of files.keys()) {
+    if (!next.has(path)) changes.push({ path, content: null });
+  }
+
+  const commit = await commitFiles(token, {
+    repoFullName: branchProject.repoFullName,
+    branch: branchProject.repoBranch,
+    message: commitMessage(message, mutation.action, origin, decisionId),
+    changes,
+  });
+
+  const graph = await loadProjectGraph(token, branchProject);
+
+  return {
+    graph,
+    commit: commit
+      ? { sha: commit.sha, path: commit.paths[0] ?? "", message }
+      : null,
+  };
+}
+
+/**
+ * Runs every changed `.tf` file through the `terraform fmt` rules.
+ *
+ * The pipeline starts with `terraform fmt -check`, so a commit that is not
+ * formatted fails the run before `plan`. Only files this edit changed are
+ * touched, so an edit never reformats code it had nothing to do with.
+ */
+function formatChangedFiles(
+  before: Map<string, string>,
+  after: Map<string, string>,
+): void {
+  for (const [path, content] of after) {
+    if (!path.endsWith(".tf") || before.get(path) === content) continue;
+    after.set(path, formatHcl(content));
+  }
+}
+
+/**
+ * The checks every edit passes before it is committed, reported the way every
+ * other refused edit is: {@link assertEditParses}, then values AWS would
+ * reject at apply time.
+ *
+ * The second one is here, on the one commit path the canvas, the chat, the
+ * agent runs and MCP share, because Terraform cannot catch it: a security group
+ * rule description with an apostrophe passes `validate` and `plan` and fails in
+ * the middle of an apply, with everything before it already created. The
+ * agent's `edit_module` tool runs the same check when it is called, so the
+ * model normally corrects the value before it ever reaches this point.
+ */
+async function assertStillParses(
+  before: Map<string, string>,
+  after: Map<string, string>,
+): Promise<void> {
+  try {
+    await assertEditParses(before, after);
+  } catch (error) {
+    if (error instanceof UnparseableEditError) {
+      throw new MutationError(error.message);
+    }
+    throw error;
+  }
+
+  const problems = await newAwsValueProblems(before, after);
+  if (problems.length > 0) {
+    throw new MutationError(
+      `Not committed, because AWS would reject it during the apply: ${describeAwsValueProblems(problems)}`,
+    );
+  }
 }
 
 interface MutationOutcome {

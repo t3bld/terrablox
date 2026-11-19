@@ -45,7 +45,10 @@ export function AwsProjectStrip({
 
   const left = state.expiresAt ? remaining(state.expiresAt) : null;
 
-  /** Unlinks the account. The sign-in itself, and the region, are left alone. */
+  /**
+   * Unlinks the account and removes the stored SSO sign-in for it. The region is
+   * left alone.
+   */
   const disconnect = () => {
     setBusy(true);
     setError(null);

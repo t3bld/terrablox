@@ -65,6 +65,8 @@ interface ChatPanelProps {
   onGraphChanged: (graph: ProjectGraph) => void;
   /** Omitted where the panel cannot be hidden. */
   onCollapse?: () => void;
+  /** Set when a surrounding window already carries the title and controls. */
+  hideHeader?: boolean;
 }
 
 /**
@@ -77,6 +79,7 @@ export function ChatPanel({
   projectId,
   onGraphChanged,
   onCollapse,
+  hideHeader = false,
 }: ChatPanelProps) {
   const [messages, setMessages] = useState<ProjectChatMessageDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -415,7 +418,9 @@ export function ChatPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b p-3">
+      <div
+        className={`flex items-center gap-2 border-b p-3 ${hideHeader ? "hidden" : ""}`}
+      >
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold">Agent</h2>
         </div>
@@ -468,12 +473,7 @@ export function ChatPanel({
             <Skeleton className="h-16 w-full" />
             <Skeleton className="h-10 w-2/3" />
           </>
-        ) : messages.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No messages yet. Ask for a change, or for an explanation of what is
-            already in the project.
-          </p>
-        ) : (
+        ) : messages.length === 0 ? null : (
           messages.map((message) => (
             <ChatBubble key={message.id} message={message} />
           ))

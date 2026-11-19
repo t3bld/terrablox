@@ -29,6 +29,7 @@ import {
   ChevronUp,
   Cog,
   FolderKanban,
+  Library,
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
@@ -191,6 +192,15 @@ export function AppSidebar() {
                   <Link href="/account" className="cursor-pointer">
                     <User2 className="mr-2 h-4 w-4" />
                     Account
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link
+                    href="/account/module-libraries"
+                    className="cursor-pointer"
+                  >
+                    <Library className="mr-2 h-4 w-4" />
+                    Module Libraries
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>

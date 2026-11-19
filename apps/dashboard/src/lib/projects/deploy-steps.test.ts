@@ -41,6 +41,8 @@ function input(extra: Partial<DeployStepsInput> = {}): DeployStepsInput {
     setup: {
       roleReady: false,
       variablesReady: false,
+      roleVariablesReady: false,
+      stateVariablesReady: false,
       stateReady: false,
       pipelineReady: false,
       complete: false,
@@ -60,6 +62,8 @@ function input(extra: Partial<DeployStepsInput> = {}): DeployStepsInput {
 const allDone = {
   roleReady: true,
   variablesReady: true,
+  roleVariablesReady: true,
+  stateVariablesReady: true,
   stateReady: true,
   pipelineReady: true,
   complete: true,
@@ -140,6 +144,8 @@ describe("which step is current", () => {
         ...allDone,
         roleReady: false,
         variablesReady: false,
+        roleVariablesReady: false,
+        stateVariablesReady: false,
         stateReady: false,
         pipelineReady: false,
         complete: false,
@@ -176,6 +182,8 @@ describe("which step is current", () => {
         setup: {
           roleReady: true,
           variablesReady: false,
+          roleVariablesReady: false,
+          stateVariablesReady: false,
           stateReady: false,
           pipelineReady: false,
           complete: false,

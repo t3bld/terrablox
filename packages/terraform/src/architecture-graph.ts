@@ -686,7 +686,10 @@ export function buildArchitecture(
     const ref = parseModuleSourceRef(call.source, call.sourceKind);
     const entry = ref ? moduleArchitectureEntry(ref.repo) : null;
 
-    if (entry?.role === "omit") {
+    // Most support-only module calls remain omitted without recursing into a
+    // repository whose contents will not be displayed. A small explicit set,
+    // currently Security Groups, opts into the aggregate path below.
+    if (entry?.role === "omit" && !entry.moduleCallAggregate) {
       omissions.push({ address, reason: "detail" });
       continue;
     }
@@ -700,6 +703,29 @@ export function buildArchitecture(
       nesting && call.moduleId && !visited.has(call.moduleId)
         ? nesting.moduleFor(call)
         : null;
+    const inner =
+      contents && nesting
+        ? buildArchitecture(
+            contents.resources,
+            contents.references,
+            contents.moduleCalls,
+            {
+              ...nesting,
+              basePath: path,
+              visited: new Set([...visited, contents.id]),
+            },
+            calleeScope(scope, call, contents),
+          )
+        : null;
+
+    // Supporting resources normally stay off the canvas. An explicit module
+    // boundary can opt into a compact aggregate, but only when the imported
+    // target resolves and has live contents to summarize. This keeps an empty or
+    // unresolved IAM/KMS-style call from becoming a decorative box.
+    if (entry?.role === "omit" && !inner?.nodes.length) {
+      omissions.push({ address, reason: "detail" });
+      continue;
+    }
 
     const node: ArchitectureNode = {
       id: address,
@@ -715,24 +741,20 @@ export function buildArchitecture(
 
     if (!entry) unrecognisedModules.add(ref?.repo ?? call.name);
 
-    if (contents && nesting) {
-      const inner = buildArchitecture(
-        contents.resources,
-        contents.references,
-        contents.moduleCalls,
-        {
-          ...nesting,
-          basePath: path,
-          visited: new Set([...visited, contents.id]),
-        },
-        calleeScope(scope, call, contents),
-      );
-
+    if (inner && contents && nesting) {
       node.expandable = inner.nodes.length > 0;
       node.expandableCount = inner.nodes.length;
       if (call.requestedRef) node.versionMismatch = call.requestedRef;
 
-      if (node.expandable && nesting?.expanded.has(path)) {
+      // While folded, the tile summarizes everything it contains with the same
+      // small top-right attachment badge used by module architecture pages. On
+      // expansion the real child nodes replace the summary, so no resource is
+      // represented twice.
+      if (node.expandable && !nesting.expanded.has(path)) {
+        node.attachments = summarizeModuleContents(inner, contents.resources);
+      }
+
+      if (node.expandable && nesting.expanded.has(path)) {
         // The tile becomes a frame around the callee's own diagram. Its label
         // switches to the repository name: inside the frame the local call name
         // is what identifies it, and the service label is now redundant with
@@ -858,6 +880,91 @@ export function buildArchitecture(
     omissions,
     unmappedTypes: [...unmapped, ...unrecognisedModules].sort(),
   };
+}
+
+/**
+ * Folds a called module's visible architecture and supporting resources into the
+ * badge shown while that module call is collapsed.
+ *
+ * Resource addresses, not boxes, are counted. A grouped API Gateway node may
+ * represent five declarations and should therefore say five; a nested module
+ * call address is synthetic and should say none. Child attachments already carry
+ * their service, so they survive another level of nesting without guessing from
+ * a prefixed address.
+ */
+function summarizeModuleContents(
+  graph: ArchitectureGraph,
+  resources: ArchitectureResource[],
+): ArchitectureAttachment[] {
+  const resourceByAddress = new Map(
+    resources.map((resource) => [resourceAddress(resource), resource]),
+  );
+  const entries = new Map<
+    string,
+    { service: string; icon?: string; addresses: Set<string> }
+  >();
+  const claimed = new Set<string>();
+
+  const add = (address: string, service: string, icon: string | undefined) => {
+    if (claimed.has(address)) return;
+    claimed.add(address);
+
+    const existing = entries.get(service);
+    if (existing) {
+      existing.addresses.add(address);
+      if (!existing.icon && icon) existing.icon = icon;
+      return;
+    }
+
+    entries.set(service, {
+      service,
+      ...(icon ? { icon } : {}),
+      addresses: new Set([address]),
+    });
+  };
+
+  for (const node of graph.nodes) {
+    // An expanded child module is a frame; its own address is only the call, not
+    // infrastructure. Its adopted child nodes are also in `graph.nodes` and are
+    // counted on their own iterations below.
+    if (!node.isModuleCall) {
+      for (const address of node.addresses) {
+        const localAddress = address.slice(address.lastIndexOf("/") + 1);
+        if (localAddress.startsWith("module.")) continue;
+
+        const resource = resourceByAddress.get(localAddress);
+        const type =
+          resource?.resourceType ??
+          (localAddress.startsWith("data.")
+            ? localAddress.split(".")[1]
+            : localAddress.split(".")[0]);
+        const service = type
+          ? serviceOfResource(type, resource?.providerName ?? "")
+          : node.label;
+        add(address, service, node.icon ?? iconOfService(service));
+      }
+    }
+
+    for (const attachment of node.attachments ?? []) {
+      for (const address of attachment.addresses) {
+        add(address, attachment.service, attachment.icon);
+      }
+    }
+  }
+
+  return [...entries.values()]
+    .map((entry) => ({
+      service: entry.service,
+      ...(entry.icon ? { icon: entry.icon } : {}),
+      addresses: [...entry.addresses].sort((a, b) =>
+        a.localeCompare(b, "en", { numeric: true }),
+      ),
+    }))
+    .sort(
+      (a, b) =>
+        b.addresses.length - a.addresses.length ||
+        a.service.localeCompare(b.service),
+    );
 }
 
 /**

@@ -1,14 +1,16 @@
-# Terrablox - the development database, and nothing else.
+# Terrablox - local backing services for host-run development.
 #
-# `pnpm dev` runs the dashboard on the host, so the only thing it needs from Docker is
-# Postgres. That is the whole difference between this file and docker-compose.yml: that
-# one is the full self-hosted stack - database, migration job and dashboard on an
-# internal network with no published database port - and is what somebody deploying
-# Terrablox runs. This one is a database on localhost for somebody editing it.
+# `pnpm dev` runs the dashboard on the host. PostgreSQL and the Infracost wrapper
+# run in Docker: both are stateful/native dependencies the app should not ask every
+# developer to install. `pnpm db:up` and `pnpm cost:up` still start them separately;
+# `pnpm services:up` starts both.
 #
-#   pnpm db:up      start it
-#   pnpm db:down    stop it
-#   pnpm db:studio  browse it
+#   pnpm db:up        start PostgreSQL
+#   pnpm cost:up      start the Infracost sidecar
+#   pnpm services:up  start both
+#   pnpm db:down      stop PostgreSQL
+#   pnpm cost:down    stop the sidecar
+#   pnpm db:studio    browse the database
 #
 # Not the default filename, so every compose call has to pass it explicitly and nobody
 # brings up the production stack by typing `docker compose up` in the wrong directory.
@@ -66,5 +68,40 @@ services:
       timeout: 5s
       retries: 10
 
+  cost-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: cost-service
+    image: terrablox/cost-service:${TERRABLOX_VERSION:-local}
+    container_name: terrablox-cost-service
+    restart: unless-stopped
+    environment:
+      COST_SERVICE_TOKEN: ${COST_SERVICE_TOKEN:-}
+      INFRACOST_CLI_AUTHENTICATION_TOKEN: ${INFRACOST_CLI_AUTHENTICATION_TOKEN:-}
+      INFRACOST_CLI_CURRENCY: ${INFRACOST_CLI_CURRENCY:-EUR}
+      INFRACOST_CLI_PRICING_ENDPOINT: ${INFRACOST_CLI_PRICING_ENDPOINT:-}
+      INFRACOST_CLI_PRICING_API_KEY: ${INFRACOST_CLI_PRICING_API_KEY:-}
+    ports:
+      # Loopback only: the host-run Next development server is the sole client.
+      - "127.0.0.1:${TERRABLOX_COST_PORT:-8090}:8090"
+    read_only: true
+    volumes:
+      - terrablox-cost-cache:/home/node/.cache/infracost
+    tmpfs:
+      - /tmp:size=512m,mode=1777,exec
+      - /home/node/.config:size=32m,mode=0700,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: "1.0"
+          pids: 384
+
 volumes:
   terrablox-pgdata:
+  terrablox-cost-cache:

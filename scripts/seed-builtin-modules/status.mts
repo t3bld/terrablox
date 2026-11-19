@@ -3,15 +3,15 @@
  * `db:builtin:status`).
  *
  * Exists because the answer lives in two places that can disagree — the database
- * holds the rows, the entry's `visible` flag decides whether anyone can see
- * them — and "the modules are missing" is the same symptom either way. Printing
+ * holds the rows, the active definition's `visible` flag decides whether anyone
+ * can see them — and "the modules are missing" is the same symptom either way. Printing
  * both together turns that into a one-line diagnosis per library.
  */
 import { prisma } from "@/lib/database";
 import { moduleLibraries } from "@/lib/module-library/libraries";
 
-const libraries = moduleLibraries();
-const configured = new Set(libraries.map((library) => library.id));
+const libraries = await moduleLibraries();
+const activeIds = new Set(libraries.map((library) => library.id));
 let hiddenWithRows = false;
 
 for (const library of libraries) {
@@ -51,16 +51,16 @@ for (const library of libraries) {
   if (!visible && sources > 0) hiddenWithRows = true;
 }
 
-// Rows of a library that is no longer configured are inert: no read path admits
-// an unknown id. Worth saying, because they still take space.
+// Rows of a library that is no longer active are inert: no read path admits
+// an unknown or inactive id. Worth saying, because they still take space.
 const orphaned = await prisma.terraformModuleSource.groupBy({
   by: ["library"],
-  where: { library: { notIn: [...configured] } },
+  where: { library: { notIn: [...activeIds] } },
   _count: { _all: true },
 });
 for (const row of orphaned) {
   console.log(
-    `\n${row.library}: ${row._count._all} repositories from a library that is no longer configured — invisible to everyone.`,
+    `\n${row.library}: ${row._count._all} repositories from a library that is no longer active — invisible to everyone.`,
   );
 }
 

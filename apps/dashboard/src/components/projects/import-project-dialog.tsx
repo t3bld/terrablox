@@ -11,10 +11,14 @@ import {
 } from "@terrablox/ui/dialog";
 import { Label } from "@terrablox/ui/label";
 import { AlertCircle } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { GithubInstallHint } from "@/components/github-install-hint";
-import type { ProjectDto } from "@/lib/projects/types";
+import { ContextDocumentManager } from "@/components/projects/context-document-manager";
+import type {
+  ProjectContextDocumentDto,
+  ProjectDto,
+} from "@/lib/projects/types";
 import { AppRepoPicker, type AppRepoSelection } from "./app-repo-picker";
 
 interface ImportProjectDialogProps {
@@ -54,11 +58,21 @@ export function ImportProjectDialog({
   /**
    * The project's own repository, in the picker's shape.
    *
-   * Only `fullName` is sent. The branch stays the repository's default, which is what
-   * GitHub created the README on and what the server resolves when none is given.
+   * Only `fullName` is sent. The server uses the repository's default branch
+   * and initializes it with a README when GitHub reports no commits at all.
    */
   const [repo, setRepo] = useState<AppRepoSelection | null>(null);
   const [appRepo, setAppRepo] = useState<AppRepoSelection | null>(null);
+  const [contextDocuments, setContextDocuments] = useState<
+    ProjectContextDocumentDto[]
+  >([]);
+  const stagedDocuments = useRef<ProjectContextDocumentDto[]>([]);
+  const documentsClaimed = useRef(false);
+
+  const updateDocuments = (next: ProjectContextDocumentDto[]) => {
+    stagedDocuments.current = next;
+    setContextDocuments(next);
+  };
 
   const [access, setAccess] = useState<RepoAccess | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -67,7 +81,21 @@ export function ImportProjectDialog({
   // Reset on close so a cancelled attempt does not bleed into the next one. The
   // access answer is kept: it is a fact about the account, not about this attempt.
   useEffect(() => {
-    if (open) return;
+    if (open) {
+      documentsClaimed.current = false;
+      return;
+    }
+
+    if (!documentsClaimed.current) {
+      for (const document of stagedDocuments.current) {
+        void fetch(`/api/project-context-documents/${document.id}`, {
+          method: "DELETE",
+        });
+      }
+    }
+
+    stagedDocuments.current = [];
+    setContextDocuments([]);
     setRepo(null);
     setAppRepo(null);
     setError(null);
@@ -120,6 +148,7 @@ export function ImportProjectDialog({
         body: JSON.stringify({
           repo: { fullName: repo.fullName },
           appRepo,
+          contextDocumentIds: contextDocuments.map((document) => document.id),
         }),
       });
 
@@ -130,6 +159,7 @@ export function ImportProjectDialog({
         throw new Error(body?.error ?? "Failed to import repository");
       }
 
+      documentsClaimed.current = true;
       onImported(body.project as ProjectDto);
       onOpenChange(false);
     } catch (err) {
@@ -143,7 +173,7 @@ export function ImportProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[520px]">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[620px]">
         <DialogHeader>
           <DialogTitle>Import an existing GitHub repository</DialogTitle>
           <DialogDescription>
@@ -204,6 +234,25 @@ export function ImportProjectDialog({
               placeholder="None"
               triggerId="app-repo"
               value={appRepo}
+            />
+          </div>
+
+          <div className="grid gap-2 border-t pt-4">
+            <Label>
+              Context documents{" "}
+              <span className="font-normal text-muted-foreground">
+                — optional
+              </span>
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Upload requirements, migration assessments and application
+              documentation. The agent can read their extracted text while the
+              original files stay available for download.
+            </p>
+            <ContextDocumentManager
+              disabled={submitting}
+              documents={contextDocuments}
+              onChange={updateDocuments}
             />
           </div>
 

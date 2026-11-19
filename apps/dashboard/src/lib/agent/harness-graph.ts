@@ -41,6 +41,7 @@ export const TOOL_GROUP_LABELS: Record<string, string> = {
   modules: "Modules",
   locals: "Variables",
   "app-repo": "Application repository",
+  documents: "Project documents",
 };
 
 export type ToolView = {
@@ -154,6 +155,16 @@ export interface AgentContextView {
    * defaults view has nothing to show and nothing to change.
    */
   appRepo: { fullName: string; branch: string | null } | null;
+  /** Context documents attached to this project; empty in the global scope. */
+  contextDocuments?: Array<{
+    id: string;
+    name: string;
+    mediaType: string;
+    byteSize: number;
+    characterCount: number;
+    createdAt: string;
+    downloadUrl: string | null;
+  }>;
   moduleCount: number;
   projectCount: number;
   tools: ToolView[];
@@ -256,10 +267,7 @@ export function buildGraph(context: AgentContextView): {
     },
     context: {
       sources: `${context.knowledge.filter((source) => source.enabled).length} of ${context.knowledge.length} on`,
-      // Named rather than counted: which application it may read is the fact, and
-      // "none" is a real answer rather than a missing one.
-      application: context.appRepo?.fullName ?? "no application linked",
-      reads: `${context.maxAppRepoReads ?? context.defaults.maxAppRepoReads} per turn`,
+      inputs: `${context.appRepo ? "application linked" : "no application"} · ${context.contextDocuments?.length ?? 0} document${context.contextDocuments?.length === 1 ? "" : "s"}`,
     },
     tools: {
       namespaces: "custom · mcp · builtin",

@@ -10,6 +10,7 @@
     "./files": "./src/files.ts",
     "./github-provider": "./src/github-provider.ts",
     "./installations": "./src/installations.ts",
+    "./pulls": "./src/pulls.ts",
     "./repositories": "./src/repositories.ts",
     "./types": "./src/types.ts"
   },

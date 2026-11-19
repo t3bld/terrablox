@@ -13,6 +13,7 @@
     "./delete-scope": "./src/delete-scope.ts",
     "./evaluate": "./src/evaluate.ts",
     "./hcl-edit": "./src/hcl-edit.ts",
+    "./hcl-format": "./src/hcl-format.ts",
     "./identifier-suggest": "./src/identifier-suggest.ts",
     "./module-interface": "./src/module-interface.ts",
     "./module-link": "./src/module-link.ts",

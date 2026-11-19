@@ -12,6 +12,7 @@ import {
   createBootstrapStack,
   type DeviceAuthorization,
   discoverSsoRegion,
+  getSsoRoleCredentials,
   listSsoAccounts,
   normaliseStartUrl,
   pollDeviceToken,
@@ -22,6 +23,43 @@ import { decryptSecret, encryptSecret } from "@/lib/crypto/secret-box";
 import { database } from "@/lib/database";
 import type { AwsConnectionView } from "./connection-service";
 import { toView } from "./connection-service";
+import { prepareSetupRole } from "./credentials";
+
+/**
+ * The setup role for this sign-in, or null when it is used as it is.
+ *
+ * Never fails the sign-in. A permission set that cannot be helped is still a
+ * valid connection, and the Deploy tab explains what it is missing when a
+ * stack is attempted.
+ */
+async function setupRoleFor(input: {
+  ssoRegion: string;
+  accessToken: string;
+  accountId: string;
+  roleName: string;
+  region: string;
+}): Promise<string | null> {
+  try {
+    const credentials = await getSsoRoleCredentials({
+      ssoRegion: input.ssoRegion,
+      accessToken: input.accessToken,
+      accountId: input.accountId,
+      roleName: input.roleName,
+    });
+    return await prepareSetupRole({
+      credentials,
+      accountId: input.accountId,
+      ssoRoleName: input.roleName,
+      region: input.region,
+    });
+  } catch (error) {
+    console.warn(
+      `[aws] Could not prepare a setup role for ${input.roleName} in ${input.accountId}:`,
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
+}
 
 /**
  * The guided path to a connected account: sign in, pick an account, done.
@@ -286,6 +324,18 @@ export async function completeSsoLogin(
   // Signing in again is the documented cure for an expired SSO session, so it
   // cannot be an error. The row is refreshed rather than duplicated: the account
   // and the role are the same, only the token and its expiry moved on.
+  // Only in SSO mode: with an app identity, the connection role is created by
+  // its own stack and the deployment setup does not run through the sign-in.
+  const ssoSetupRoleArn = useSsoSession
+    ? await setupRoleFor({
+        ssoRegion: record.ssoRegion,
+        accessToken,
+        accountId: input.accountId,
+        roleName: input.roleName,
+        region: input.region.trim(),
+      })
+    : null;
+
   if (existing && useSsoSession) {
     const refreshed = await database.awsConnection.update({
       where: { id: existing.id },
@@ -299,6 +349,7 @@ export async function completeSsoLogin(
         ssoRoleName: input.roleName,
         ssoAccessTokenCiphertext: encryptSecret(accessToken),
         ssoExpiresAt: record.expiresAt,
+        ssoSetupRoleArn,
         verifiedAt: new Date(),
         lastError: null,
       },
@@ -348,6 +399,7 @@ export async function completeSsoLogin(
             ssoRoleName: input.roleName,
             ssoAccessTokenCiphertext: encryptSecret(accessToken),
             ssoExpiresAt: record.expiresAt,
+            ssoSetupRoleArn,
             // Signing in *was* the proof; there is no trust policy to wait for.
             verifiedAt: new Date(),
           }

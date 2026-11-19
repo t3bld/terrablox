@@ -24,7 +24,7 @@ export async function POST(req: Request) {
       "modules.library.sync",
       RATE_LIMITS.importModule,
     );
-    const definitions = visibleLibraries("user");
+    const definitions = await visibleLibraries("user");
     if (definitions.length === 0) {
       return NextResponse.json({ more: false, busy: false, changed: false });
     }
@@ -66,13 +66,30 @@ export async function POST(req: Request) {
       .map((status) => status.id)
       .sort()
       .join("\n");
+    const disclosedState = (statuses: typeof before) =>
+      statuses
+        .filter(
+          (status) =>
+            status.ready ||
+            status.hint !== null ||
+            (status.state === "error" && status.lastSyncedAt !== null),
+        )
+        .map(
+          (status) =>
+            `${status.id}:${status.state}:${status.ready}:${status.hint?.kind ?? ""}`,
+        )
+        .sort()
+        .join("\n");
 
     return NextResponse.json({
       more:
         result.more || after.some((status) => status.stale && !status.syncing),
       busy: result.busy,
       changed:
-        result.imported > 0 || result.removed > 0 || readyBefore !== readyAfter,
+        result.imported > 0 ||
+        result.removed > 0 ||
+        readyBefore !== readyAfter ||
+        disclosedState(before) !== disclosedState(after),
     });
   } catch (error) {
     return routeError("modules.library.sync", error);

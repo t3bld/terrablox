@@ -12,17 +12,19 @@ export const WORKFLOW_DIR = ".github/workflows";
 export const BACKEND_FILE = "backend.tf";
 
 /**
- * Terraform versions a project may pin its pipeline to, newest first.
+ * Terraform versions this pipeline knows how to install, newest first.
  *
- * A fixed list rather than a free-text box, which is what this used to be: a typo
- * there became a `setup-terraform` step that failed on a version nobody publishes,
- * and the run had already federated into AWS by the time it did.
- *
- * The newest patch of each supported minor line, taken from HashiCorp's releases —
- * older patches are not offered because pinning to a superseded one only opts out
- * of fixes. Add to the front as new versions ship; the first entry is the default.
+ * Every pipeline uses the first entry; projects can no longer pick one. Pinned
+ * to a number rather than `latest`, so a run is reproducible and a new
+ * Terraform reaches a repository as a reviewable workflow change. Add new
+ * releases to the front (see https://checkpoint-api.hashicorp.com/v1/check/terraform).
  */
-export const TERRAFORM_VERSIONS = ["1.16.0", "1.15.9", "1.14.9"] as const;
+export const TERRAFORM_VERSIONS = [
+  "1.17.2",
+  "1.16.0",
+  "1.15.9",
+  "1.14.9",
+] as const;
 
 export const DEFAULT_TERRAFORM_VERSION: string = TERRAFORM_VERSIONS[0];
 
@@ -42,6 +44,7 @@ export function isKnownTerraformVersion(value: string): boolean {
 export { GITHUB_OIDC_PROVIDER } from "@terrablox/aws/github-oidc";
 
 import { GITHUB_OIDC_PROVIDER } from "@terrablox/aws/github-oidc";
+import { formatHcl } from "@terrablox/terraform/hcl-format";
 
 /**
  * Repository variables the generated workflows read at run time.
@@ -291,8 +294,22 @@ export function newStateBucketName(
   projectName: string,
   accountId: string,
 ): string {
+  return `${stateBucketPrefix(projectName, accountId)}${bucketDiscriminator()}`;
+}
+
+/**
+ * Everything of {@link newStateBucketName} except the random tail.
+ *
+ * What a teardown lists the account by to find buckets an earlier setup of this
+ * project left behind. Only a filter: a project name is not unique, so ownership
+ * is proven separately, by the CloudFormation tag on the bucket.
+ */
+export function stateBucketPrefix(
+  projectName: string,
+  accountId: string,
+): string {
   const slug = truncateSlug(slugify(projectName), 35);
-  return `${slug}-tfstate-${accountId}-${bucketDiscriminator()}`;
+  return `${slug}-tfstate-${accountId}-`;
 }
 
 /**
@@ -343,7 +360,7 @@ export function renderBackendFile(context: PipelineContext): string {
     ? `\n    kms_key_id     = "${hclLiteral(context.stateKmsKeyArn, "the KMS key ARN")}"`
     : "";
 
-  return `# Managed by Terrablox.
+  return formatHcl(`# Managed by Terrablox.
 # Remote state is what makes the pipeline reproducible: without it every run
 # starts empty and tries to create the whole stack again.
 terraform {
@@ -358,7 +375,37 @@ terraform {
     use_lockfile   = true
   }
 }
-`;
+`);
+}
+
+/**
+ * The OIDC subjects the deployment role accepts.
+ *
+ * Each in two spellings, because GitHub has two. The classic one names the
+ * repository (`repo:owner/name:…`); with "immutable subject" switched on for an
+ * org or repository, which porsche-code does, it also carries the numeric ids
+ * (`repo:owner@123/name@456:…`). A trust policy that knows only the first is
+ * refused with `Not authorized to perform sts:AssumeRoleWithWebIdentity` by every
+ * run in such a repository. The ids are wildcarded because Terrablox does not
+ * store them; that is no weaker than the classic spelling, which is accepted as
+ * well and names no id at all. GitHub owner and repository names cannot contain
+ * `@`, `/` or `:`, so `@*` cannot reach into another repository.
+ *
+ * Environments are wildcarded so a job can use any of the repository's
+ * environments (dev, staging, prod…). A job that names an environment gets an
+ * `environment:` subject regardless of branch, so this admits runs from any branch
+ * that declares one, not only the deployment branch.
+ */
+export function trustedSubjects(
+  repoFullName: string,
+  branch: string,
+): string[] {
+  const [owner, name] = repoFullName.split("/");
+  const prefixes = [`repo:${repoFullName}`, `repo:${owner}@*/${name}@*`];
+  return prefixes.flatMap((prefix) => [
+    `${prefix}:ref:refs/heads/${branch}`,
+    `${prefix}:environment:*`,
+  ]);
 }
 
 /**
@@ -388,15 +435,14 @@ export function renderTrustPolicy(params: {
             StringEquals: {
               [`${GITHUB_OIDC_PROVIDER}:aud`]: "sts.amazonaws.com",
             },
-            // Scoped to this repository and to the deployment branch, which is
-            // the only ref a manually started run can use. Pull requests are
-            // deliberately absent: nothing runs on them, and a fork's PR must
-            // never reach a role with these permissions.
+            // Scoped to this repository: the deployment branch and its
+            // environments, see trustedSubjects. Pull requests are deliberately
+            // absent: a fork's PR must never reach a role with these permissions.
             StringLike: {
-              [`${GITHUB_OIDC_PROVIDER}:sub`]: [
-                `repo:${params.repoFullName}:ref:refs/heads/${params.branch}`,
-                `repo:${params.repoFullName}:environment:production`,
-              ],
+              [`${GITHUB_OIDC_PROVIDER}:sub`]: trustedSubjects(
+                params.repoFullName,
+                params.branch,
+              ),
             },
           },
         },
@@ -587,13 +633,15 @@ Resources:
             Condition:
               StringEquals:
                 "${GITHUB_OIDC_PROVIDER}:aud": sts.amazonaws.com
-              # Scoped to this repository and to the deployment branch, the only
-              # ref a manually started run can use. Pull requests are left out
-              # on purpose so a fork's PR can never assume this role.
+              # Scoped to this repository: the deployment branch and any of its
+              # environments, each in GitHub's classic and immutable-id subject
+              # format. Pull requests are left out on purpose so a fork's PR can
+              # never assume this role.
               StringLike:
                 "${GITHUB_OIDC_PROVIDER}:sub":
-                  - "repo:${context.repoFullName}:ref:refs/heads/${context.branch}"
-                  - "repo:${context.repoFullName}:environment:production"
+${trustedSubjects(context.repoFullName, context.branch)
+  .map((sub) => `                  - "${sub}"`)
+  .join("\n")}
       ManagedPolicyArns:
         - !Ref PermissionsPolicyArn${statePolicy}
 

@@ -8,6 +8,7 @@ export interface ModuleLibraryStatus {
   name: string;
   org: string;
   topics: string[];
+  scope: "global" | "user";
   state:
     | "never"
     | "available"
@@ -19,6 +20,8 @@ export interface ModuleLibraryStatus {
   syncing: boolean;
   stale: boolean;
   moduleCount: number;
+  submoduleCount: number;
+  repositoryCount: number;
   lastSyncedAt: string | null;
   hint:
     | null
@@ -44,6 +47,14 @@ interface SyncResponse {
 const MAX_SYNC_ROUNDS = 30;
 const BUSY_RETRY_MS = 10_000;
 
+function isDisclosable(library: ModuleLibraryStatus): boolean {
+  return (
+    library.ready ||
+    library.hint !== null ||
+    (library.state === "error" && library.lastSyncedAt !== null)
+  );
+}
+
 /**
  * Keeps the signed-in user's per-user module libraries (e.g. Porsche) fresh.
  *
@@ -55,9 +66,12 @@ const BUSY_RETRY_MS = 10_000;
 export function useModuleLibraries({
   onChanged,
   enabled = true,
+  includeGlobal = false,
 }: {
   onChanged?: () => void;
   enabled?: boolean;
+  /** Adds operator-managed global libraries as read-only status rows. */
+  includeGlobal?: boolean;
 } = {}) {
   const [libraries, setLibraries] = useState<ModuleLibraryStatus[]>([]);
   const [syncingIds, setSyncingIds] = useState<string[]>([]);
@@ -101,7 +115,7 @@ export function useModuleLibraries({
 
           const body = (await res.json()) as SyncResponse;
           if (!mounted.current) return;
-          if (body.library.ready) replace(body.library);
+          if (isDisclosable(body.library)) replace(body.library);
           else {
             setLibraries((current) =>
               current.filter((candidate) => candidate.id !== library.id),
@@ -113,7 +127,10 @@ export function useModuleLibraries({
             // Another tab holds the lock; look once more after it has had time.
             setTimeout(() => {
               if (!mounted.current) return;
-              void fetch("/api/modules/libraries", { cache: "no-store" })
+              void fetch(
+                `/api/modules/libraries${includeGlobal ? "?includeGlobal=1" : ""}`,
+                { cache: "no-store" },
+              )
                 .then((r) => (r.ok ? r.json() : null))
                 .then((data) => {
                   if (!data || !mounted.current) return;
@@ -138,7 +155,7 @@ export function useModuleLibraries({
         }
       }
     },
-    [replace],
+    [replace, includeGlobal],
   );
 
   useEffect(() => {
@@ -147,9 +164,10 @@ export function useModuleLibraries({
 
     void (async () => {
       const loadVisible = async (): Promise<ModuleLibraryStatus[] | null> => {
-        const res = await fetch("/api/modules/libraries", {
-          cache: "no-store",
-        });
+        const res = await fetch(
+          `/api/modules/libraries${includeGlobal ? "?includeGlobal=1" : ""}`,
+          { cache: "no-store" },
+        );
         if (!res.ok) return null;
         const body = (await res.json()) as {
           libraries?: ModuleLibraryStatus[];
@@ -207,12 +225,14 @@ export function useModuleLibraries({
     return () => {
       mounted.current = false;
     };
-  }, [enabled]);
+  }, [enabled, includeGlobal]);
 
   const refresh = useCallback(
     (id: string) => {
       const library = libraries.find((candidate) => candidate.id === id);
-      if (library && !syncingIds.includes(id)) void runSync(library, true);
+      if (library && library.scope === "user" && !syncingIds.includes(id)) {
+        void runSync(library, true);
+      }
     },
     [libraries, runSync, syncingIds],
   );

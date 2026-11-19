@@ -12,7 +12,7 @@
  * only states the shape of the answer.
  */
 
-import type { MCPServerConfig } from "@github/copilot-sdk";
+import type { MCPServerConfig, Tool } from "@github/copilot-sdk";
 import type {
   AgentStep,
   AgentTurnTelemetry,
@@ -78,6 +78,22 @@ export interface AgentPipelineCheck {
   createdAt: string;
 }
 
+export interface AgentContextDocument {
+  id: string;
+  name: string;
+  mediaType: string;
+  characterCount: number;
+}
+
+export interface AgentContextDocumentSlice {
+  name: string;
+  mediaType: string;
+  content: string;
+  offset: number;
+  nextOffset: number | null;
+  totalCharacters: number;
+}
+
 export interface AgentContext {
   projectName: string;
   repoFullName: string;
@@ -129,6 +145,13 @@ export interface AgentContext {
   appRepoLink?: { fullName: string } | null;
   /** Why the link above could not be used, when that is the reason it is absent. */
   appRepoProblem?: string | null;
+  /** Uploaded requirements and migration documents available to this turn. */
+  contextDocuments?: AgentContextDocument[];
+  /** Reads one bounded extracted-text section by id and character offset. */
+  readContextDocument?: (
+    documentId: string,
+    offset: number,
+  ) => Promise<AgentContextDocumentSlice | null>;
   /**
    * The resource types a set of library modules creates, looked up on demand.
    *
@@ -259,4 +282,13 @@ export interface AgentContext {
    * instead of committed.
    */
   signal?: AbortSignal;
+  /**
+   * Tools the caller adds on top of the catalogue.
+   *
+   * Agent mode uses this for the tools that only make sense inside a run, such as
+   * submitting a plan or finishing a task. The chat never sets it, so a chat turn
+   * sees exactly the tools it always did.
+   */
+  // biome-ignore lint/suspicious/noExplicitAny: the SDK types its own tool list as `Tool<any>[]`.
+  extraTools?: Tool<any>[];
 }

@@ -67,7 +67,7 @@ export async function DELETE(
     return NextResponse.json({ error: "Module not found" }, { status: 404 });
   }
 
-  const refusal = deleteRefusal(mod);
+  const refusal = await deleteRefusal(mod);
   if (refusal) {
     return NextResponse.json({ error: refusal }, { status: 403 });
   }

@@ -11,7 +11,7 @@ import {
 } from "@terrablox/aws/connection";
 import type { AwsConnection } from "@terrablox/database";
 import { database } from "@/lib/database";
-import { sessionForConnection } from "./credentials";
+import { removeSetupRoles, sessionForConnection } from "./credentials";
 
 export interface AwsConnectionView {
   id: string;
@@ -205,6 +205,11 @@ export async function deleteConnection(
   userId: string,
   connectionId: string,
 ): Promise<boolean> {
+  const record = await database.awsConnection.findFirst({
+    where: { id: connectionId, userId },
+  });
+  if (record) await removeSetupRoles([record]);
+
   const { count } = await database.awsConnection.deleteMany({
     where: { id: connectionId, userId },
   });

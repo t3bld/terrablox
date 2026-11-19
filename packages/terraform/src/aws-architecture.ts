@@ -54,6 +54,13 @@ export interface ArchitectureEntry {
    * reference something in there.
    */
   global?: boolean;
+  /**
+   * Keep a resolved module call as a compact aggregate even though direct
+   * resources of this type stay omitted. Security Groups are the motivating
+   * case: they are supporting detail beside a workload, but an explicit
+   * security-group module is still a real project component worth showing.
+   */
+  moduleCallAggregate?: boolean;
 }
 
 export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
@@ -464,7 +471,12 @@ export const ARCHITECTURE_MAP: Record<string, ArchitectureEntry> = {
   aws_route: { role: "omit" },
   aws_route_table_association: { role: "omit" },
   aws_main_route_table_association: { role: "omit" },
-  aws_security_group: { role: "omit" },
+  aws_security_group: {
+    role: "omit",
+    icon: "vpc",
+    label: "Security Group",
+    moduleCallAggregate: true,
+  },
   aws_default_security_group: { role: "omit" },
   aws_security_group_rule: { role: "omit" },
   aws_vpc_security_group_ingress_rule: { role: "omit" },

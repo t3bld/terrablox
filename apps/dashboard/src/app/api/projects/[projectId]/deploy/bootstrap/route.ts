@@ -2,7 +2,7 @@ import {
   allowStsAudience,
   applyBootstrapStack,
   DEPLOY_ROLE_OUTPUT,
-  deleteBootstrapStack,
+  deletedStackFailureReason,
   describeBootstrapStack,
   readGithubOidcProvider,
 } from "@terrablox/aws/bootstrap";
@@ -43,6 +43,11 @@ import {
   stateStackNameOf,
 } from "@/lib/projects/deploy-service";
 import { findOwnedProject } from "@/lib/projects/service";
+import {
+  advanceTeardown,
+  orphanedStateBuckets,
+  teardownPlan,
+} from "@/lib/projects/teardown";
 
 /**
  * The account-side prerequisites, run from the app.
@@ -209,6 +214,60 @@ export async function GET(req: Request, { params }: Params) {
     });
   }
 
+  /**
+   * `?teardown=plan` lists what deleting the whole setup would remove, for the
+   * confirmation dialog. With the write session, because counting what the
+   * Terraform state still tracks means decrypting it.
+   */
+  if (new URL(req.url).searchParams.get("teardown") === "plan") {
+    const writable = await resolveProjectAwsSession(userId, project, "write");
+    if (!writable.ok) {
+      return NextResponse.json({ error: writable.message }, { status: 400 });
+    }
+    try {
+      return NextResponse.json({
+        plan: await teardownPlan(writable.session, project),
+      });
+    } catch (error) {
+      return awsRouteError(error);
+    }
+  }
+
+  /**
+   * `?vanished=<stackArn>` asks why a stack that has already disappeared failed.
+   *
+   * The wizard sends this once, when a stack it was watching stops answering
+   * without having succeeded. Only ARNs of this project's own two stacks, in this
+   * account and region, are looked up: the value comes from the browser, and an
+   * arbitrary ARN would turn this into a reader for any stack's events.
+   */
+  const vanishedIds = [
+    ...new Set(new URL(req.url).searchParams.getAll("vanished")),
+  ].slice(0, 2);
+  if (vanishedIds.length > 0) {
+    const prefixes = [roleStackNameOf(project), stateStackNameOf(project)].map(
+      (name) =>
+        `arn:aws:cloudformation:${resolved.session.region}:${resolved.session.accountId}:stack/${name}/`,
+    );
+    const allowed = vanishedIds.filter((id) =>
+      prefixes.some((prefix) => id.startsWith(prefix)),
+    );
+
+    try {
+      const reasons = await Promise.all(
+        allowed.map((id) => deletedStackFailureReason(resolved.session, id)),
+      );
+      return NextResponse.json({
+        connected: true,
+        vanished: Object.fromEntries(
+          allowed.map((id, index) => [id, reasons[index]]),
+        ),
+      });
+    } catch (error) {
+      return awsRouteError(error);
+    }
+  }
+
   // Deduplicated, and capped: the names come from a query string, and describing
   // one stack per entry is a loop over caller-supplied input.
   const deletingNames = [
@@ -301,10 +360,21 @@ export async function GET(req: Request, { params }: Params) {
           }
         : null;
 
+    // State buckets an earlier setup left behind. Only looked for while there is
+    // no state stack, because that is the only time one can be orphaned, and
+    // never while a deletion is being waited on, which polls.
+    const orphanedBuckets =
+      !state && deletingNames.length === 0 && (!role || role.settled)
+        ? await orphanedStateBuckets(resolved.session, project).catch(
+            () => [] as string[],
+          )
+        : [];
+
     return NextResponse.json({
       connected: true,
       role,
       state,
+      orphanedBuckets,
       // Null both when nothing was asked about and when the stack has finished
       // going, which is the same answer to the only question the caller has.
       deleting,
@@ -334,7 +404,12 @@ export async function POST(req: Request, { params }: Params) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  let body: { action?: unknown; stack?: unknown; createOidcProvider?: unknown };
+  let body: {
+    action?: unknown;
+    stack?: unknown;
+    createOidcProvider?: unknown;
+    retry?: boolean;
+  };
   try {
     // An empty body is meaningful here — it means the default `apply` — so the schema
     // defaults rather than requires. What it adds over `.catch(() => ({}))` is the
@@ -344,9 +419,10 @@ export async function POST(req: Request, { params }: Params) {
       req,
       z
         .object({
-          action: z.enum(["apply", "adopt", "reset", "delete"]).optional(),
+          action: z.enum(["apply", "adopt", "reset", "teardown"]).optional(),
           stack: z.unknown().optional(),
           createOidcProvider: z.boolean().optional(),
+          retry: z.boolean().optional(),
         })
         .default({}),
     );
@@ -392,59 +468,61 @@ export async function POST(req: Request, { params }: Params) {
   }
 
   /**
-   * Deletes one of the two stacks in AWS, then forgets it here.
+   * Deletes the whole setup: both stacks, the state bucket with every version in
+   * it, and the key that encrypts it. See `lib/projects/teardown`.
    *
-   * The counterpart to `reset` above, and the difference is the whole point: that
-   * one stops pointing at a stack and leaves it standing, this one takes it down.
-   * Both are needed because they answer opposite questions — "this was set up
-   * somewhere I can no longer reach" against "I want this gone".
-   *
-   * Deleting in AWS first, and only clearing the pointers once CloudFormation has
-   * accepted it. A refused delete has to leave the project still pointing at the
-   * stack that is still there, or the wizard would offer to create a second one
-   * beside it.
-   *
-   * The pointers do go immediately, though, rather than waiting for the stack to
-   * finish disappearing. It leaves a gap in which the step reads "not set up" while
-   * a stack is still in `DELETE_IN_PROGRESS`, and a create started inside that gap
-   * is refused by CloudFormation. That is a plain error and it self-corrects on the
-   * next press, which is better than the alternative: keeping the pointers means
-   * the drift check sees a project claiming a stack that no longer answers, and
-   * offers a recovery for a problem the user has just deliberately caused.
+   * Called repeatedly until it answers `done`, because the bucket has to wait for
+   * CloudFormation to finish with its stack. Each call is idempotent.
    */
-  if (action === "delete") {
+  if (action === "teardown") {
     const resolved = await resolveProjectAwsSession(userId, project, "write");
     if (!resolved.ok) {
       return NextResponse.json({ error: resolved.message }, { status: 400 });
     }
 
-    const stackName =
-      stack === "state" ? stateStackNameOf(project) : roleStackNameOf(project);
-
     try {
-      await deleteBootstrapStack(resolved.session, stackName);
+      const progress = await advanceTeardown(resolved.session, project, {
+        retryFailed: body.retry === true,
+      });
+
+      // Only the calls that changed something, so a polling teardown does not
+      // write a row every few seconds.
+      const detail = {
+        awsAccountId: project.awsAccountId,
+        region: resolved.session.region,
+        stacks: progress.requestedDeletes,
+        deletedBuckets: progress.deletedBuckets,
+        scheduledKeys: progress.scheduledKeys.map((key) => key.arn),
+      };
+      if (progress.requestedDeletes.length > 0) {
+        await audit({
+          action: "deploy.teardown.stacks-deleted",
+          userId,
+          subject: project.id,
+          detail,
+        });
+      }
+      if (progress.deletedBuckets.length > 0) {
+        await audit({
+          action: "deploy.teardown.state-deleted",
+          userId,
+          subject: project.id,
+          detail,
+        });
+      }
+      if (progress.done) {
+        await audit({
+          action: "deploy.teardown.completed",
+          userId,
+          subject: project.id,
+          detail,
+        });
+      }
+
+      return NextResponse.json(progress);
     } catch (error) {
       return awsRouteError(error);
     }
-
-    // Only the half that was deleted. The two stacks have separate lifetimes, and
-    // clearing the state pointers because the role went would tell the user their
-    // Terraform state was gone when the bucket is untouched.
-    await database.project.update({
-      where: { id: project.id },
-      data:
-        stack === "state"
-          ? {
-              stateBucket: null,
-              stateLockTable: null,
-              stateKmsKeyArn: null,
-              stateStackName: null,
-              stateKmsAlias: null,
-            }
-          : { awsRoleArn: null, roleStackName: null },
-    });
-
-    return NextResponse.json({ deleted: true, stackName });
   }
 
   if (action === "apply") {
@@ -578,7 +656,7 @@ export async function POST(req: Request, { params }: Params) {
         },
       });
 
-      const github = await writeVariables(req, updated);
+      const github = await writeVariables(req, updated, "state");
 
       return NextResponse.json({
         stack: described,
@@ -596,7 +674,7 @@ export async function POST(req: Request, { params }: Params) {
       },
     });
 
-    const github = await writeVariables(req, updated);
+    const github = await writeVariables(req, updated, "role");
 
     return NextResponse.json({
       stack: described,
@@ -625,19 +703,30 @@ function settingsOf(project: Project) {
  * permission the installation was never granted should not undo a stack that
  * worked. The workflows fall back to the values rendered into them, so a failure
  * here degrades rather than breaks.
+ *
+ * Each step writes only its own values. The bucket name is pinned before the
+ * role stack runs, so writing it from the role step published a bucket that did
+ * not exist yet, and the state step then reported its variable as already set.
+ * The region goes with both, since both stacks are created in it.
  */
 async function writeVariables(
   req: Request,
   project: Project,
+  stack: StackKind,
 ): Promise<{ written: boolean; error: string | null }> {
   const token = await getProviderTokenForRequest(req, project.provider);
   if (!token) return { written: false, error: "GitHub is not connected." };
 
-  const variables: [string, string | null][] = [
-    [AWS_ROLE_VARIABLE, project.awsRoleArn],
-    [AWS_REGION_VARIABLE, project.awsRegion],
-    [STATE_BUCKET_VARIABLE, project.stateBucket],
-  ];
+  const variables: [string, string | null][] =
+    stack === "role"
+      ? [
+          [AWS_ROLE_VARIABLE, project.awsRoleArn],
+          [AWS_REGION_VARIABLE, project.awsRegion],
+        ]
+      : [
+          [AWS_REGION_VARIABLE, project.awsRegion],
+          [STATE_BUCKET_VARIABLE, project.stateBucket],
+        ];
 
   try {
     for (const [name, value] of variables) {

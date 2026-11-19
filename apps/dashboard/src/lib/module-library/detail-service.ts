@@ -6,7 +6,8 @@ import {
 } from "@terrablox/terraform/module-link";
 import { sortVersionsDesc } from "@terrablox/terraform/versions";
 import { database } from "@/lib/database";
-import { libraryOf } from "@/lib/module-library/libraries";
+import { moduleLibraryLabels } from "@/lib/module-library/libraries";
+import { libraryOf } from "@/lib/module-library/library-definition";
 import { isManaged } from "@/lib/module-library/ownership";
 import { visibleModulesForUser } from "@/lib/module-library/visibility";
 
@@ -43,43 +44,45 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
 
   // None of the three depends on the others, so they travel together rather
   // than as three round trips.
-  const [siblingVersions, candidateRows, allDependencies] = await Promise.all([
-    // Sibling versions power the header's version switcher. Scoped to root
-    // modules of the same repository; a submodule switches versions through
-    // its parent, not on its own.
-    mod.sourceId
-      ? database.terraformModule.findMany({
-          where: {
-            ...visibility,
-            sourceId: mod.sourceId,
-            isSubmodule: false,
-          },
-          select: { id: true, versionTag: true, createdAt: true },
-        })
-      : Promise.resolve([]),
+  const [siblingVersions, candidateRows, allDependencies, libraryLabels] =
+    await Promise.all([
+      // Sibling versions power the header's version switcher. Scoped to root
+      // modules of the same repository; a submodule switches versions through
+      // its parent, not on its own.
+      mod.sourceId
+        ? database.terraformModule.findMany({
+            where: {
+              ...visibility,
+              sourceId: mod.sourceId,
+              isSubmodule: false,
+            },
+            select: { id: true, versionTag: true, createdAt: true },
+          })
+        : Promise.resolve([]),
 
-    // Every module the user can see is a candidate target for a `module` block,
-    // so dependencies resolve regardless of the order things were imported in —
-    // and so a shipped module calling another shipped module links up.
-    database.terraformModule.findMany({
-      where: visibility,
-      select: {
-        id: true,
-        versionTag: true,
-        terraformRootFolder: true,
-        submoduleName: true,
-        createdAt: true,
-        source: { select: { name: true, url: true } },
-      },
-    }),
+      // Every module the user can see is a candidate target for a `module` block,
+      // so dependencies resolve regardless of the order things were imported in —
+      // and so a shipped module calling another shipped module links up.
+      database.terraformModule.findMany({
+        where: visibility,
+        select: {
+          id: true,
+          versionTag: true,
+          terraformRootFolder: true,
+          submoduleName: true,
+          createdAt: true,
+          source: { select: { name: true, url: true } },
+        },
+      }),
 
-    // The reverse direction. Loading every dependency the user can see keeps
-    // this a single query; resolution then decides which land on this module.
-    database.moduleDependency.findMany({
-      where: { module: visibility },
-      select: { name: true, source: true, sourceKind: true, moduleId: true },
-    }),
-  ]);
+      // The reverse direction. Loading every dependency the user can see keeps
+      // this a single query; resolution then decides which land on this module.
+      database.moduleDependency.findMany({
+        where: { module: visibility },
+        select: { name: true, source: true, sourceKind: true, moduleId: true },
+      }),
+      moduleLibraryLabels(),
+    ]);
 
   const linkCandidates = candidateRows.map((candidate) => ({
     id: candidate.id,
@@ -116,7 +119,7 @@ export async function loadModuleDetail(userId: string, moduleId: string) {
     // Lets the detail view drop the actions that the server would refuse anyway.
     // Managed covers both the shipped catalogue and a per-user library.
     isBuiltin: isManaged(mod),
-    library: libraryOf(mod),
+    library: libraryOf(mod, libraryLabels),
     versions: sortVersionsDesc(siblingVersions).map((version) => ({
       id: version.id,
       versionTag: version.versionTag,

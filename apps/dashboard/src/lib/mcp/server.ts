@@ -29,6 +29,7 @@ import { readProjectLog, recordDecision } from "@/lib/projects/decisions";
 import { missingDeploySettings } from "@/lib/projects/deploy";
 import { readDeployState } from "@/lib/projects/deploy-service";
 import { libraryModuleName } from "@/lib/projects/graph";
+import { runPreflightRefusal } from "@/lib/projects/run-preflight";
 import { toProjectDto } from "@/lib/projects/serialize";
 import {
   applyProjectMutation,
@@ -37,7 +38,10 @@ import {
   readModuleLibrary,
 } from "@/lib/projects/service";
 import type { ProjectGraphMutation } from "@/lib/projects/types";
-import { findTemplate } from "@/lib/projects/workflow-templates";
+import {
+  dispatchInputs,
+  findTemplate,
+} from "@/lib/projects/workflow-templates";
 
 /**
  * The dashboard's own operations, offered over MCP.
@@ -756,15 +760,15 @@ export function createDashboardMcpServer(caller: Caller): McpServer {
     {
       title: "Start a Terraform run",
       description:
-        "Dispatch the plan or apply workflow on GitHub Actions. Terrablox holds no AWS credentials — the workflow federates into the account for the length of the job, so every change leaves a run log in GitHub. `plan` is safe and shows what would change. `apply` changes real infrastructure and costs real money, so it requires `confirm` set to the project's exact name.",
+        "Dispatch the plan, apply or destroy workflow on GitHub Actions. Terrablox holds no AWS credentials — the workflow federates into the account for the length of the job, so every change leaves a run log in GitHub. `plan` is safe and shows what would change. `apply` changes real infrastructure and costs real money, and `destroy` removes every resource the configuration manages; both require `confirm` set to the project's exact name. Never start `destroy` unless the user has explicitly asked for it.",
       inputSchema: z.object({
         projectId: PROJECT_ID,
-        workflow: z.enum(["plan", "apply"]),
+        workflow: z.enum(["plan", "apply", "destroy"]),
         confirm: z
           .string()
           .optional()
           .describe(
-            "For `apply` only: the project's exact name, as a deliberate second step.",
+            "For `apply` and `destroy`: the project's exact name, as a deliberate second step.",
           ),
       }),
       annotations: WRITES,
@@ -785,6 +789,11 @@ export function createDashboardMcpServer(caller: Caller): McpServer {
           `Refusing to apply. This changes real infrastructure in AWS, so call again with confirm set to the project's exact name ("${project.name}"). Run \`plan\` first if you want to see what would change.`,
         );
       }
+      if (workflow === "destroy" && confirm !== project.name) {
+        return refuse(
+          `Refusing to destroy. This removes every resource the configuration manages in AWS, so call again with confirm set to the project's exact name ("${project.name}"), and only if the user asked for it.`,
+        );
+      }
 
       const missing = missingDeploySettings({
         awsAccountId: project.awsAccountId,
@@ -803,11 +812,15 @@ export function createDashboardMcpServer(caller: Caller): McpServer {
       const template = findTemplate(workflow);
       if (!template) return refuse("That workflow is not in the catalogue.");
 
+      const preflight = await runPreflightRefusal(token, project, template);
+      if (preflight) return refuse(preflight);
+
       try {
         await dispatchWorkflow(token, {
           repoFullName: project.repoFullName,
           workflowFile: template.path,
           ref: project.repoBranch,
+          inputs: dispatchInputs(template, project.repoFullName),
         });
       } catch (error) {
         return refuse(

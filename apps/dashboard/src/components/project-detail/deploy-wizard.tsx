@@ -2,6 +2,12 @@
 
 import { Button } from "@terrablox/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@terrablox/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@terrablox/ui/dropdown-menu";
 import { Label } from "@terrablox/ui/label";
 import { Skeleton } from "@terrablox/ui/skeleton";
 import { useToast } from "@terrablox/ui/toast";
@@ -17,6 +23,7 @@ import {
   FileCode2,
   KeyRound,
   Loader2,
+  MoreHorizontal,
   Plug,
   Rocket,
   ShieldAlert,
@@ -46,10 +53,22 @@ import {
   ORDER,
   type StepId,
 } from "@/lib/projects/deploy-steps";
+import type { TeardownPlan, TeardownProgress } from "@/lib/projects/teardown";
+import {
+  failTeardownRun,
+  mergeTeardownProgress,
+  retryTeardownRun,
+  startTeardownRun,
+  type TeardownRun,
+  teardownChecklist,
+} from "@/lib/projects/teardown-run";
 import type { ProjectDeployState } from "@/lib/projects/types";
+import { TeardownDialog, TeardownStatus } from "./deploy-teardown";
 
 interface DeployWizardProps {
   projectId: string;
+  /** The portal last signed in through, prefilled in step one's sign-in. */
+  defaultStartUrl?: string | null;
   state: ProjectDeployState;
   /** Re-reads the deploy state, because every step changes what the next sees. */
   onChanged: () => void | Promise<void>;
@@ -164,6 +183,7 @@ export function DeployWizard({
   awsAccountId = null,
   repoFullName = null,
   repoBranch = null,
+  defaultStartUrl = null,
 }: DeployWizardProps) {
   const toast = useToast();
   const [roleStack, setRoleStack] = useState<BootstrapStack | null>(null);
@@ -211,10 +231,25 @@ export function DeployWizard({
   const [saveFailed, setSaveFailed] = useState(false);
   /** The same, for the state step's own save. Separate so one retry is one step. */
   const [stateSaveFailed, setStateSaveFailed] = useState(false);
-  /** Which stack's Delete has been pressed once and is waiting for the second. */
-  const [confirmingDelete, setConfirmingDelete] = useState<
-    "role" | "state" | null
-  >(null);
+  /**
+   * State buckets an earlier setup of this project left in the account.
+   *
+   * Reported because nothing else would: deleting the state stack retains the
+   * bucket, and the project stops recording its name, so it is invisible from
+   * every step while it goes on existing.
+   */
+  const [orphanedBuckets, setOrphanedBuckets] = useState<string[]>([]);
+  /** The "Delete setup" confirmation dialog. */
+  const [teardownOpen, setTeardownOpen] = useState(false);
+  /**
+   * A whole-setup deletion, from confirming it until the user moves on.
+   *
+   * Replaces the step's content while it is set: every step describes something
+   * the teardown is taking away.
+   */
+  const [teardown, setTeardown] = useState<TeardownRun | null>(null);
+  /** One teardown call at a time; the next waits for the previous answer. */
+  const teardownInFlight = useRef(false);
 
   /**
    * A stack this tab asked CloudFormation to delete, until it has gone.
@@ -273,6 +308,40 @@ export function DeployWizard({
   /** Each stack as the previous read saw it, to notice it disappearing. */
   const lastRoleStack = useRef<BootstrapStack | null>(null);
   const lastStateStack = useRef<BootstrapStack | null>(null);
+
+  /**
+   * Replaces the placeholder for a vanished stack with what CloudFormation said.
+   *
+   * The polls are five seconds apart and a failed create is deleted in about
+   * three, so the last read usually caught the stack while it was still
+   * `CREATE_IN_PROGRESS`, before any resource had reported a failure. A deleted
+   * stack stays readable by ARN, though, so the reason is fetched afterwards.
+   * It only replaces the placeholder: if the user has started again in the
+   * meantime, the newer state wins.
+   */
+  const explainVanished = useCallback(
+    async (
+      stackId: string,
+      placeholder: string,
+      setFailure: (update: (current: string | null) => string | null) => void,
+    ) => {
+      try {
+        const response = await fetch(
+          `/api/projects/${projectId}/deploy/bootstrap?${new URLSearchParams({
+            vanished: stackId,
+          })}`,
+        );
+        if (!response.ok) return;
+        const body = await response.json();
+        const reason = body?.vanished?.[stackId];
+        if (typeof reason !== "string" || !reason) return;
+        setFailure((current) => (current === placeholder ? reason : current));
+      } catch {
+        // The placeholder is still an accurate, if vaguer, answer.
+      }
+    },
+    [projectId],
+  );
 
   const readStacks = useCallback(async () => {
     try {
@@ -345,10 +414,11 @@ export function DeployWizard({
       ) {
         // The stack was rolled back and removed under us. Keep what it said, or
         // the wizard resets to a fresh "Create" button with no hint of why.
-        setRoleFailure(
-          previous.statusReason ??
-            `CloudFormation rolled the stack back and removed it (${previous.status}).`,
-        );
+        const placeholder = `CloudFormation rolled the stack back and removed it (${previous.status}).`;
+        setRoleFailure(previous.statusReason ?? placeholder);
+        if (!previous.statusReason && previous.stackId) {
+          void explainVanished(previous.stackId, placeholder, setRoleFailure);
+        }
       }
 
       setRoleStack(role);
@@ -368,10 +438,15 @@ export function DeployWizard({
         !previousState.succeeded &&
         waitingFor.state === undefined
       ) {
-        setStateFailure(
-          previousState.statusReason ??
-            `CloudFormation rolled the stack back and removed it (${previousState.status}).`,
-        );
+        const placeholder = `CloudFormation rolled the stack back and removed it (${previousState.status}).`;
+        setStateFailure(previousState.statusReason ?? placeholder);
+        if (!previousState.statusReason && previousState.stackId) {
+          void explainVanished(
+            previousState.stackId,
+            placeholder,
+            setStateFailure,
+          );
+        }
       }
 
       setStateStack(stateStackNow);
@@ -384,6 +459,14 @@ export function DeployWizard({
           : null,
       );
 
+      setOrphanedBuckets(
+        Array.isArray(body.orphanedBuckets)
+          ? (body.orphanedBuckets as unknown[]).filter(
+              (name): name is string => typeof name === "string",
+            )
+          : [],
+      );
+
       const reported = body.drift as
         | { role: BootstrapDrift | null; state: BootstrapDrift | null }
         | undefined;
@@ -394,7 +477,7 @@ export function DeployWizard({
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to read");
     }
-  }, [projectId, toast]);
+  }, [projectId, toast, explainVanished]);
 
   /**
    * Re-reads after a step failed, then puts the step's own message back.
@@ -519,14 +602,19 @@ export function DeployWizard({
   // reports the role, its ARN is written where the pipeline looks for it.
   useEffect(() => {
     if (!roleStack?.succeeded) return;
-    if (state.setup.roleReady && state.setup.variablesReady) return;
+    if (state.setup.roleReady && state.setup.roleVariablesReady) return;
 
     const attempt = `${roleStack.stackName}:${roleStack.status}`;
     if (autoSaved.current === attempt) return;
     autoSaved.current = attempt;
 
     void saveRole();
-  }, [roleStack, state.setup.roleReady, state.setup.variablesReady, saveRole]);
+  }, [
+    roleStack,
+    state.setup.roleReady,
+    state.setup.roleVariablesReady,
+    saveRole,
+  ]);
 
   /**
    * Records what the state stack produced: the bucket and the key
@@ -583,7 +671,7 @@ export function DeployWizard({
 
   useEffect(() => {
     if (!stateStack?.succeeded) return;
-    if (state.setup.stateReady && state.setup.variablesReady) return;
+    if (state.setup.stateReady && state.setup.stateVariablesReady) return;
 
     const attempt = `${stateStack.stackName}:${stateStack.status}`;
     if (autoSavedState.current === attempt) return;
@@ -593,7 +681,7 @@ export function DeployWizard({
   }, [
     stateStack,
     state.setup.stateReady,
-    state.setup.variablesReady,
+    state.setup.stateVariablesReady,
     saveState,
   ]);
 
@@ -685,12 +773,20 @@ export function DeployWizard({
     return () => clearInterval(timer);
   }, [building, readStacks]);
 
+  /** Anything of this setup in AWS, or recorded by the project. */
+  const hasSetup =
+    roleStack !== null ||
+    stateStack !== null ||
+    orphanedBuckets.length > 0 ||
+    state.setup.roleReady ||
+    state.setup.stateReady;
+
   const roleChecklist = buildRoleChecklist({
     stack: roleStack,
     failure: roleFailure,
     busy,
     roleReady: state.setup.roleReady,
-    variablesReady: state.setup.variablesReady,
+    variablesReady: state.setup.roleVariablesReady,
     saveFailed,
     variablesError,
     oidcProvider,
@@ -702,7 +798,7 @@ export function DeployWizard({
     // and is *not* done now has changed, and calling that unchanged would be wrong.
     recordUnchanged: runBaseline.role?.record === true && state.setup.roleReady,
     variablesUnchanged:
-      runBaseline.role?.variables === true && state.setup.variablesReady,
+      runBaseline.role?.variables === true && state.setup.roleVariablesReady,
   });
 
   const stateChecklist = buildStateChecklist({
@@ -710,7 +806,7 @@ export function DeployWizard({
     failure: stateFailure,
     busy,
     stateReady: state.setup.stateReady,
-    variablesReady: state.setup.variablesReady,
+    variablesReady: state.setup.stateVariablesReady,
     saveFailed: stateSaveFailed,
     variablesError,
     bucket: state.settings.stateBucket,
@@ -721,7 +817,7 @@ export function DeployWizard({
     recordUnchanged:
       runBaseline.state?.record === true && state.setup.stateReady,
     variablesUnchanged:
-      runBaseline.state?.variables === true && state.setup.variablesReady,
+      runBaseline.state?.variables === true && state.setup.stateVariablesReady,
   });
 
   // Never blocks finishing: Terrablox cannot see secrets, so it cannot check.
@@ -731,15 +827,7 @@ export function DeployWizard({
     repoFullName: repoFullName ?? "",
   });
 
-  /**
-   * Moves to a step, and drops any half-pressed Delete on the way out.
-   *
-   * The reset belongs here rather than in an effect watching the step: coming back
-   * to a button that already reads "Delete the stack" would turn the next click
-   * into a deletion nobody started.
-   */
   const goToStep = useCallback((id: StepId | null) => {
-    setConfirmingDelete(null);
     setChosen(id);
   }, []);
   const step = STEP_META[current];
@@ -784,7 +872,11 @@ export function DeployWizard({
     }
   }
 
-  async function applyStack(stack: "role" | "state", stepId: BusyKey) {
+  /** Submits the stack. Answers whether CloudFormation had anything to change. */
+  async function applyStack(
+    stack: "role" | "state",
+    stepId: BusyKey,
+  ): Promise<boolean | null> {
     // Read before anything runs: afterwards these flags are the outcome, and the
     // question this answers is what they were beforehand.
     setRunBaseline((current) => ({
@@ -792,7 +884,10 @@ export function DeployWizard({
       [stack]: {
         record:
           stack === "role" ? state.setup.roleReady : state.setup.stateReady,
-        variables: state.setup.variablesReady,
+        variables:
+          stack === "role"
+            ? state.setup.roleVariablesReady
+            : state.setup.stateVariablesReady,
       },
     }));
 
@@ -810,7 +905,7 @@ export function DeployWizard({
         ...(stack === "role" && reuseOidc ? { createOidcProvider: false } : {}),
       },
     );
-    if (!body) return;
+    if (!body) return null;
 
     const next = (body.stack as BootstrapStack | null) ?? null;
     if (stack === "role") {
@@ -819,53 +914,98 @@ export function DeployWizard({
     } else setStateStack(next);
 
     await onChanged();
+    return body.started !== false;
   }
 
   /**
-   * Deletes the stack in AWS and forgets it here, so the step starts over.
+   * One round of the teardown. The effect below repeats it until it is done.
    *
-   * Two presses, not a dialog. The reason to confirm at all is that this reaches
-   * into the user's account and takes something down; the reason not to open a
-   * modal is that the thing it removes is recreatable by the button next to it.
-   * The second label says what will happen rather than asking whether to.
+   * The stacks being deleted are registered as `deleting`, which is what the
+   * stack poll already uses to tell a deletion it asked for from a stack that
+   * fell over. Without it the role stack vanishing mid-teardown would be
+   * reported as a rollback.
    */
-  async function deleteStack(stack: "role" | "state", stepId: BusyKey) {
-    const body = await post(
-      stepId,
-      `/api/projects/${projectId}/deploy/bootstrap`,
-      { action: "delete", stack },
-    );
-    if (!body) return;
+  const advanceTeardown = useCallback(
+    async (retry = false) => {
+      if (teardownInFlight.current) return;
+      teardownInFlight.current = true;
 
-    setConfirmingDelete(null);
-    // The baseline described a setup that no longer exists, so keeping it would
-    // annotate the next run's ticks with "unchanged" about the wrong thing.
-    setRunBaseline((current) => ({ ...current, [stack]: null }));
-    if (stack === "role") {
-      lastRoleStack.current = null;
-      setRoleStack(null);
-      setRoleFailure(null);
-      setVariablesError(null);
-      setSaveFailed(false);
-    } else {
-      lastStateStack.current = null;
-      setStateStack(null);
-      setStateFailure(null);
-    }
+      try {
+        const response = await fetch(
+          `/api/projects/${projectId}/deploy/bootstrap`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "teardown", retry }),
+          },
+        );
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(
+            typeof body?.error === "string"
+              ? body.error
+              : "Could not delete the setup.",
+          );
+        }
 
-    // No banner: the step itself says it is deleting, and a notice on top of that
-    // was two versions of one fact, one of which needed dismissing.
-    const stackName =
-      typeof body.stackName === "string" ? body.stackName : null;
-    if (stackName) {
-      const next = { ...deletingRef.current, [stack]: stackName };
-      deletingRef.current = next;
-      setDeleting(next);
-    }
+        const progress = body as TeardownProgress;
+        setTeardown((current) =>
+          current ? mergeTeardownProgress(current, progress) : current,
+        );
 
-    await onChanged();
-    await readStacks();
+        if (progress.done) {
+          lastRoleStack.current = null;
+          lastStateStack.current = null;
+          setRoleStack(null);
+          setStateStack(null);
+          setRoleFailure(null);
+          setStateFailure(null);
+          setVariablesError(null);
+          setSaveFailed(false);
+          setStateSaveFailed(false);
+          setRunBaseline({ role: null, state: null });
+          setOrphanedBuckets([]);
+          await onChanged();
+          await readStacks();
+        }
+      } catch (err) {
+        setTeardown((current) =>
+          current
+            ? failTeardownRun(
+                current,
+                err instanceof Error
+                  ? err.message
+                  : "Could not delete the setup.",
+              )
+            : current,
+        );
+      } finally {
+        teardownInFlight.current = false;
+      }
+    },
+    [projectId, onChanged, readStacks],
+  );
+
+  function startTeardown(plan: TeardownPlan) {
+    setTeardownOpen(false);
+    const tracked: { role?: string; state?: string } = {};
+    if (plan.roleStack) tracked.role = plan.roleStack.name;
+    if (plan.stateStack) tracked.state = plan.stateStack.name;
+    deletingRef.current = tracked;
+    setDeleting(tracked);
+    setTeardown(startTeardownRun(plan));
+    void advanceTeardown();
   }
+
+  // CloudFormation deletes in the background, so a teardown is a few rounds:
+  // stacks first, then the bucket once its stack has gone. Eight seconds keeps
+  // a full teardown well inside the infrastructure rate limit.
+  const teardownRunning = teardown?.status === "running";
+  useEffect(() => {
+    if (!teardownRunning) return;
+    const timer = setInterval(() => void advanceTeardown(), 8000);
+    return () => clearInterval(timer);
+  }, [teardownRunning, advanceTeardown]);
 
   async function writePipeline() {
     const body = await post(
@@ -910,7 +1050,38 @@ export function DeployWizard({
     <div className="space-y-4">
       <Card>
         <CardHeader className="gap-4 pb-4">
-          <CardTitle className="text-base">Set up deployment</CardTitle>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="text-base">Set up deployment</CardTitle>
+            {/* Shown whenever anything exists in AWS, including only a leftover
+                bucket, since that is exactly when "start over" is needed. Not
+                blocked while CloudFormation is working: the teardown waits for a
+                stack to settle by itself, and this is how a teardown interrupted
+                by a reload is picked up again. */}
+            {!teardown && !awsLost && connection?.connected && hasSetup ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    aria-label="Setup actions"
+                    className="-my-1 -mr-2 h-8 w-8"
+                    size="icon"
+                    variant="ghost"
+                  >
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                    disabled={busy !== null}
+                    onSelect={() => setTeardownOpen(true)}
+                  >
+                    <Trash2 className="mr-2 h-3.5 w-3.5" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </div>
 
           <WizardSteps
             current={current}
@@ -939,190 +1110,214 @@ export function DeployWizard({
             grew again on the workflows step, and on a narrow window the
             appearing scrollbar moved the whole card sideways as it did. */}
         <CardContent className="min-h-80 space-y-4 border-t pt-4">
-          <div>
-            {/* Smaller than the card's own title, and an h4 under its h3. Both
+          {teardown ? (
+            <TeardownStatus
+              items={teardownChecklist(teardown)}
+              onDismiss={() => {
+                setTeardown(null);
+                goToStep(null);
+              }}
+              onRetry={() => {
+                setTeardown((current) =>
+                  current ? retryTeardownRun(current) : null,
+                );
+                void advanceTeardown(true);
+              }}
+              renderChecklist={(items) => <StepChecklist items={items} />}
+              run={teardown}
+            />
+          ) : (
+            <>
+              <div>
+                {/* Smaller than the card's own title, and an h4 under its h3. Both
                 used to be `font-semibold text-base` on sibling h3s, so "Connect
                 the AWS account" competed with "Set up deployment" instead of
                 sitting under it — visually and in the heading outline. */}
-            <h4 className="flex items-center gap-2 font-semibold text-sm">
-              <step.icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-              {step.title}
-            </h4>
-            {step.description ? (
-              <p className="text-muted-foreground text-sm">
-                {step.description}
-              </p>
-            ) : null}
-          </div>
+                <h4 className="flex items-center gap-2 font-semibold text-sm">
+                  <step.icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  {step.title}
+                </h4>
+                {step.description ? (
+                  <p className="text-muted-foreground text-sm">
+                    {step.description}
+                  </p>
+                ) : null}
+              </div>
 
-          {/* Outcomes are announced in the snackbar now. What stays on this card
+              {/* Outcomes are announced in the snackbar now. What stays on this card
               is only what remains true until something changes: a stack that failed
               and its reason, a missing prerequisite, a drift report. */}
 
-          {current === "account" ? (
-            // Explicitly three-way: until the bootstrap read answers, whether
-            // this step is a sign-in or a region is not yet known, and guessing
-            // showed the region picker for a second to people with no account.
-            connection === null ? (
-              <Skeleton className="h-24 w-full max-w-sm" />
-            ) : !connection.connected ? (
-              // The sign-in itself, rather than a link to it. Signing in *is*
-              // step one, and sending people to another screen to do it left
-              // the wizard starting at a step it could not perform.
-              //
-              // The server's reason for it ("this project has no AWS account
-              // yet…") is not printed: the form underneath is the answer to it,
-              // and naming the tab you are already on explained nothing.
-              <div className="space-y-3">
-                {/* Except when the project had already got somewhere. Then the
+              {current === "account" ? (
+                // Explicitly three-way: until the bootstrap read answers, whether
+                // this step is a sign-in or a region is not yet known, and guessing
+                // showed the region picker for a second to people with no account.
+                connection === null ? (
+                  <Skeleton className="h-24 w-full max-w-sm" />
+                ) : !connection.connected ? (
+                  // The sign-in itself, rather than a link to it. Signing in *is*
+                  // step one, and sending people to another screen to do it left
+                  // the wizard starting at a step it could not perform.
+                  //
+                  // The server's reason for it ("this project has no AWS account
+                  // yet…") is not printed: the form underneath is the answer to it,
+                  // and naming the tab you are already on explained nothing.
+                  <div className="space-y-3">
+                    {/* Except when the project had already got somewhere. Then the
                     reader is not starting, they have been sent back — and the
                     question that needs answering before they will sign in again
                     is whether the work they did is gone. It is not: the role and
                     the bucket are in AWS, and this project still knows their
                     names. Only the session that reaches them has lapsed. */}
-                {hadProgress ? (
-                  <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
-                    <p className="flex items-start gap-2 font-medium">
-                      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                      The AWS session has expired. Sign in again to carry on.
-                    </p>
-                    <p className="pl-6 text-muted-foreground">
-                      Nothing has been lost.{" "}
-                      {state.setup.stateReady
-                        ? "The deployment role and the state backend are still in AWS"
-                        : "The deployment role is still in AWS"}
-                      , and this project still points at them. The later steps
-                      are on hold until the connection is back, because none of
-                      them can reach AWS without it.
-                    </p>
-                  </div>
-                ) : null}
+                    {hadProgress ? (
+                      <div className="space-y-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                        <p className="flex items-start gap-2 font-medium">
+                          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                          The AWS session has expired. Sign in again to carry
+                          on.
+                        </p>
+                        <p className="pl-6 text-muted-foreground">
+                          Nothing has been lost.{" "}
+                          {state.setup.stateReady
+                            ? "The deployment role and the state backend are still in AWS"
+                            : "The deployment role is still in AWS"}
+                          , and this project still points at them. The later
+                          steps are on hold until the connection is back,
+                          because none of them can reach AWS without it.
+                        </p>
+                      </div>
+                    ) : null}
 
-                <AwsSsoConnect
-                  onConnected={(created) => void connectAccount(created)}
-                  usesSessionOnly
-                />
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="grid max-w-sm gap-2">
-                  <Label htmlFor="wizard-region">Region</Label>
-                  {/* Saved as it is picked, rather than behind a Save button:
+                    <AwsSsoConnect
+                      defaultStartUrl={defaultStartUrl}
+                      onConnected={(created) => void connectAccount(created)}
+                      usesSessionOnly
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid max-w-sm gap-2">
+                      <Label htmlFor="wizard-region">Region</Label>
+                      {/* Saved as it is picked, rather than behind a Save button:
                       this is one select, the next step creates a role and a
                       bucket in whatever it says, and a region left unsaved
                       looked exactly like a region that was set. */}
-                  <AwsRegionPicker
-                    disabled={busy !== null}
-                    onChange={(next) => {
-                      setRegion(next);
-                      if (next.trim() === state.settings.awsRegion) return;
-                      void patch(
-                        "account",
-                        { awsRegion: next.trim() },
-                        "Region saved.",
-                      );
-                    }}
-                    triggerId="wizard-region"
-                    value={region}
-                  />
-                </div>
-                {/* The sentence that used to sit here explained what the region
+                      <AwsRegionPicker
+                        disabled={busy !== null}
+                        onChange={(next) => {
+                          setRegion(next);
+                          if (next.trim() === state.settings.awsRegion) return;
+                          void patch(
+                            "account",
+                            { awsRegion: next.trim() },
+                            "Region saved.",
+                          );
+                        }}
+                        triggerId="wizard-region"
+                        value={region}
+                      />
+                    </div>
+                    {/* The sentence that used to sit here explained what the region
                     decides. The next two steps show it being decided — a role
                     and a bucket appearing in that region — so it was a caption
                     for something the user was about to watch happen. Only the
                     save feedback is left, because a select that saves itself
                     otherwise gives no sign that it did. */}
-                {busy === "account" ? (
-                  <p className="flex items-center gap-2 text-muted-foreground text-xs">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Saving the region…
-                  </p>
-                ) : null}
-              </div>
-            )
-          ) : null}
+                    {busy === "account" ? (
+                      <p className="flex items-center gap-2 text-muted-foreground text-xs">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Saving the region…
+                      </p>
+                    ) : null}
+                  </div>
+                )
+              ) : null}
 
-          {current === "role" ? (
-            roleDeleting ? (
-              <DeletingStack
-                stackName={deleting.role ?? roleStack?.stackName ?? null}
-                status={roleStack?.status ?? null}
-              />
-            ) : (
-              <div className="space-y-3">
-                {/* What the step is about, in the state step's shape. Three of the
+              {current === "role" ? (
+                roleDeleting ? (
+                  <DeletingStack
+                    stackName={deleting.role ?? roleStack?.stackName ?? null}
+                    status={roleStack?.status ?? null}
+                  />
+                ) : (
+                  <div className="space-y-3">
+                    {/* What the step is about, in the state step's shape. Three of the
                   four rows are known before anything runs, which is the useful
                   part: who will be allowed to assume this role, through which
                   provider, and what it will be able to do — read before agreeing
                   to it rather than looked up afterwards. */}
-                <dl className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]">
-                  <dt className="text-muted-foreground">Role</dt>
-                  <dd className="break-all font-mono">
-                    {state.settings.awsRoleArn ?? "created by this stack"}
-                  </dd>
-                  <dt className="text-muted-foreground">Assumed by</dt>
-                  <dd className="break-all font-mono">
-                    {repoFullName
-                      ? `${repoFullName} on ${repoBranch ?? "the deployment branch"}`
-                      : "this project's repository"}
-                  </dd>
-                  <dt className="text-muted-foreground">Identity provider</dt>
-                  <dd className="break-all font-mono">
-                    {GITHUB_OIDC_PROVIDER}
-                  </dd>
-                  <dt className="text-muted-foreground">Permissions</dt>
-                  <dd className="break-all font-mono">
-                    {DEPLOY_PERMISSIONS_POLICY_ARN}
-                  </dd>
-                </dl>
+                    <dl className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]">
+                      <dt className="text-muted-foreground">Role</dt>
+                      <dd className="break-all font-mono">
+                        {state.settings.awsRoleArn ?? "created by this stack"}
+                      </dd>
+                      <dt className="text-muted-foreground">Assumed by</dt>
+                      <dd className="break-all font-mono">
+                        {repoFullName
+                          ? `${repoFullName} on ${repoBranch ?? "the deployment branch"}`
+                          : "this project's repository"}
+                      </dd>
+                      <dt className="text-muted-foreground">
+                        Identity provider
+                      </dt>
+                      <dd className="break-all font-mono">
+                        {GITHUB_OIDC_PROVIDER}
+                      </dd>
+                      <dt className="text-muted-foreground">Permissions</dt>
+                      <dd className="break-all font-mono">
+                        {DEPLOY_PERMISSIONS_POLICY_ARN}
+                      </dd>
+                    </dl>
 
-                {/* Only while the permissions are still a decision. Once the stack
+                    {/* Only while the permissions are still a decision. Once the stack
                   has been asked for, what the role may do is settled, and after
                   it exists the warning is a fact about the finished setup — which
                   is where the configuration view states it, in full, next to the
                   account number it applies to. Here it was competing with the
                   progress and then outliving its own usefulness. */}
-                {drift.role ? (
-                  <DriftNotice
-                    busy={busy === "role"}
-                    drift={drift.role}
-                    kind="role"
-                    onForget={() => void forgetSetup("role")}
-                  />
-                ) : null}
+                    {drift.role ? (
+                      <DriftNotice
+                        busy={busy === "role"}
+                        drift={drift.role}
+                        kind="role"
+                        onForget={() => void forgetSetup("role")}
+                      />
+                    ) : null}
 
-                <StepChecklist items={roleChecklist} />
+                    <StepChecklist items={roleChecklist} />
 
-                {roleFailure ? (
-                  <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive text-xs">
-                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    {roleFailure}
-                  </p>
-                ) : null}
+                    {roleFailure ? (
+                      <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive text-xs">
+                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        {roleFailure}
+                      </p>
+                    ) : null}
 
-                {roleStack?.statusReason && roleFailed ? (
-                  <p className="text-muted-foreground text-xs">
-                    {roleStack.statusReason}
-                  </p>
-                ) : null}
+                    {roleStack?.statusReason && roleFailed ? (
+                      <p className="text-muted-foreground text-xs">
+                        {roleStack.statusReason}
+                      </p>
+                    ) : null}
 
-                {/* An account can hold only one provider per URL. The server works
+                    {/* An account can hold only one provider per URL. The server works
                   that out by asking IAM, so this is the escape hatch for a
                   session that may not list providers — not the normal path. */}
-                {roleFailed ? (
-                  <label className="flex items-start gap-2 text-muted-foreground text-xs">
-                    <input
-                      checked={reuseOidc}
-                      className="mt-0.5"
-                      onChange={(event) => setReuseOidc(event.target.checked)}
-                      type="checkbox"
-                    />
-                    This account already trusts GitHub — reuse the existing
-                    identity provider instead of creating it.
-                  </label>
-                ) : null}
+                    {roleFailed ? (
+                      <label className="flex items-start gap-2 text-muted-foreground text-xs">
+                        <input
+                          checked={reuseOidc}
+                          className="mt-0.5"
+                          onChange={(event) =>
+                            setReuseOidc(event.target.checked)
+                          }
+                          type="checkbox"
+                        />
+                        This account already trusts GitHub — reuse the existing
+                        identity provider instead of creating it.
+                      </label>
+                    ) : null}
 
-                {/* One control, and only where there is something to press. While
+                    {/* One control, and only where there is something to press. While
                   it runs the checklist is the status, so a disabled button with a
                   spinner in it said nothing the list did not.
 
@@ -1133,305 +1328,217 @@ export function DeployWizard({
 
                   A deletion needs no case here — the whole step is the waiting
                   indicator while one runs. */}
-                {drift.role
-                  ?.collides ? null : roleRunning ? null : roleStack?.succeeded ? (
-                  // Both outlined rather than filled: the step is finished, and
-                  // neither of these is the thing to do next. Rebuild is for after a
-                  // branch or repository change; Delete is for starting over.
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      disabled={busy !== null || roleBusy}
-                      onClick={() => void applyStack("role", "role")}
-                      size="sm"
-                      variant="outline"
-                    >
-                      <Rocket className="mr-2 h-3.5 w-3.5" />
-                      Rebuild
-                    </Button>
+                    {/* A finished step has nothing to press. Deleting acts on the
+                  whole setup, so it lives in the footer: deleting
+                  only the role or only the state left the other half behind,
+                  and a retained bucket nobody recorded any more. */}
+                    {drift.role
+                      ?.collides ? null : roleRunning ? null : roleStack?.succeeded ? null : (
+                      <Button
+                        disabled={busy !== null || roleBusy}
+                        onClick={() => void applyStack("role", "role")}
+                        size="sm"
+                      >
+                        <Rocket className="mr-2 h-3.5 w-3.5" />
+                        {roleFailed ? "Try again" : "Create"}
+                      </Button>
+                    )}
 
-                    <Button
-                      disabled={busy !== null || roleBusy}
-                      onClick={() =>
-                        confirmingDelete === "role"
-                          ? void deleteStack("role", "role")
-                          : setConfirmingDelete("role")
-                      }
-                      size="sm"
-                      variant="outline"
-                    >
-                      <Trash2 className="mr-2 h-3.5 w-3.5" />
-                      {confirmingDelete === "role"
-                        ? "Delete the stack"
-                        : "Delete"}
-                    </Button>
-
-                    {confirmingDelete === "role" ? (
-                      <span className="text-muted-foreground text-xs">
-                        Removes the role and its GitHub trust from AWS. Deploys
-                        stop working until it is created again.
-                      </span>
-                    ) : null}
-                  </div>
-                ) : (
-                  <Button
-                    disabled={busy !== null || roleBusy}
-                    onClick={() => void applyStack("role", "role")}
-                    size="sm"
-                  >
-                    <Rocket className="mr-2 h-3.5 w-3.5" />
-                    {roleFailed ? "Try again" : "Create"}
-                  </Button>
-                )}
-
-                {/* The Actions variables are written for you once the stack has
+                    {/* The Actions variables are written for you once the stack has
                   finished — see `saveRole`. Only a failure needs a control, and
                   the checklist line above has already said which part failed.
                   Two failures reach here: the whole save threw (`saveFailed`), or
                   it worked except for the repository (`variablesError`). The
                   second one used to fall through to the stack's own button, which
                   offered to rebuild a role that was never the problem. */}
-                {!roleRunning && (saveFailed || variablesError !== null) ? (
-                  <Button
-                    disabled={busy !== null}
-                    onClick={() => void saveRole()}
-                    size="sm"
-                    variant="outline"
-                  >
-                    Try saving the role again
-                  </Button>
-                ) : null}
-              </div>
-            )
-          ) : null}
+                    {!roleRunning && (saveFailed || variablesError !== null) ? (
+                      <Button
+                        disabled={busy !== null}
+                        onClick={() => void saveRole()}
+                        size="sm"
+                        variant="outline"
+                      >
+                        Try saving the role again
+                      </Button>
+                    ) : null}
+                  </div>
+                )
+              ) : null}
 
-          {current === "state" ? (
-            stateDeleting ? (
-              <DeletingStack
-                detail="The backend can be created again once CloudFormation has finished. The bucket and its key are set to retain and stay behind."
-                stackName={deleting.state ?? stateStack?.stackName ?? null}
-                status={stateStack?.status ?? null}
-              />
-            ) : (
-              <div className="space-y-3">
-                <dl className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]">
-                  <dt className="text-muted-foreground">Bucket</dt>
-                  <dd className="truncate font-mono">
-                    {state.settings.stateBucket ?? "named for you when it runs"}
-                  </dd>
-                  {/* No locking row. It used to name a DynamoDB table, which was a
+              {current === "state" ? (
+                stateDeleting ? (
+                  <DeletingStack
+                    detail="The backend can be created again once CloudFormation has finished. The bucket and its key are set to retain and stay behind."
+                    stackName={deleting.state ?? stateStack?.stackName ?? null}
+                    status={stateStack?.status ?? null}
+                  />
+                ) : (
+                  <div className="space-y-3">
+                    <dl className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]">
+                      <dt className="text-muted-foreground">Bucket</dt>
+                      <dd className="truncate font-mono">
+                        {state.settings.stateBucket ??
+                          "named for you when it runs"}
+                      </dd>
+                      {/* No locking row. It used to name a DynamoDB table, which was a
                       real per-project value; S3 does the locking itself now, so the
                       row said the same sentence in every project — a constant among
                       names and ARNs, which is what this table is for. */}
-                  <dt className="text-muted-foreground">Encryption key</dt>
-                  <dd className="break-all font-mono">
-                    {state.settings.stateKmsKeyArn ??
-                      "a new KMS key, created by this stack"}
-                  </dd>
-                </dl>
+                      <dt className="text-muted-foreground">Encryption key</dt>
+                      <dd className="break-all font-mono">
+                        {state.settings.stateKmsKeyArn ??
+                          "a new KMS key, created by this stack"}
+                      </dd>
+                    </dl>
 
-                <StepChecklist items={stateChecklist} />
+                    <StepChecklist items={stateChecklist} />
 
-                {/* What the attempt said, kept after the stack that said it was
+                    {/* What the attempt said, kept after the stack that said it was
                     removed. Without this the step reset to a Create button and the
                     failure was invisible — which is what "clicking Create does
                     nothing" actually was. */}
-                {stateFailure ? (
-                  <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive text-xs">
-                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span>{stateFailure}</span>
-                  </p>
-                ) : null}
+                    {stateFailure ? (
+                      <p className="flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-destructive text-xs">
+                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>{stateFailure}</span>
+                      </p>
+                    ) : null}
 
-                {drift.state ? (
-                  <DriftNotice
-                    busy={busy === "state"}
-                    drift={drift.state}
-                    kind="state"
-                    onForget={() => void forgetSetup("state")}
-                  />
-                ) : null}
+                    {drift.state ? (
+                      <DriftNotice
+                        busy={busy === "state"}
+                        drift={drift.state}
+                        kind="state"
+                        onForget={() => void forgetSetup("state")}
+                      />
+                    ) : null}
 
-                {state.setup.roleReady ? null : (
-                  <p className="text-muted-foreground text-xs">
-                    The role has to exist first — the key grants it access by
-                    name.
-                  </p>
-                )}
+                    {state.setup.roleReady ? null : (
+                      <p className="text-muted-foreground text-xs">
+                        The role has to exist first — the key grants it access
+                        by name.
+                      </p>
+                    )}
 
-                {/* The role step's shape, for the same reasons. The one difference
+                    {/* The role step's shape, for the same reasons. The one difference
                   worth knowing is in the confirmation text: this stack's contents
                   are set to retain, so deleting it leaves the bucket behind. */}
-                {drift.state
-                  ?.collides ? null : stateRunning ? null : stateStack?.succeeded ? (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      disabled={busy !== null || stateBusy || roleBusy}
-                      onClick={() => void applyStack("state", "state")}
-                      size="sm"
-                      variant="outline"
-                    >
-                      <Rocket className="mr-2 h-3.5 w-3.5" />
-                      Rebuild
-                    </Button>
+                    {orphanedBuckets.length > 0 ? (
+                      <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-xs">
+                        <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                        <span>
+                          {orphanedBuckets.length === 1
+                            ? "A state bucket from an earlier setup is still in this account:"
+                            : "State buckets from earlier setups are still in this account:"}{" "}
+                          {orphanedBuckets.map((name, i) => (
+                            <span key={name}>
+                              {i > 0 ? ", " : null}
+                              <code className="break-all rounded bg-muted px-1 font-mono">
+                                {name}
+                              </code>
+                            </span>
+                          ))}
+                          . A new backend gets a fresh name and does not collide
+                          with it. <span className="font-medium">Delete</span>{" "}
+                          in the menu above removes it together with its key.
+                        </span>
+                      </div>
+                    ) : null}
 
-                    <Button
-                      disabled={busy !== null || stateBusy}
-                      onClick={() =>
-                        confirmingDelete === "state"
-                          ? void deleteStack("state", "state")
-                          : setConfirmingDelete("state")
-                      }
-                      size="sm"
-                      variant="outline"
-                    >
-                      <Trash2 className="mr-2 h-3.5 w-3.5" />
-                      {confirmingDelete === "state"
-                        ? "Delete the stack"
-                        : "Delete"}
-                    </Button>
+                    {/* See the role step: delete is in the footer. */}
+                    {drift.state
+                      ?.collides ? null : stateRunning ? null : stateStack?.succeeded ? null : (
+                      <Button
+                        disabled={
+                          busy !== null ||
+                          stateBusy ||
+                          roleBusy ||
+                          !state.setup.roleReady
+                        }
+                        onClick={() => void applyStack("state", "state")}
+                        size="sm"
+                      >
+                        <Rocket className="mr-2 h-3.5 w-3.5" />
+                        {stateFailed ? "Try again" : "Create"}
+                      </Button>
+                    )}
 
-                    {confirmingDelete === "state" ? (
-                      <span className="text-muted-foreground text-xs">
-                        Removes the stack only. The bucket and its key are set
-                        to retain and stay in AWS, holding the record of what
-                        Terraform has built — so creating this backend again
-                        under the same name will fail on the bucket that is
-                        still there. Delete the bucket in AWS first if you mean
-                        to start over.
-                      </span>
+                    {!stateRunning && stateSaveFailed ? (
+                      <Button
+                        disabled={busy !== null}
+                        onClick={() => void saveState()}
+                        size="sm"
+                        variant="outline"
+                      >
+                        Try saving the state backend again
+                      </Button>
                     ) : null}
                   </div>
-                ) : (
-                  <Button
-                    disabled={
-                      busy !== null ||
-                      stateBusy ||
-                      roleBusy ||
-                      !state.setup.roleReady
-                    }
-                    onClick={() => void applyStack("state", "state")}
-                    size="sm"
-                  >
-                    <Rocket className="mr-2 h-3.5 w-3.5" />
-                    {stateFailed ? "Try again" : "Create"}
-                  </Button>
-                )}
-
-                {!stateRunning && stateSaveFailed ? (
-                  <Button
-                    disabled={busy !== null}
-                    onClick={() => void saveState()}
-                    size="sm"
-                    variant="outline"
-                  >
-                    Try saving the state backend again
-                  </Button>
-                ) : null}
-              </div>
-            )
-          ) : null}
-
-          {current === "pipeline" ? (
-            <div className="space-y-4">
-              {/* First, because it applies to every workflow below. Underneath the
-                  list it read as a property of whichever one it followed.
-
-                  A list rather than a text field. What goes here ends up verbatim
-                  in `setup-terraform`, so a typo used to become a run that failed
-                  on a version nobody publishes — after it had already federated
-                  into AWS. A version the project pinned before it left the list is
-                  kept and shown, so this cannot silently move somebody's pipeline
-                  to a different Terraform. */}
-              <StepSection id={TF_VERSION_HEADING} title="Terraform version">
-                <select
-                  // Named by the heading above rather than by a `Label` of its own.
-                  // A label would have put the same words on screen twice, or hidden
-                  // one of them — and it was the reason this control had a heavier
-                  // heading than the section under it.
-                  aria-labelledby={TF_VERSION_HEADING}
-                  className="h-9 max-w-xs rounded-md border bg-transparent px-3 font-mono text-sm"
-                  disabled={busy !== null}
-                  onChange={(event) =>
-                    setTemplateConfig({ terraformVersion: event.target.value })
-                  }
-                  value={templates.config.terraformVersion}
-                >
-                  {(templates.terraformVersions.includes(
-                    templates.config.terraformVersion,
-                  )
-                    ? templates.terraformVersions
-                    : [
-                        templates.config.terraformVersion,
-                        ...templates.terraformVersions,
-                      ]
-                  ).map((version, index) => (
-                    <option key={version} value={version}>
-                      {version}
-                      {index === 0 && version === templates.terraformVersions[0]
-                        ? " (latest)"
-                        : ""}
-                    </option>
-                  ))}
-                </select>
-              </StepSection>
-
-              <StepSection title="Workflows">
-                <ul className="space-y-2">
-                  {templates.catalogue.map((template) => (
-                    <li key={template.id}>
-                      <ToggleRow
-                        description={
-                          <>
-                            {template.summary}
-                            {template.requires ? (
-                              <> Needs {template.requires}.</>
-                            ) : null}
-                            <span className="mt-0.5 block font-mono text-[11px]">
-                              {template.path}
-                            </span>
-                          </>
-                        }
-                        disabled={template.required || busy !== null}
-                        hint={template.required ? "required" : undefined}
-                        label={template.name}
-                        on={template.enabled}
-                        onToggle={() => {
-                          const disabled = new Set(templates.config.disabled);
-                          if (template.enabled) disabled.add(template.id);
-                          else disabled.delete(template.id);
-                          setTemplateConfig({ disabled: [...disabled] });
-                        }}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              </StepSection>
-
-              {privateModulesChecklist.length > 0 ? (
-                <StepSection title="Private module access">
-                  <StepChecklist items={privateModulesChecklist} />
-                </StepSection>
+                )
               ) : null}
 
-              {state.setup.roleReady ? null : (
-                <p className="text-muted-foreground text-xs">
-                  Save the role first — the workflows are rendered from it.
-                </p>
-              )}
-            </div>
-          ) : null}
+              {current === "pipeline" ? (
+                <div className="space-y-4">
+                  <StepSection title="Workflows">
+                    <ul className="space-y-2">
+                      {templates.catalogue.map((template) => (
+                        <li key={template.id}>
+                          <ToggleRow
+                            description={
+                              <>
+                                {template.requires ? (
+                                  <>Needs {template.requires}.</>
+                                ) : null}
+                                <span className="mt-0.5 block font-mono text-[11px]">
+                                  {template.path}
+                                </span>
+                              </>
+                            }
+                            disabled={template.required || busy !== null}
+                            hint={template.required ? "required" : undefined}
+                            label={template.name}
+                            on={template.enabled}
+                            onToggle={() => {
+                              const disabled = new Set(
+                                templates.config.disabled,
+                              );
+                              if (template.enabled) disabled.add(template.id);
+                              else disabled.delete(template.id);
+                              setTemplateConfig({ disabled: [...disabled] });
+                            }}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </StepSection>
+
+                  {privateModulesChecklist.length > 0 ? (
+                    <StepSection title="Private module access">
+                      <StepChecklist items={privateModulesChecklist} />
+                    </StepSection>
+                  ) : null}
+
+                  {state.setup.roleReady ? null : (
+                    <p className="text-muted-foreground text-xs">
+                      Save the role first — the workflows are rendered from it.
+                    </p>
+                  )}
+                </div>
+              ) : null}
+            </>
+          )}
         </CardContent>
 
         {/* Continue only moves through finished steps. The work itself is done by
             the button inside the step, which is what marks it finished — except on
             the last one, where the work *is* finishing, so its button takes the
             place Continue occupies everywhere else. */}
-        <div className="flex items-center gap-2 border-t p-4">
+        <div className="flex flex-wrap items-center gap-2 border-t p-4">
           {/* Absent on the first step rather than disabled there. It is the first
               step, so there has never been anything behind it: the way out
               backwards is disconnecting the account, which lives on the strip above
               this card. A button that can only ever be grey is furniture. */}
-          {index > 0 ? (
+          {index > 0 && !teardown ? (
             <Button
               onClick={() => goToStep(ORDER[index - 1] ?? null)}
               type="button"
@@ -1445,7 +1552,7 @@ export function DeployWizard({
           {/* `ml-auto` rather than `justify-between` on the row: with Back gone,
               space-between would have pulled this one over to the left. */}
           <div className="ml-auto">
-            {current === FINAL_STEP ? (
+            {teardown ? null : current === FINAL_STEP ? (
               <Button
                 disabled={busy !== null || !state.setup.roleReady}
                 onClick={() => void writePipeline()}
@@ -1468,6 +1575,13 @@ export function DeployWizard({
           </div>
         </div>
       </Card>
+
+      <TeardownDialog
+        onConfirm={startTeardown}
+        onOpenChange={setTeardownOpen}
+        open={teardownOpen}
+        projectId={projectId}
+      />
     </div>
   );
 }
@@ -1639,9 +1753,6 @@ function ChecklistIcon({ state }: { state: ChecklistState }) {
   // where an outline reads as "this is off".
   return <Clock className="h-4 w-4 shrink-0 text-muted-foreground" />;
 }
-
-/** The heading the version picker takes its accessible name from. */
-const TF_VERSION_HEADING = "wizard-tf-version-heading";
 
 /**
  * A sub-heading inside a step's card, and whatever sits under it.
