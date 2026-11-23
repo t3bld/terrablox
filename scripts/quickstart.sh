@@ -55,8 +55,9 @@ Options:
   -h, --help     Show this help.
 
 Checks prerequisites, creates the root .env (generating a BETTER_AUTH_SECRET),
-installs dependencies, starts PostgreSQL in Docker, applies migrations and
-finally runs \`pnpm dev\`.
+installs dependencies, starts PostgreSQL in Docker and applies migrations.
+In an interactive terminal it also offers to configure the Cost Service and
+import the Terrablox module catalogue, then runs \`pnpm dev\`.
 EOF
 }
 
@@ -224,6 +225,20 @@ prompt_env_var() {
 	ok "$key written to $file"
 }
 
+confirm_optional() {
+	local answer
+	if [ ! -t 0 ]; then
+		muted "$1 skipped (not an interactive terminal)"
+		return 1
+	fi
+	printf '    %s [y/N] ' "$1"
+	read -r answer </dev/tty || answer=""
+	case "$answer" in
+		y|Y|yes|YES) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
 github_ready() {
 	[ -n "$(read_env_var "$ENV_FILE" GITHUB_CLIENT_ID)" ] &&
 		[ -n "$(read_env_var "$ENV_FILE" GITHUB_CLIENT_SECRET)" ]
@@ -245,6 +260,22 @@ else
 	else
 		warn "GitHub sign-in is NOT configured - nobody can sign in yet"
 		info "add GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to $ENV_FILE, then restart the dev server"
+	fi
+fi
+
+if github_ready; then
+	info "Install the GitHub App on the repositories you want to use."
+	current_slug="$(read_env_var "$ENV_FILE" GITHUB_APP_SLUG)"
+	info "GitHub App slug: ${current_slug:-terrablox} (github.com/apps/<slug>)"
+	if confirm_optional "Set or change the GitHub App slug?"; then
+		printf '    %sNew GitHub App slug:%s ' "$BOLD" "$RESET"
+		read -r app_slug </dev/tty || app_slug=""
+		if [ -n "$app_slug" ]; then
+			write_env_var "$ENV_FILE" GITHUB_APP_SLUG "$app_slug"
+			ok "GITHUB_APP_SLUG written to $ENV_FILE"
+		else
+			warn "No slug provided; existing configuration was left unchanged."
+		fi
 	fi
 fi
 
@@ -297,7 +328,80 @@ step "Applying database migrations"
 pnpm db:migrate
 ok "schema is up to date"
 
-# --- 5b. configuration summary ----------------------------------------------
+# --- 5b. optional cost service ----------------------------------------------
+
+step "Cost estimates (optional)"
+if confirm_optional "Configure and start the local Cost Service?"; then
+	if [ -z "$(read_env_var "$ENV_FILE" INFRACOST_CLI_AUTHENTICATION_TOKEN)" ] &&
+		{ [ -z "$(read_env_var "$ENV_FILE" INFRACOST_CLI_PRICING_ENDPOINT)" ] ||
+		  [ -z "$(read_env_var "$ENV_FILE" INFRACOST_CLI_PRICING_API_KEY)" ]; }; then
+		info "Create an Infracost token under Org Settings > API tokens."
+		prompt_env_var "$ENV_FILE" INFRACOST_CLI_AUTHENTICATION_TOKEN \
+			"Infracost token: " secret || true
+	fi
+
+	if [ -z "$(read_env_var "$ENV_FILE" INFRACOST_CLI_AUTHENTICATION_TOKEN)" ] &&
+		{ [ -z "$(read_env_var "$ENV_FILE" INFRACOST_CLI_PRICING_ENDPOINT)" ] ||
+		  [ -z "$(read_env_var "$ENV_FILE" INFRACOST_CLI_PRICING_API_KEY)" ]; }; then
+		warn "No Infracost credentials configured; Cost Service setup skipped."
+		info "Add them to $ENV_FILE and re-run quickstart."
+	else
+		if [ -z "$(read_env_var "$ENV_FILE" COST_SERVICE_TOKEN)" ]; then
+			write_env_var "$ENV_FILE" COST_SERVICE_TOKEN \
+				"$(node -e 'console.log(require("crypto").randomBytes(32).toString("base64url"))')"
+			ok "generated COST_SERVICE_TOKEN in $ENV_FILE"
+		fi
+		cost_token="$(read_env_var "$ENV_FILE" COST_SERVICE_TOKEN)"
+		[ "${#cost_token}" -ge 32 ] || die "COST_SERVICE_TOKEN must be at least 32 characters; update $ENV_FILE and re-run."
+		unset cost_token
+
+		cost_port="$(read_env_var "$ENV_FILE" TERRABLOX_COST_PORT)"
+		cost_url="http://127.0.0.1:${cost_port:-8090}"
+		if [ -z "$(read_env_var "$ENV_FILE" COST_SERVICE_URL)" ]; then
+			write_env_var "$ENV_FILE" COST_SERVICE_URL "$cost_url"
+			ok "set COST_SERVICE_URL to $cost_url"
+		elif [ "$(read_env_var "$ENV_FILE" COST_SERVICE_URL)" != "$cost_url" ]; then
+			warn "COST_SERVICE_URL is not $cost_url; its existing value was preserved."
+			info "Check that the dashboard points to the intended Cost Service."
+		fi
+		docker compose -f "$COMPOSE_FILE" up -d --build cost-service
+		ok "Cost Service started"
+	fi
+else
+	info "Skipped. Re-run quickstart to set up cost estimates later."
+fi
+
+# --- 5c. optional shared catalogue -------------------------------------------
+
+step "Terrablox Terraform modules (optional)"
+if confirm_optional "Import the shared Terrablox module catalogue?"; then
+	seed_token="${TERRABLOX_SEED_GITHUB_TOKEN:-${GITHUB_TOKEN:-${GH_TOKEN:-}}}"
+	if [ -z "$seed_token" ] && command -v gh >/dev/null 2>&1; then
+		if seed_token="$(gh auth token)"; then
+			ok "using GitHub CLI credentials for the catalogue"
+		else
+			warn "Could not obtain a token from GitHub CLI."
+		fi
+	fi
+	if [ -z "$seed_token" ]; then
+		info "A GitHub token is needed to avoid the public API rate limit."
+		printf '    %sGitHub token:%s ' "$BOLD" "$RESET"
+		read -rs seed_token </dev/tty || seed_token=""
+		printf '\n'
+	fi
+	if [ -z "$seed_token" ]; then
+		warn "No GitHub token provided; module import skipped."
+		info "Run GITHUB_TOKEN=\$(gh auth token) pnpm db:builtin:sync later."
+	else
+		TERRABLOX_SEED_GITHUB_TOKEN="$seed_token" pnpm db:builtin:sync
+		unset seed_token
+		ok "Terrablox module catalogue imported"
+	fi
+else
+	info "Skipped. Run pnpm db:builtin:sync with a GitHub token to import later."
+fi
+
+# --- 5d. configuration summary ----------------------------------------------
 
 # Every variable the code actually reads, with what its absence costs. Built by
 # grepping for `process.env.` rather than from memory, because a list maintained

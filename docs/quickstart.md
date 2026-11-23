@@ -18,8 +18,9 @@ CLI, which Terrablox starts as a child process using the same Node that runs the
 app, and that CLI needs `Promise.withResolvers` — added in Node 22. On Node 20 every
 page loads and the first chat message fails.
 
-You will also want a **GitHub App**, which the script asks for. Registering one takes
-a couple of minutes and the next section explains it.
+You also need a **GitHub App** for sign-in and repository access. Either register
+your own or ask the owner of the existing Terrablox GitHub App for access and setup
+instructions. Quickstart asks for the app's client ID and secret.
 
 ## Run it
 
@@ -29,15 +30,22 @@ cd terrablox
 pnpm quickstart
 ```
 
-That single command checks the prerequisites, writes the `.env` files, generates a
-session secret, installs dependencies, starts PostgreSQL in Docker, applies the
-database migrations, offers to import the module catalogue and then starts the dev
-server. It is safe to re-run: existing `.env` files and existing data are never
-overwritten.
+Quickstart checks prerequisites, creates the root `.env` if needed, generates a
+session secret, asks for GitHub App credentials, installs dependencies, starts
+PostgreSQL and applies migrations. It then offers to configure and start the Cost
+Service and import the Terrablox module catalogue before starting the development
+servers. Both optional steps default to no and are skipped without an interactive
+terminal.
+
+It is safe to re-run: existing configuration values and data are preserved unless
+you explicitly change the GitHub App slug. Missing values can be added, including
+values carried over from legacy `.env` files. Use
+`pnpm quickstart --no-dev` to skip starting the development servers; it still offers
+the optional setup steps.
 
 The dashboard is then at **http://localhost:3001**.
 
-## Registering the GitHub App
+## GitHub App setup
 
 GitHub sign-in is required — it is the only way in, and the same grant is what lets
 the agent read and write your repositories. Without it the app starts and the login
@@ -46,6 +54,23 @@ page can do nothing.
 It has to be a **GitHub App**. A classic OAuth App will let you sign in and nothing
 more: Terrablox asks GitHub which repositories the *installation* was granted, and
 those endpoints reject an OAuth token, so every repository picker comes back empty.
+
+Choose one of these paths:
+
+1. **Existing Terrablox app:** Ask the owner or maintainer of
+   [github.com/apps/terrablox](https://github.com/apps/terrablox) for access and
+   approved setup instructions. Confirm that it supports your instance's callback
+   and setup URLs and can be installed on the account or organisation you need.
+   Quickstart requires the app's client ID and client secret; obtain and handle any
+   credentials through the owner's approved secure process.
+2. **Your own app:** Register and configure an app as described below, then enter
+   its client ID, secret and slug in quickstart.
+
+Access to an app alone does not grant access to repositories. The app must also be
+installed on the relevant account or organisation, with the selected repositories
+approved by an authorised owner.
+
+### Registering your own GitHub App
 
 Register one at `https://github.com/settings/apps/new`, or for an organisation at
 `https://github.com/organizations/<your-org>/settings/apps/new`.
@@ -126,10 +151,11 @@ There are no scopes to configure. GitHub Apps use permissions instead, and the
 **Afterwards**
 
 You end up with a client ID and a client secret, which `pnpm quickstart` prompts for
-and writes into `apps/dashboard/.env`. To add them later, put them in that file as
+and writes into the root `.env`. To add them later, put them in that file as
 `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` and restart the dev server. If you
 registered your own app rather than using `github.com/apps/terrablox`, also set
-`GITHUB_APP_SLUG` to your app's slug so the in-app links point at it.
+`GITHUB_APP_SLUG` to your app's slug so the in-app links point at it. Quickstart
+offers to set or change it after the client credentials are configured.
 
 Then **install** the app on the account whose repositories you want to use. Signing
 in and installing are two separate things: signing in identifies you, installing is
@@ -153,8 +179,14 @@ Terrablox stores the result against the source commit, so opening the tab again
 spends no Infracost run until the code changes or someone explicitly refreshes
 prices.
 
-Create a personal or service-account token in Infracost under *Org Settings → API
-tokens*, then add these values to the root `.env`:
+During interactive quickstart, choose the Cost Service setup and provide a personal
+or service-account token from Infracost under *Org Settings → API tokens*. The script
+generates `COST_SERVICE_TOKEN` if missing, sets the local `COST_SERVICE_URL` if missing,
+and builds and starts the service. Existing values are not overwritten. If a
+self-hosted pricing endpoint and API key are already configured, no hosted token is
+requested.
+
+Alternatively, add these values to the root `.env` yourself:
 
 ```bash
 COST_SERVICE_TOKEN=<openssl rand -base64 32>
@@ -234,8 +266,11 @@ There are two kinds:
 - **Per-user** (`scope: user`): each user's copy is discovered and imported with
   that user's own GitHub token and repository grants.
 
-Importing a global catalogue takes a GitHub token and can take a few minutes. It is
-never part of dashboard or container startup:
+Interactive quickstart offers to import the Terrablox catalogue after migrations.
+It uses `TERRABLOX_SEED_GITHUB_TOKEN`, `GITHUB_TOKEN` or `GH_TOKEN`, then tries
+`gh auth token`, and otherwise prompts for a token without saving it. The import
+can take a few minutes. It is not part of dashboard or container startup and can
+also be run separately:
 
 ```bash
 GITHUB_TOKEN=$(gh auth token) pnpm db:builtin:sync    # Terrablox only

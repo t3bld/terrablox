@@ -87,6 +87,7 @@ export default defineConfig({
             // alias-free resolution the packages get. Named by that property rather than
             // by the folder, which is why this project is no longer called "packages".
             "apps/mcp-server/src/**/*.test.ts",
+            "scripts/*.test.mjs",
           ],
           // The packages are being extracted one at a time; an empty project is a
           // truthful state, not a failure.

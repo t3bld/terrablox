@@ -1,0 +1,851 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Terrablox – Cloud-Migrationen, die mit jeder Migration besser werden</title>
+    <link rel="stylesheet" href="deck.css" />
+  </head>
+  <body>
+    <!-- Icons, referenced with <use>. Stroke icons on a 24 × 24 grid. -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <defs>
+        <g id="i-git" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" x2="6" y1="3" y2="15" />
+          <circle cx="18" cy="6" r="3" />
+          <circle cx="6" cy="18" r="3" />
+          <path d="M18 9a9 9 0 0 1-9 9" />
+        </g>
+        <g id="i-file" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+          <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+          <path d="M16 13H8" />
+          <path d="M16 17H8" />
+        </g>
+        <g id="i-chat" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </g>
+        <g id="i-tool" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+        </g>
+        <g id="i-shield" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" />
+          <path d="m9 12 2 2 4-4" />
+        </g>
+        <g id="i-code" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="16 18 22 12 16 6" />
+          <polyline points="8 6 2 12 8 18" />
+        </g>
+        <g id="i-cloud" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 13v8" />
+          <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242" />
+          <path d="m8 17 4-4 4 4" />
+        </g>
+        <g id="i-cost" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          <path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8" />
+          <path d="M12 18V6" />
+        </g>
+        <g id="i-log" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m3 17 2 2 4-4" />
+          <path d="m3 7 2 2 4-4" />
+          <path d="M13 6h8" />
+          <path d="M13 12h8" />
+          <path d="M13 18h8" />
+        </g>
+        <g id="i-bot" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 8V4H8" />
+          <rect width="16" height="12" x="4" y="8" rx="2" />
+          <path d="M2 14h2" />
+          <path d="M20 14h2" />
+          <path d="M15 13v2" />
+          <path d="M9 13v2" />
+        </g>
+      </defs>
+    </svg>
+
+    <main class="stage" id="stage">
+      <!-- ================================================================== -->
+      <!-- 01 · Title                                                          -->
+      <!-- ================================================================== -->
+      <section class="slide dark s-title" data-act="Auftakt" data-title="Terrablox">
+        <svg class="title-graph" viewBox="0 0 820 900" aria-hidden="true">
+          <path class="edge" d="M230,212 C265,212 265,122 300,122" />
+          <path class="edge" d="M230,212 C265,212 265,392 300,392" />
+          <path class="edge" d="M230,592 C265,592 265,392 300,392" />
+          <path class="edge" d="M230,592 C265,592 265,692 300,692" />
+          <path class="edge" d="M470,122 C505,122 505,252 540,252" />
+          <path class="edge" d="M470,392 C505,392 505,252 540,252" />
+          <path class="edge" d="M470,392 C505,392 505,502 540,502" />
+          <path class="edge" d="M470,692 C505,692 505,502 540,502" />
+          <path class="edge" d="M470,692 C505,692 505,752 540,752" />
+          <path class="edge" d="M710,252 L820,252 M710,752 L820,752" />
+          <path
+            class="red"
+            pathLength="1"
+            d="M0,212 L60,212 M230,212 C265,212 265,392 300,392 M470,392 C505,392 505,502 540,502 M710,502 L820,502"
+          />
+          <rect class="node hot" x="60" y="180" width="170" height="64" rx="12" />
+          <rect class="node" x="60" y="560" width="170" height="64" rx="12" />
+          <rect class="node" x="300" y="90" width="170" height="64" rx="12" />
+          <rect class="node hot" x="300" y="360" width="170" height="64" rx="12" />
+          <rect class="node" x="300" y="660" width="170" height="64" rx="12" />
+          <rect class="node" x="540" y="220" width="170" height="64" rx="12" />
+          <rect class="node hot" x="540" y="470" width="170" height="64" rx="12" />
+          <rect class="node" x="540" y="720" width="170" height="64" rx="12" />
+        </svg>
+
+        <div class="meta"><i></i><span>MHP · AWS Community</span><span data-config="presenter"></span></div>
+        <h1>Terrablox</h1>
+        <p class="lead">Cloud-Migrationen, die mit jeder Migration besser werden.</p>
+        <div class="foot">
+          <span><kbd>→</kbd> weiter</span>
+          <span><kbd>O</kbd> Übersicht</span>
+          <span><kbd>N</kbd> Skript</span>
+          <span><kbd>F</kbd> Vollbild</span>
+        </div>
+
+        <aside class="notes">
+          <p>
+            Hi zusammen. Ich zeig euch heute Terrablox, ein Tool, an dem ich in letzter Zeit gebaut habe.
+          </p>
+          <p>
+            Ich fang aber gar nicht mit dem Tool an, sondern mit einer These, die erstmal nichts damit zu
+            tun hat. Am Ende passt beides zusammen, versprochen.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 02 · AI becomes a commodity                                         -->
+      <!-- ================================================================== -->
+      <section class="slide dark" data-act="01 · These" data-title="AI wird kein Differentiator mehr sein">
+        <div class="chapter"><b>01</b><span>These</span></div>
+        <h2>AI wird kein Differentiator mehr sein.</h2>
+        <p class="lead">Jede Basistechnologie nimmt denselben Weg: erst Vorsprung, dann Voraussetzung.</p>
+
+        <div class="body" style="margin-top: 16px">
+          <svg class="curve" viewBox="0 0 1408 400" preserveAspectRatio="xMidYMax meet" role="img" aria-label="Jede Basistechnologie war erst Vorsprung und wurde dann Standard: Elektrizität, IT, Internet, Cloud – und als Nächstes AI.">
+            <line class="axis" x1="0" y1="350" x2="1408" y2="350" />
+
+            <g data-step="1">
+              <path class="wave" pathLength="1" d="M20,350 C90,350 90,110 150,110 C220,110 230,318 360,318" />
+              <path class="wave" pathLength="1" d="M250,350 C320,350 320,110 380,110 C450,110 460,318 590,318" />
+              <path class="wave" pathLength="1" d="M480,350 C550,350 550,110 610,110 C680,110 690,318 820,318" />
+              <path class="wave" pathLength="1" d="M710,350 C780,350 780,110 840,110 C910,110 920,318 1050,318" />
+              <text class="name" x="150" y="84" text-anchor="middle">Elektrizität</text>
+              <text class="name" x="380" y="84" text-anchor="middle">IT</text>
+              <text class="name" x="610" y="84" text-anchor="middle">Internet</text>
+              <text class="name" x="840" y="84" text-anchor="middle">Cloud</text>
+              <text x="150" y="384" text-anchor="middle">1900er</text>
+              <text x="380" y="384" text-anchor="middle">1980er</text>
+              <text x="610" y="384" text-anchor="middle">2000er</text>
+              <text x="840" y="384" text-anchor="middle">2010er</text>
+              <text x="0" y="40">↑ Vorsprung</text>
+            </g>
+
+            <g data-step="2">
+              <path class="wave ai" pathLength="1" d="M960,350 C1030,350 1030,110 1090,110" />
+              <circle class="ring" cx="1090" cy="110" r="9" />
+              <circle class="now" cx="1090" cy="110" r="9" />
+              <text class="name hot" x="1090" y="72" text-anchor="middle">AI &amp; Agents</text>
+              <text class="hot" x="1090" y="384" text-anchor="middle">heute</text>
+              <g class="after">
+                <path class="future" d="M1090,110 C1160,110 1170,318 1300,318 L1408,318" />
+                <text x="1408" y="384" text-anchor="end">in ein paar Jahren</text>
+                <text x="1408" y="342" text-anchor="end">Standard – hat jeder</text>
+              </g>
+            </g>
+          </svg>
+        </div>
+
+        <p class="punch after" data-step="2">
+          Niemand gewinnt heute einen Pitch, weil er Internet hat. <span class="muted">Mit AI wird es genauso sein.</span>
+        </p>
+
+        <aside class="notes">
+          <p data-at="0">
+            Meine These: AI wird in ein paar Jahren kein Differentiator mehr sein. Klingt komisch, weil
+            gerade jeder genau damit wirbt. Aber schaut mal, wie das bisher immer gelaufen ist.
+          </p>
+          <p data-at="1">
+            Strom, IT, Internet, Cloud. Jedes davon war mal ein echter Vorsprung. Wer als Erster online
+            war, war vorne. Und heute? Hat’s jeder, und keiner fragt mehr danach.
+          </p>
+          <p data-at="2">
+            AI und Agents stehen gerade genau da oben. Wer’s gut kann, hat im Moment wirklich einen
+            Vorteil. Aber die Kurve geht denselben Weg. In ein paar Jahren hat jeder die besten Modelle.
+            Heute gewinnt niemand einen Pitch, weil er Internet hat. Mit AI wird’s genauso.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 03 · What is left                                                   -->
+      <!-- ================================================================== -->
+      <section class="slide dark s-stack" data-act="01 · These" data-title="LLM und Harness hat jeder – Daten nicht" data-steps="1">
+        <div class="chapter"><b>01</b><span>These</span></div>
+        <div class="split">
+          <div>
+            <h2>Jeder wird die besten LLMs haben. Und die besten Harnesse.</h2>
+            <p class="punch" data-step="1" style="margin-top: 36px">
+              Der einzige Unterschied sind die <span class="accent">eigenen Daten</span>.
+            </p>
+          </div>
+
+          <div class="stack">
+            <div class="layer l-llm">
+              <h3>LLM</h3>
+              <span class="tag">Commodity</span>
+            </div>
+            <div class="layer l-harness">
+              <h3>Harness</h3>
+              <span class="tag">Commodity</span>
+            </div>
+            <div class="layer l-data">
+              <h3>Daten</h3>
+              <p>Entstehen nur in der eigenen Arbeit – und sind nicht nachholbar.</p>
+              <span class="tag">Differentiator</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p data-at="0">
+            Schauen wir uns an, woraus so ein Agent-Setup eigentlich besteht. Drei Schichten. Das LLM: Das
+            kaufen wir alle beim selben Anbieter, gleicher API-Call, gleicher Preis. Da ist nichts zu
+            holen. Das Harness, also alles um das LLM herum: Tools, Kontext, Guardrails. Da steckt heute
+            noch viel Handarbeit und Know-how drin. Aber seien wir ehrlich: Was heute clever ist, ist in
+            einem Jahr Open Source und steckt in jedem Framework. Beides ist Commodity.
+          </p>
+          <p data-at="1">
+            Bleiben die Daten. Klar, irgendwelche Daten kann man auch kaufen. Aber nicht die aus unseren
+            eigenen Projekten, die entstehen nur bei uns. Und der fiese Teil: Nachholen kann ich sie auch
+            nicht. Die Daten von 2026 kann ich 2028 nicht mehr sammeln.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 04 · The risk                                                       -->
+      <!-- ================================================================== -->
+      <section class="slide dark s-center" data-act="01 · These" data-title="Die Daten von gestern sind der Vorteil von heute">
+        <div class="chapter"><b>01</b><span>These</span></div>
+        <p class="quote">Die Daten von gestern sind der Wettbewerbsvorteil von <span class="accent">heute</span>.</p>
+
+        <p class="risk" data-step="1">Und wir sammeln noch so gut wie keine.</p>
+
+        <div class="cols-3" data-step="1" style="margin-top: 40px">
+          <div class="card where">
+            <h3>In Köpfen</h3>
+            <p>Geht mit dem Projektende oder mit der Person.</p>
+          </div>
+          <div class="card where">
+            <h3>In Slides und Tickets</h3>
+            <p>Verstreut und lückenhaft. Jedes Projekt dokumentiert anders, nichts ist vergleichbar.</p>
+          </div>
+          <div class="card where">
+            <h3>In Repositories</h3>
+            <p>Das Ergebnis ist da. Der Weg dorthin und das Warum nicht.</p>
+          </div>
+        </div>
+
+        <p class="punch" data-step="1" style="margin-top: 40px">
+          Jede Migration ohne Aufzeichnung ist Wissen, das uns morgen fehlt.
+        </p>
+
+        <aside class="notes">
+          <p data-at="0">
+            Deswegen dieser Satz. Die Daten von gestern sind der Wettbewerbsvorteil von heute. <i>kurz
+            stehen lassen</i>
+          </p>
+          <p data-at="1">
+            Und jetzt mal ehrlich: Wir sammeln so gut wie keine. Wo liegt unser Migrationswissen? In
+            Köpfen, und die sind nach dem Projekt im nächsten Projekt oder ganz weg. In Slides und
+            Tickets, verstreut, jedes Projekt macht’s anders, vergleichen kann man da nichts. Und in
+            Repos. Da sehe ich das Ergebnis, aber nicht, wie wir hingekommen sind und warum. Wir machen
+            jedes Jahr zig Migrationen, und von jeder bleibt am Ende ein Repo und ein paar Folien. Das
+            fehlt uns morgen.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 05 · Which data                                                     -->
+      <!-- ================================================================== -->
+      <section class="slide" data-act="02 · Idee" data-title="Wie können diese Daten aussehen?">
+        <div class="chapter"><b>02</b><span>Idee</span></div>
+        <h2>Wie können diese Daten aussehen?</h2>
+
+        <div class="body versus">
+          <div class="card">
+            <span class="eyebrow">Was ein freier Agent hinterlässt</span>
+            <h3>Hunderte Zeilen HCL</h3>
+            <ul class="ticks">
+              <li>Jedes Mal anders formuliert</li>
+              <li>Kein gemeinsames Vokabular</li>
+              <li>Kein Vorher, kein Nachher, kein Warum</li>
+            </ul>
+            <div class="hcl-blur" aria-hidden="true">resource "aws_vpc" "main" {
+  cidr_block           = "10.42.0.0/16"
+  enable_dns_hostnames = true
+}
+
+resource "aws_subnet" "public_a" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(aws_vpc.main.cidr_block, 8, 0)
+  map_public_ip_on_launch = true
+}
+
+resource "aws_security_group" "web" {
+  name   = "${var.project}-web"
+  vpc_id = aws_vpc.main.id</div>
+          </div>
+
+          <div class="card need">
+            <span class="eyebrow">Woraus ein System lernen kann</span>
+            <h3>Strukturierte Transformationen</h3>
+            <ul class="ticks yes">
+              <li>Ein festes Vokabular an Bausteinen und Schritten</li>
+              <li>Ein definierter Ist- und Soll-Zustand</li>
+              <li>Der Weg dazwischen, Schritt für Schritt</li>
+            </ul>
+            <p class="claim">
+              Struktur entsteht nicht beim Auswerten.
+              <span class="accent">Sie muss beim Erzeugen mitgedacht werden.</span>
+            </p>
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p>
+            Okay, also einfach alles mitloggen? Leider nein. Die Frage ist, wie diese Daten aussehen müssen.
+          </p>
+          <p>
+            Links: Wenn ich einen Agenten frei Terraform schreiben lasse, kriege ich hunderte Zeilen HCL.
+            Zweimal dieselbe Aufgabe, zweimal anderer Code. Kein gemeinsames Vokabular, kein Vorher, kein
+            Nachher, kein Warum. Lesen kann das ein LLM schon, aber zwei Läufe sauber vergleichen kann ich
+            damit nicht.
+          </p>
+          <p>
+            Rechts, was ich eigentlich bräuchte: feste Bausteine und feste Schritte. Einen klaren Ist- und
+            Soll-Zustand. Und den Weg dazwischen, Schritt für Schritt.
+          </p>
+          <p>
+            Der Punkt ist: Diese Struktur kriege ich nicht nachträglich aus Freitext raus. Die muss da
+            mitgedacht sein, wo die Daten entstehen. Und genau da kommt Terrablox ins Spiel.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 06 · What Terrablox is                                              -->
+      <!-- ================================================================== -->
+      <section class="slide" data-act="02 · Idee" data-title="Terrablox ist erstmal auch nur ein Harness">
+        <div class="chapter"><b>02</b><span>Idee</span></div>
+        <h2>Terrablox ist erstmal auch nur ein Harness.</h2>
+        <p class="lead">Aus einem Ist-Zustand wird ein Soll-Zustand.</p>
+
+        <div class="body">
+          <div class="flow">
+            <div class="card box">
+              <span class="eyebrow">Ist-Zustand</span>
+              <h3>Was ihr habt</h3>
+              <ul>
+                <li><svg viewBox="0 0 24 24"><use href="#i-git" /></svg>Application-Repository</li>
+                <li><svg viewBox="0 0 24 24"><use href="#i-file" /></svg>Dokumente und Anforderungen</li>
+                <li><svg viewBox="0 0 24 24"><use href="#i-chat" /></svg>Oder eine Beschreibung</li>
+              </ul>
+            </div>
+            <div class="wire"><i></i></div>
+            <div class="card box core">
+              <span class="eyebrow">Transformation</span>
+              <h3>Agent im Harness</h3>
+              <ul>
+                <li><svg viewBox="0 0 24 24"><use href="#i-bot" /></svg>Copilot-Seat</li>
+                <li><svg viewBox="0 0 24 24"><use href="#i-shield" /></svg>Best Practices</li>
+                <li><svg viewBox="0 0 24 24"><use href="#i-tool" /></svg>Toolset</li>
+                <li><svg viewBox="0 0 24 24"><use href="#i-log" /></svg>Guardrails</li>
+              </ul>
+            </div>
+            <div class="wire"><i></i></div>
+            <div class="card box">
+              <span class="eyebrow">Soll-Zustand</span>
+              <h3>Was ihr bekommt</h3>
+              <ul>
+                <li><svg viewBox="0 0 24 24"><use href="#i-code" /></svg>Terraform in eurem Repository</li>
+                <li><svg viewBox="0 0 24 24"><use href="#i-cloud" /></svg>Deployt in euren AWS-Account</li>
+                <li><svg viewBox="0 0 24 24"><use href="#i-cost" /></svg>Mit sichtbarer Kostenstruktur</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p>
+            Terrablox ist erstmal auch nur ein Harness. Ganz unspektakulär: ein Agent, der
+            Cloud-Migrationen macht.
+          </p>
+          <p>
+            Links geht der Ist-Zustand rein: euer App-Repo, Dokumente, oder ihr beschreibt es einfach.
+            Rechts kommt der Soll-Zustand raus: Terraform in eurem Repo, deployt in euren AWS-Account, und
+            ihr seht, was es kostet.
+          </p>
+          <p>
+            In der Mitte sitzt der Agent, und das Harness gibt ihm vier Sachen mit. Das Modell kommt über
+            euren Copilot-Seat, also das, was ihr eh schon habt. Dazu Best Practices, ein festes Toolset
+            und Guardrails, die jeden Schritt prüfen.
+          </p>
+          <p>
+            So weit nichts Besonderes. Was daran anders ist, zeig ich euch jetzt.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 07 · Model, not code                                                -->
+      <!-- ================================================================== -->
+      <section class="slide" data-act="02 · Idee" data-title="Das LLM schreibt keinen Code. Es editiert ein Modell">
+        <div class="chapter"><b>02</b><span>Idee</span></div>
+        <h2>Das LLM schreibt keinen Code. Es editiert ein Modell.</h2>
+        <p class="lead">Best Practice aus dem Model-Driven Development</p>
+
+        <div class="body">
+          <div class="lanes">
+            <div class="card lane">
+              <h3>Üblich<small>frei generierend</small></h3>
+              <div class="chain">
+                <span>Prompt</span><i>→</i><span>LLM</span><i>→</i><span class="bad">HCL als Freitext</span><i>→</i
+                ><span class="bad">terraform plan sagt später, ob es stimmt</span>
+              </div>
+            </div>
+            <div class="card lane ours">
+              <h3>Terrablox<small>modellgetrieben</small></h3>
+              <div class="chain">
+                <span>Prompt</span><i>→</i><span>LLM</span><i>→</i><span class="key">Operation</span><i>→</i
+                ><span>Guardrails</span><i>→</i><span class="data">Modell-Graph</span><i>→</i><span>Terraform, gerendert</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card modules" data-step="1">
+            <h3>Best Practice Terraform-Modules</h3>
+            <ul>
+              <li><img src="assets/icons/vpc.png" alt="" />VPC</li>
+              <li><img src="assets/icons/ec2-instance.png" alt="" />EC2</li>
+              <li><img src="assets/icons/rds.png" alt="" />RDS</li>
+              <li><img src="assets/icons/s3-bucket.png" alt="" />S3</li>
+              <li><img src="assets/icons/lambda.png" alt="" />Lambda</li>
+              <li class="more">+ 45 weitere</li>
+            </ul>
+          </div>
+
+          <div class="defs" data-step="1">
+            <div class="def">
+              <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="8" y="16" width="48" height="32" rx="8" />
+                <path d="M18 28h18M18 36h28" stroke-linecap="round" />
+              </svg>
+              <h3>Knoten</h3>
+              <p>Ein Terraform-Modul</p>
+            </div>
+            <div class="def">
+              <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="10" cy="20" r="5" />
+                <circle cx="54" cy="44" r="5" />
+                <path d="M15 20c18 0 16 24 34 24" stroke-linecap="round" />
+              </svg>
+              <h3>Kanten</h3>
+              <p>Ein Output geht in einen Input</p>
+            </div>
+            <div class="def">
+              <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <rect x="8" y="10" width="48" height="12" rx="6" />
+                <rect x="8" y="26" width="48" height="12" rx="6" />
+                <rect x="8" y="42" width="48" height="12" rx="6" />
+              </svg>
+              <h3>Edits</h3>
+              <p>Feste Operationen auf diesen Modulen</p>
+            </div>
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p data-at="0">
+            Das LLM schreibt bei uns keinen Code. Es editiert ein Modell.
+          </p>
+          <p data-at="0">
+            Oben, wie es die meisten machen: Prompt rein, das LLM spuckt HCL aus, und ob das stimmt, sagt
+            mir terraform plan. Oder noch schlimmer, erst der apply.
+          </p>
+          <p data-at="0">
+            Unten, wie Terrablox das macht: Das LLM ruft eine Operation auf, zum Beispiel „füg dieses
+            Modul hinzu“ oder „verbinde A mit B“. Die wird geprüft und ändert einen Graphen. Aus dem
+            Graphen wird dann das Terraform gerendert. Das Modell fasst den Code selbst nie an.
+          </p>
+          <p data-at="1">
+            Und jetzt der wichtige Teil: Das Ganze baut auf fertigen Terraform-Modulen auf. Für jeden
+            AWS-Service gibt es ein Modul. Eins für VPC, eins für EC2, eins für RDS und so weiter. Da
+            stecken die Best Practices schon drin. Der Agent schreibt also keine einzelnen Ressourcen von
+            Hand, er nimmt diese Bausteine und steckt sie zusammen.
+          </p>
+          <p data-at="1">
+            Wer mal Model-Driven Development gemacht hat, kennt das Prinzip. Ein Knoten im Graphen ist so
+            ein Modul. Eine Kante ist eine Verdrahtung, der Output von einem Modul geht in den Input von
+            einem anderen. Und die Edits sind ein fester Satz an Operationen auf diesen Modulen.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 08 · Library                                                      -->
+      <!-- ================================================================== -->
+      <section class="slide" data-act="02 · Idee" data-title="50 kuratierte Module. Weitere Kataloge folgen">
+        <div class="chapter"><b>02</b><span>Idee</span></div>
+        <h2>50 kuratierte Module. Weitere Kataloge folgen.</h2>
+        <p class="lead">Der Agent erfindet keine Ressourcen. Er setzt aus Modulen zusammen.</p>
+
+        <div class="body library">
+          <div class="wall" id="wall" aria-label="Die Module des Terrablox-Katalogs"></div>
+
+          <div class="libs">
+            <div class="card lib hot">
+              <h3>Terrablox-Katalog <span class="pill now">heute</span></h3>
+              <p>50 AWS-Module, sofort nutzbar.</p>
+            </div>
+            <div class="card lib soon">
+              <h3>Porsche CBBaC <span class="pill">kommt</span></h3>
+              <p>Die Cloud Building Blocks as Code.</p>
+            </div>
+            <div class="card lib soon">
+              <h3>MHP-Katalog <span class="pill">kommt</span></h3>
+              <p>Unsere eigenen Best Practices.</p>
+            </div>
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p>
+            Kurz zu diesen Modulen. Im Terrablox-Katalog sind aktuell 50 AWS-Module, die könnt ihr sofort
+            nutzen. Jedes ist auf eine feste Version gepinnt. Wenn zwei Projekte ein VPC brauchen, kriegen
+            beide dasselbe VPC.
+          </p>
+          <p>
+            Was als Nächstes kommt: die Porsche-CBBaC-Module und ein eigener MHP-Katalog. Ab da wird es
+            für uns richtig interessant, weil der Agent dann mit unseren Bausteinen und unseren Best
+            Practices baut. Dafür brauche ich aber euch. Dazu am Ende mehr.
+          </p>
+          <p>
+            Das klingt alles noch abstrakt. Deswegen zeig ich’s euch jetzt an einem Beispiel.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 09 · Live graph                                                     -->
+      <!-- ================================================================== -->
+      <section class="slide s-live" id="live" data-act="02 · Idee" data-title="Live: eine Migration als Folge von Transformationen" data-steps="8">
+        <div class="chapter"><b>02</b><span>Idee</span></div>
+        <h2 style="max-width: 1040px">Eine Migration ist eine Folge von Transformationen auf dem Graphen.</h2>
+
+        <div class="live-ctl">
+          <button class="btn primary" type="button" data-live="play">▶ Abspielen</button>
+          <button class="btn" type="button" data-live="reset">Zurücksetzen</button>
+        </div>
+
+        <div class="live">
+          <div class="card panel">
+            <header><span>Agent · Operationen</span><b data-live="step">0 / 8</b></header>
+            <div class="oplog" data-live="log"></div>
+          </div>
+
+          <div class="card panel">
+            <header><span>Modell-Graph</span><b data-live="size">0 Module · 0 Kanten</b></header>
+            <div class="canvas">
+              <svg viewBox="0 0 570 480" data-live="svg" role="img" aria-label="Der Modell-Graph, der Schritt für Schritt entsteht"></svg>
+              <div class="empty" data-live="empty">Leerer Graph.<br />Der Agent liest zuerst die Anwendung.</div>
+            </div>
+            <div class="statebar">
+              <span class="state is-on" data-live="ist">Ist-Zustand</span>
+              <div class="rail"><i data-live="rail"></i><span data-live="mut">0 Mutationen</span></div>
+              <span class="state" data-live="soll">Soll-Zustand</span>
+            </div>
+          </div>
+
+          <div class="card panel dark-panel">
+            <header>
+              <span>main.tf</span>
+              <span class="verdict" data-live="verdict"><span>fmt ✓</span><span>init ✓</span><span>validate ✓</span></span>
+            </header>
+            <pre class="tf" data-live="tf"></pre>
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p data-at="0">
+            Das ist ein vereinfachtes Beispiel für eine Migration. Links, was der Agent tut. In der Mitte
+            der Graph. Rechts das Terraform, das dabei rausfällt. Als Erstes liest er die Anwendung, hier
+            das docker-compose: Next.js mit Postgres, ein Host reicht.
+          </p>
+          <p data-at="1">
+            Bevor er irgendwas baut, schreibt er auf, was er vorhat und warum. EC2 mit Docker Compose
+            statt Fargate, weil Fargate für einen PoC zu viele Fixkosten hat. Das landet im Log und ich
+            kann’s später nachlesen.
+          </p>
+          <p data-at="2">
+            Erstes Modul: ein VPC aus der Library, auf eine feste Version gepinnt. Rechts ist das genau
+            ein module-Block.
+          </p>
+          <p data-at="3">
+            Security Group dazu. auto_connect zieht den Draht für vpc_id selbst, aber nur, weil es genau
+            eine passende Quelle gibt. Geraten wird nicht.
+          </p>
+          <p data-at="4">
+            Jetzt mein Lieblingsmoment. Er fügt die EC2-Instanz hinzu und will die Security Group
+            verbinden, mit einem Output, den es nicht gibt: sg_id. Klassischer LLM-Fehler, klingt
+            plausibel, existiert nicht. Das wird sofort abgelehnt, mit dem Hinweis, wie der Output
+            wirklich heißt.
+          </p>
+          <p data-at="5">
+            Und er korrigiert es direkt, im selben Turn. Bei frei generiertem Code hätte ich das erst beim
+            plan gemerkt. Dazu kommt noch das Subnetz.
+          </p>
+          <p data-at="6">
+            Secrets Manager und eine Policy, damit die Instanz die Secrets lesen darf.
+          </p>
+          <p data-at="7">
+            Zum Schluss prüft er sein eigenes Ergebnis: keine offenen Pflicht-Inputs, keine unbekannten
+            Argumente, keine Typfehler.
+          </p>
+          <p data-at="8">
+            Und erst jetzt wird committet. Pipeline läuft durch, fmt, init, validate, alles grün. Merkt
+            euch mal die Leiste unten: Ist-Zustand, zehn Mutationen, Soll-Zustand. Die wird gleich noch
+            wichtig.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 10 · The record                                                     -->
+      <!-- ================================================================== -->
+      <section class="slide dark s-record" id="record" data-act="03 · Daten" data-title="Jeder Turn wird als Transformation aufgezeichnet" data-steps="5" data-print-step="0">
+        <div class="chapter"><b>03</b><span>Daten</span></div>
+        <h2 style="max-width: 1408px; font-size: 54px">Jeder Turn wird als Transformation aufgezeichnet.</h2>
+
+        <div class="body record" style="margin-top: 36px">
+          <pre class="json" aria-label="Ein aufgezeichneter Turn, gekürzt"><span>{</span><span data-k="x">  <b>"prompt"</b>:      "Migrate the linked application…",</span><span data-k="x">  <b>"settings"</b>:    { model, budgets, tools },</span><span data-k="1">  <b>"graphBefore"</b>: { nodes: [], edges: [] },</span><span data-k="1">  <b>"graphAfter"</b>:  { nodes: [5], edges: [5] },</span><span data-k="2">  <b>"steps"</b>:       [ thoughts, tool calls ],</span><span data-k="2">  <b>"mutations"</b>:   [ add_module, connect, … ],</span><span data-k="3">  <b>"decisions"</b>:   [ { choice, reason, alternatives } ],</span><span data-k="4">  <b>"migrationSource"</b>: { kind: "legacy", appRepo },</span><span data-k="2">  <b>"commits"</b>:     [ "4f2a9c1", … ],</span><span data-k="5">  <b>"pipelineConclusion"</b>: "success"</span><span>}</span></pre>
+
+          <div>
+            <ul class="legend">
+              <li data-k="1">
+                <h3>Ist und Soll</h3>
+                <p>Der Graph vor und nach dem Turn.</p>
+              </li>
+              <li data-k="2">
+                <h3>Der Weg</h3>
+                <p>Jeder Gedanke, jeder Tool-Call, jeder Edit – in Reihenfolge.</p>
+              </li>
+              <li data-k="3">
+                <h3>Das Warum</h3>
+                <p>Frage, Wahl, Begründung, verworfene Alternativen.</p>
+              </li>
+              <li data-k="4">
+                <h3>Die Quelle</h3>
+                <p>greenfield, graph oder legacy – samt der gelesenen Dateien.</p>
+              </li>
+              <li data-k="5">
+                <h3>Prüfergebnis</h3>
+                <p>Wie gut war das Ergebnis?</p>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p data-at="0">
+            Und jetzt kommt die These vom Anfang wieder ins Spiel. Erinnert ihr euch an die Leiste aus
+            dem Beispiel? Ist-Zustand, Mutationen, Soll-Zustand. Genau das wird gespeichert. Jeder Turn,
+            der etwas ändert, landet als ein Datensatz in der Datenbank. Ohne dass jemand irgendwas
+            dokumentieren muss.
+          </p>
+          <p data-at="1">
+            Der Graph vorher und nachher. Ist und Soll.
+          </p>
+          <p data-at="2">
+            Der Weg dazwischen: jeder Gedanke, jeder Tool-Call, jede Änderung, in Reihenfolge. Plus die
+            Commits.
+          </p>
+          <p data-at="3">
+            Das Warum: welche Frage, was gewählt wurde, warum, und was verworfen wurde.
+          </p>
+          <p data-at="4">
+            Wo es herkam: grüne Wiese, ein bestehender Graph oder eine echte Migration von einer
+            bestehenden Anwendung. Inklusive der Dateien, die der Agent gelesen hat.
+          </p>
+          <p data-at="5">
+            Und das Prüfergebnis: Ist die Pipeline danach durchgelaufen? Wie gut war das Ergebnis? Das Ganze
+            exportiere ich mit einem Befehl als JSONL. Fairerweise dazu: Da wird nichts geschwärzt.
+            Account-IDs, ARNs und gelesener Code können drinstehen. Das sollte man wissen, bevor man ein
+            Kundenprojekt reinlädt.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 11 · Flywheel                                                       -->
+      <!-- ================================================================== -->
+      <section class="slide dark" id="flywheel" data-act="03 · Daten" data-title="Mehr Migrationen. Mehr Daten. Bessere Migrationen">
+        <div class="chapter"><b>03</b><span>Daten</span></div>
+        <h2>Mehr Migrationen. Mehr Daten.<br />Bessere Migrationen.</h2>
+
+        <div class="body fly">
+          <svg class="wheel" viewBox="0 0 560 560" role="img" aria-label="Der Kreislauf: Migration, Aufzeichnen, Bewerten, Lernen">
+            <circle class="track" cx="280" cy="280" r="200" />
+            <g class="orbit">
+              <path d="M280,80 A200,200 0 0 0 138.6,138.6" opacity="0.35" />
+              <circle cx="280" cy="80" r="9" />
+            </g>
+            <text class="hublabel" x="280" y="262" text-anchor="middle">Harness</text>
+            <text class="hub" x="280" y="302" text-anchor="middle">Terrablox</text>
+
+            <g class="stop">
+              <rect x="180" y="46" width="200" height="68" rx="14" />
+              <text x="280" y="76" text-anchor="middle">Migration</text>
+              <text class="sub" x="280" y="98" text-anchor="middle">Agent baut auf dem Graphen</text>
+            </g>
+            <g class="stop">
+              <rect x="380" y="246" width="200" height="68" rx="14" />
+              <text x="480" y="276" text-anchor="middle">Aufzeichnen</text>
+              <text class="sub" x="480" y="298" text-anchor="middle">Transformation gespeichert</text>
+            </g>
+            <g class="stop">
+              <rect x="180" y="446" width="200" height="68" rx="14" />
+              <text x="280" y="476" text-anchor="middle">Bewerten</text>
+              <text class="sub" x="280" y="498" text-anchor="middle">Pipeline + Mensch</text>
+            </g>
+            <g class="stop">
+              <rect x="-20" y="246" width="200" height="68" rx="14" />
+              <text x="80" y="276" text-anchor="middle">Lernen</text>
+              <text class="sub" x="80" y="298" text-anchor="middle">Harness wird angepasst</text>
+            </g>
+          </svg>
+
+          <div>
+            <div class="horizon">
+              <div class="card">
+                <span class="eyebrow">Heute im Produkt</span>
+                <h3>Aufzeichnen und bewerten</h3>
+                <ul>
+                  <li>Jeder verändernde Turn wird vollständig gespeichert</li>
+                </ul>
+              </div>
+              <div class="card next" data-step="1">
+                <span class="eyebrow">Ausblick</span>
+                <h3>Gemeinsam lernen</h3>
+                <ul>
+                  <li>Zentraler MHP-Datensatz</li>
+                  <li>Ähnliche Migrationen als Kontext für neue</li>
+                  <li>Menschliches Feedback verbessert Regeln und Defaults</li>
+                </ul>
+              </div>
+            </div>
+
+            <div class="dataset" id="dataset" aria-hidden="true"></div>
+            <p class="dataset-label">Der Datensatz wächst mit jeder Migration.</p>
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p data-at="0">
+            Und daraus wird ein Kreislauf. Migration, aufzeichnen, prüfen, lernen, und wieder von vorn.
+            Mehr Migrationen, mehr Daten, bessere Migrationen. Ich will aber ehrlich sein, was heute schon
+            geht: aufzeichnen, das Prüfergebnis speichern und exportieren. Das ist drin und läuft.
+          </p>
+          <p data-at="1">
+            Was noch fehlt, sind zwei Sachen. Erstens, ganz banal: Aktuell läuft das lokal, jeder sammelt
+            also nur für sich. Damit daraus ein gemeinsamer Datensatz wird, müssen wir das zentral bei MHP
+            hosten. Dann können wir neben dem Pipeline-Ergebnis auch menschliches Feedback zur Qualität
+            sammeln. Zweitens der Rückweg ins Harness: ähnliche Migrationen als Kontext mitgeben und Regeln
+            nach unseren Prinzipien ableiten. Das ist noch nicht gebaut. Aber die Daten dafür kann man nur
+            sammeln, wenn man anfängt.
+          </p>
+        </aside>
+      </section>
+
+      <!-- ================================================================== -->
+      <!-- 12 · Call to action                                                 -->
+      <!-- ================================================================== -->
+      <section class="slide" data-act="Mitmachen" data-title="Probiert es aus. Baut mit">
+        <div class="chapter"><b>→</b><span>Mitmachen</span></div>
+        <h2>Probiert es aus. Baut mit.</h2>
+
+        <div class="body cta">
+          <div class="asks">
+            <div class="card ask rise" style="--i: 0">
+              <b>1</b>
+              <h3>Lokal ausprobieren.</h3>
+              <p>Terrablox ist heute ein MVP und läuft auf eurem Rechner: klonen, ein Befehl, fertig.</p>
+            </div>
+            <div class="card ask rise" style="--i: 1">
+              <b>2</b>
+              <h3>Mitbauen.</h3>
+              <p>Das Projekt ist Open Source. Issues, Pull Requests und Module sind willkommen.</p>
+            </div>
+            <div class="card ask next rise" style="--i: 2">
+              <b>3</b>
+              <h3>Zentral bei MHP hosten. <span class="pill">Nächster Schritt</span></h3>
+              <p>Erst dann landen alle Migrationen in einem gemeinsamen Datensatz.</p>
+            </div>
+          </div>
+
+          <div>
+            <div class="term">
+              <header><i></i><i></i><i></i></header>
+              <pre><span class="c"># klonen, dann:</span>
+<span class="p">$</span> git clone https://github.com/t3bld/terrablox.git
+<span class="p">$</span> cd terrablox &amp;&amp; pnpm quickstart
+
+<span class="c"># Dashboard: http://localhost:3001</span></pre>
+            </div>
+
+          </div>
+        </div>
+
+        <aside class="notes">
+          <p>
+            Wo stehen wir? Ehrlich gesagt: Das ist ein MVP, und der läuft aktuell nur lokal.
+          </p>
+          <p>
+            Wenn ihr es ausprobieren wollt: Repository klonen, pnpm quickstart starten, fertig. Der
+            Einstieg steht rechts im Terminal.
+          </p>
+          <p>
+            Zweitens: mitbauen. Das Ding ist Open Source. Wenn euch ein Modul fehlt, eine Entscheidung
+            komisch vorkommt oder irgendwas nervt: Issue aufmachen, PR schicken oder mir einfach
+            schreiben.
+          </p>
+          <p>
+            Und damit die Idee mit den Daten wirklich aufgeht, kommt der nächste Schritt: Wir müssen das
+            zentral bei MHP hosten. Solange jeder lokal arbeitet, sammelt jeder nur für sich. Erst mit
+            einer gemeinsamen Instanz landen alle Migrationen in einem Datensatz. Wer Lust hat, das mit
+            aufzubauen, meldet euch gern bei mir.
+          </p>
+        </aside>
+      </section>
+
+    </main>
+
+    <div class="thread" aria-hidden="true"><i id="thread"></i></div>
+
+    <nav class="hud" aria-label="Navigation">
+      <button type="button" id="prev" aria-label="Zurück">←</button>
+      <span class="count" id="count">1 / 12</span>
+      <button type="button" id="next" aria-label="Weiter">→</button>
+    </nav>
+
+    <div class="notes-panel" id="notes" hidden></div>
+    <div class="overview" id="overview" hidden><ol id="overview-list"></ol></div>
+
+    <script src="deck.js"></script>
+  </body>
+</html>
