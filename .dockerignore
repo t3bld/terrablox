@@ -52,6 +52,7 @@ coverage
 
 # Docs and local tooling that no build step reads
 docs
+presentation
 README.md
 LICENSE
 todo.md
